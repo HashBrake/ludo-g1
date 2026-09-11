@@ -602,7 +602,7 @@ result:
     every branch of both scripts was executed by hand and quoted in BUILD_LOG.md. Flagged there for review.
 
 ## T-015  Phase 0 report
-status: in_progress
+status: review
 priority: P1
 phase: 0
 owner: opus
@@ -619,6 +619,27 @@ acceptance:
   - every number in the report is next to the command that produced it (spot-checked by Fable)
   - `.venv/bin/python -m pytest -q` count in the report equals a fresh run at review time
 notes: No code changes. Do not restate the brief.
+result: (opus, 2026-09-11T21:00+07:00, branch wt/t015, commit PENDING_HASH)
+  Phase 0 report appended to agents/BUILD_LOG.md (seven sections) and docs/README.md written (11 module
+  pages, one sentence each). No code changed.
+  measured in the worktree at 3c5df60:
+  - `time .venv/bin/python -m pytest -q` -> 378 passed, 4 skipped in 57.19s (real 0m57,511s);
+    `--collect-only` -> 382 tests collected. `.venv/bin/python -m ruff check .` -> All checks passed!
+  - exit check 2: `.venv/bin/python -m pytest tests/test_safety.py -v -k "test_guard_on_hardware_refuses_without_a_valid_session or test_simulated_is_keyword_only_and_defaults_to_false"`
+    -> 5 passed, 53 deselected in 0.19s (absent / expired / unconfirmed / unparsable all raise
+    SafetyViolation rule=session_gate with admitted==0).
+  - exit check 3: `bash tests/test_greennode_local.sh` -> all checks passed, 22 ok, 0 FAIL, local
+    transport only; the real round trip is blocked on Q-001 (`ls -l ~/.config/ludo-g1/env` -> no such file).
+  - exit check 4: `.venv/bin/python -m pytest tests/test_docs_sdks.py -s` -> 9 passed, 157 path:line
+    references (129 unique); all eight devices have a state read, the three actuated ones a target write.
+  - UNMEASURED keys via `runtime.config.unmeasured`: robot 17, safety 10, cameras 17, board 13, hand 14,
+    training 0 (71 total), each listed by name in the report.
+  - verdicts: A1 confirmed+narrowed, A2 code-confirmed/link open, A3 partial, A4 confirmed, A5 refuted
+    (D-006), A6 open (Q-001), A7 adopted; U1/U3/U6 open, U2 confirmed at the API level, U4 still assumed
+    no, U5 confirmed short (`df -h /home` -> 14G available of 76G).
+  not met: none. Two Phase 0 exit items stay open on humans, not on work: the real Greennode job (Q-001)
+    and the real board still (H-001). Noted in the report: TASKS.md still shows T-001 as `review`
+    although REVIEW.md accepted it; not fixed here because only the T-015 lines may be touched.
 
 ## T-016  Mock end-to-end controller loop (runtime/controller.py on mocks)
 status: accepted
