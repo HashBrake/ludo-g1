@@ -73,3 +73,17 @@ measured (config/board.yaml die.bowl_centre_mm is UNMEASURED; inventing one woul
 finished board is re-dealt so the command stream never degenerates to ROLL-only.
 Fable fix in this merge: tests/test_greennode_local.sh polled status once immediately after `train --detach` and could see
 state=starting; it now polls up to 3 s for state=running. Reported by both T-007 and T-011 builders; logged per 4.1.
+
+## T-006  ACCEPTED  (fable, 2026-09-11T23:55+07:00, commits 096d01f, 671dd28, 39f81a0)
+Re-ran: ruff clean; 276 passed 1 skipped. Both mock actuators obtain their Guard via Guard.from_config(simulated=True) and
+call admit before touching state (drivers/mock/g1_arm.py:52,81; drivers/mock/dexh15.py:53,91); no other Guard construction
+in drivers/. Config edits are mock-only `mock:` blocks with UNMEASURED placeholders; the real synergy poses stay literal
+UNMEASURED, which is correct. Fable fix in this merge: tests/test_safety.py:550 wrote a session with under 1 s of validity
+left (59 s of a 60 s window) so a second boundary expired it early; now 30 s. Reported by the T-006 builder; logged per 4.1.
+
+## T-008  ACCEPTED  (fable, 2026-09-11T23:55+07:00, commits 63d998f, 6b2ebf3, merged)
+Re-ran in the worktree: ruff clean; 21 calibration tests pass (translation case rms 0.12 px, worst cell 0.008 px; rotated
+and tilted case rms 0.23 px, worst cell 0.054 px, per BUILD_LOG). config/board.yaml edit is the placeholder block my
+guidance required (family, size, ids, inset, all `_status: UNMEASURED`). brio_still.py only opens VideoCapture read-only.
+Criterion 3 (real still) stays open under H-001, correctly. calibration.py is 481 lines, larger than I would like but every
+part is used; noted as a style guideline, not a defect.

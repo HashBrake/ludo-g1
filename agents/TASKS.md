@@ -217,7 +217,7 @@ result: (opus, 2026-09-11T21:55+07:00, commit 8c03733)
     mechanical range and a joint list that disagrees with config/robot.yaml.
 
 ## T-006  Mock drivers with the real driver interfaces
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -291,7 +291,7 @@ result: (opus, 2026-09-11T22:55+07:00, commit 5cab3e6, branch wt/t007)
   - Not mine, reported: tests/test_greennode_local.py::test_greennode_local_round_trip flakes ~1 in 6 full-suite runs on a `state=starting` vs `running` race in T-009's shell test.
 
 ## T-008  Board calibration from AprilTags and a Brio still
-status: review
+status: accepted
 priority: P1
 phase: 0
 owner: opus
@@ -378,7 +378,7 @@ result: (opus, 2026-09-11T19:12+07:00, commit 5540c10; branch wt/t009)
     it survives the ssh connection dropping.
 
 ## T-010  Real camera driver (Brio, Orbbec) read-only with device discovery
-status: todo
+status: in_progress
 priority: P1
 phase: 0
 owner: opus
@@ -490,7 +490,7 @@ result:
     `uv pip install --reinstall-package opencv-python -r requirements.txt`. See agents/BUILD_LOG.md T-012.
 
 ## T-013  Controller-pose to 8-DoF arm IK prototype (pulled forward from Phase 2, non-hardware)
-status: todo
+status: in_progress
 priority: P1
 phase: 2
 owner: opus
