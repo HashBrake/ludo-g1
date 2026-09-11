@@ -187,3 +187,19 @@ refused their old first commands; that is the tightening working, accepted. loop
 moves to teleop/clutch.py the next time loop.py is touched. Fable fix in this commit: runtime/config.py REQUIRED_KEYS now
 lists first_command_max_step_rad (the builder's finding 4). The 0-refusal out-of-box session is correct: the clutch never
 sends an unreachable target.
+
+## T-030  ACCEPTED  (fable, 2026-09-12T01:17+07:00, commits 5b4fa78, 0bc973a, merged)
+Re-ran in the worktree: ruff clean; 15 ACT tests pass (smoke loss 23.46 -> 0.97, probe -96.9%, test-scale act() 22 ms);
+requirements unchanged (--dry-run: no changes). Ensembling in the adapter with lerobot's weights pinned to 2.9e-8 against
+the library's own ensembler is the right way around lerobot forcing n_action_steps=1. Removing the never-existing
+act.encoder_per_camera key and disabling pretrained backbone weights so both architectures start from scratch: accepted
+(5.7 wants an architecture comparison). Latency numbers were taken under load from another builder and are pessimistic;
+the thread-count finding (ACT 154 ms at 4 threads vs seconds oversubscribed) is D-020. The private imports from
+policy/diffusion.py move to policy/_shared.py in T-034, which touches both files anyway.
+
+## T-031  ACCEPTED  (fable, 2026-09-12T01:17+07:00, commits 2be999e, 0257044)
+Re-ran: ruff clean; 6 greennode-train tests pass (local-transport up/train --smoke/down round trip with the pushed
+config's hashes in run.json); `git grep` for credential words in cloud/ empty; CUDA base pinned by digest, torch
+2.9.1+cu128 and lerobot 0.4.4 in the training subset, no pxdex or unitree_sdk2py in the image. The remote command is in
+docs/cloud.md verbatim. The STATE.md clause is done in this commit (Fable's file). The image has never been built (no
+docker here) and --device cuda has never executed; both are stated, which is what R5 requires until Q-001.

@@ -156,3 +156,11 @@ decision is: (1) T-030 measures ACT on the same inputs (a single forward pass); 
 the expected landing and needs its JetPack/torch state confirmed (Q-011); (3) in parallel, a smaller configuration
 (shared encoder, 120x160 inputs, fewer UNet channels) is measured in T-035 as a fallback that keeps the laptop viable.
 No policy is chosen until Phase 3 eval numbers exist (R5). Training stays on Greennode (Q-001).
+
+## D-020  Torch thread count is a configured value, measured on a quiet machine  (2026-09-12T01:17+07:00)
+T-030 measured ACT act() at 154 ms with 4 torch threads and 3.7-6 s at the default 14 on this laptop (oversubscription of
+the 14-thread pool on small tensors); the diffusion policy went 804 -> 560 ms (DDIM 10) at 4 threads. D-019's ladder stays,
+but the first step is free: config/training.yaml gains `compute.torch_threads` (placeholder 4, UNMEASURED) applied by
+policy/train.py, both adapters and eval/run_eval.py at start; T-035 re-measures both policies at 1/2/4/8 threads on a quiet
+machine (no other builder running) and records the table. ACT at ~150 ms is still above the 100 ms budget at 10 Hz but
+within reach of the 5.8 ladder (ACT then Orin NX); the diffusion policy is not, on this CPU.

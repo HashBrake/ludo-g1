@@ -1,14 +1,22 @@
-"""Train the Diffusion Policy of CLAUDE.md 5.7 on recorded sessions.
+"""Train the Diffusion Policy, or the ACT baseline, of CLAUDE.md 5.7 on recorded sessions.
 
 ```bash
 .venv/bin/python -m policy.train --sessions data/raw/20260912T090000 --steps 200000
+.venv/bin/python -m policy.train --sessions data/raw/20260912T090000 --policy act   # the baseline
 .venv/bin/python -m policy.train --sessions data/raw/mock_smoke --smoke      # 30 steps, batch 4, CPU
 ```
 
 Real training happens on Greennode (5.8, Q-001); this is the entry point ``cloud/greennode.sh``
 launches there and the one that runs on the laptop for a smoke test. It is a plain torch loop over
-:class:`policy.dataset.LudoDataset` with :class:`policy.diffusion.GoalDiffusionPolicy`'s own loss --
-no lerobot trainer, no hub, no EMA (``diffusion.ema_decay`` is not applied yet; see docs/policy.md).
+:class:`policy.dataset.LudoDataset` with the model's own loss -- no lerobot trainer, no hub, no EMA
+(``diffusion.ema_decay`` is not applied yet; see docs/policy.md).
+
+``--policy act`` is the whole difference between the two models of 5.7: the same sessions, the same
+:class:`~policy.dataset.LudoDataset` (at ``act.chunk`` instead of ``diffusion.chunk``), the same
+split, the same statistics, the same loop, the same run directory. CLAUDE.md 5.7 requires the
+baseline to be trained on every dataset the primary is trained on, so training it must cost one flag
+and must not be able to change anything else. Defaults (steps, batch, lr, weight decay, seed) come
+from the chosen policy's block in ``config/training.yaml``.
 
 Every run writes ``data/checkpoints/<run>/``:
 
@@ -16,7 +24,8 @@ Every run writes ``data/checkpoints/<run>/``:
 ``run.json``            args, git commit, the six config hashes, the dataset manifest hash, the
                         per-session episode and frame counts, the final loss and the wall time
 ``loss.csv``            ``step,loss,elapsed_s`` for every step: the loss curve section 8 audits
-``checkpoint.pt``       ``{"spec", "state_dict", "run"}``; ``policy/export.py`` turns it into a bundle
+``checkpoint.pt``       ``{"policy", "spec", "state_dict", "run"}``; ``policy/export.py`` turns it
+                        into a bundle
 ======================  ==========================================================================
 
 The dataset manifest hash is the sha256 of each session's ``meta/info.json`` and
@@ -47,6 +56,7 @@ import torch
 from lerobot.datasets.utils import INFO_PATH
 from torch.utils.data import DataLoader
 
+from policy.act import ACTSpec, GoalACTPolicy
 from policy.dataset import LudoDataset
 from policy.diffusion import GoalDiffusionPolicy, PolicySpec, dataset_stats
 from runtime import config
@@ -54,7 +64,15 @@ from runtime.log import get_logger
 from runtime.safety import REPO_ROOT
 from teleop.recorder import SIDECAR
 
-__all__ = ["CHECKPOINT_DIR", "dataset_manifest_hash", "git_commit", "main", "train"]
+__all__ = ["CHECKPOINT_DIR", "POLICIES", "dataset_manifest_hash", "git_commit", "main", "policy_kind", "train"]
+
+#: ``--policy NAME`` -> (the spec it builds, the model it trains, the ``config/training.yaml`` block).
+#: The spec type is what :func:`train` dispatches on, so a caller that passes a spec directly (the
+#: tests do) never has to name the policy twice.
+POLICIES: dict[str, tuple[type, type]] = {
+    "diffusion": (PolicySpec, GoalDiffusionPolicy),
+    "act": (ACTSpec, GoalACTPolicy),
+}
 
 #: Where a run's directory is created (``compute.checkpoint_dir``), relative to the repo root.
 CHECKPOINT_DIR = REPO_ROOT / "data" / "checkpoints"
@@ -64,6 +82,14 @@ LOG_DIR = REPO_ROOT / "data" / "logs"
 MANIFEST_FILES: tuple[str, ...] = (INFO_PATH, SIDECAR)
 #: ``--smoke``: the shortest run that still proves the loop trains (T-029).
 SMOKE_STEPS, SMOKE_BATCH = 30, 4
+
+
+def policy_kind(spec: PolicySpec | ACTSpec) -> str:
+    """Which entry of :data:`POLICIES` this spec names: the model, the config block and the run name."""
+    for name, (spec_type, _model) in POLICIES.items():
+        if isinstance(spec, spec_type):
+            return name
+    raise TypeError(f"{type(spec).__name__} is not a policy spec; known: {sorted(POLICIES)}")
 
 
 def dataset_manifest_hash(sessions: Sequence[Path | str]) -> str:
@@ -107,7 +133,7 @@ def train(
     out_dir: Path | str | None = None,
     log_dir: Path | str | None = None,
     run_name: str | None = None,
-    spec: PolicySpec | None = None,
+    spec: PolicySpec | ACTSpec | None = None,
     config_root: Path | str | None = None,
     augment: bool = True,
     stats_samples: int | None = None,
@@ -121,21 +147,22 @@ def train(
     torch.manual_seed(int(seed))
     training = config.load("training", root=config_root)
     spec = PolicySpec.from_config(config_root) if spec is None else spec
-    samples = int(training["diffusion"]["stats_samples"]) if stats_samples is None else int(stats_samples)
+    kind = policy_kind(spec)
+    samples = int(training[kind]["stats_samples"]) if stats_samples is None else int(stats_samples)
 
     data = LudoDataset(sessions, chunk=spec.chunk, augment=augment, seed=seed, config_root=config_root)
     manifest = dataset_manifest_hash(sessions)
     hashes = {name: config.config_hash(name, config_root) for name in config.NAMES}
-    log.info("train_start", steps=steps, batch=batch_size, device=device, frames=len(data),
+    log.info("train_start", policy=kind, steps=steps, batch=batch_size, device=device, frames=len(data),
              episodes=len(data.episodes), training_config_hash=hashes["training"], dataset_manifest=manifest)
 
-    model = GoalDiffusionPolicy(spec, device=device).to(device)
+    model = POLICIES[kind][1](spec, device=device).to(device)
     model.norm.load_stats(dataset_stats(data, samples=samples, seed=seed))
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=float(learning_rate), weight_decay=float(weight_decay))
 
     loader = DataLoader(data, batch_size=int(batch_size), shuffle=True, num_workers=int(workers), drop_last=False)
-    run = run_name or f"{datetime.now().strftime('%Y%m%dT%H%M%S')}_diffusion"
+    run = run_name or f"{datetime.now().strftime('%Y%m%dT%H%M%S')}_{kind}"
     directory = Path(CHECKPOINT_DIR if out_dir is None else out_dir) / run
     directory.mkdir(parents=True, exist_ok=True)
     heartbeat = Path(LOG_DIR if log_dir is None else log_dir) / f"train_{run}.heartbeat"
@@ -163,6 +190,7 @@ def train(
 
     record = {
         "run": run,
+        "policy": kind,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "git_commit": git_commit(),
         "config_hashes": hashes,
@@ -184,55 +212,61 @@ def train(
         "checkpoint": str(directory / "checkpoint.pt"),
     }
     (directory / "run.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    torch.save({"spec": spec.to_dict(), "state_dict": model.state_dict(), "run": record},
+    torch.save({"policy": kind, "spec": spec.to_dict(), "state_dict": model.state_dict(), "run": record},
                directory / "checkpoint.pt")
-    log.info("train_end", run=run, loss_first=round(record["loss_first"], 6),
+    log.info("train_end", run=run, policy=kind, loss_first=round(record["loss_first"], 6),
              loss_last=round(record["loss_last"], 6), elapsed_s=round(record["elapsed_s"], 1))
     return record
 
 
 def main(argv: list[str] | None = None) -> int:
-    """``python -m policy.train --sessions data/raw/<session> [--smoke]``."""
+    """``python -m policy.train --sessions data/raw/<session> [--policy act] [--smoke]``."""
     training = config.load("training")
-    block = training["diffusion"]
-    parser = argparse.ArgumentParser(description="Train the Diffusion Policy (CLAUDE.md 5.7).")
+    parser = argparse.ArgumentParser(description="Train the Diffusion Policy or the ACT baseline (CLAUDE.md 5.7).")
     parser.add_argument("--sessions", nargs="+", required=True, metavar="DIR",
                         help="session directories under data/raw/ (teleop/recorder.py wrote them)")
-    parser.add_argument("--steps", type=int, default=int(block["train_iterations"]),
-                        help=f"optimiser steps (default {block['train_iterations']} = diffusion.train_iterations)")
-    parser.add_argument("--batch-size", type=int, default=int(block["batch_size"]),
-                        help=f"default {block['batch_size']} = diffusion.batch_size")
-    parser.add_argument("--lr", type=float, default=float(block["learning_rate"]),
-                        help=f"default {block['learning_rate']} = diffusion.learning_rate")
-    parser.add_argument("--seed", type=int, default=int(block["seed"]), help="dataset, init and stats seed")
+    parser.add_argument("--policy", default="diffusion", choices=tuple(POLICIES),
+                        help="which model of 5.7 to train on this data (default diffusion)")
+    parser.add_argument("--steps", type=int, default=None,
+                        help="optimiser steps (default: the policy's train_iterations)")
+    parser.add_argument("--batch-size", type=int, default=None, help="default: the policy's batch_size")
+    parser.add_argument("--lr", type=float, default=None, help="default: the policy's learning_rate")
+    parser.add_argument("--seed", type=int, default=None, help="dataset, init and stats seed (default: the policy's)")
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"), help="default cpu")
     parser.add_argument("--workers", type=int, default=0, help="DataLoader workers (default 0)")
     parser.add_argument("--no-augment", action="store_true", help="turn off the augmentation of 5.7")
     parser.add_argument("--out-dir", default=None, help=f"run directory root (default {CHECKPOINT_DIR})")
-    parser.add_argument("--run-name", default=None, help="run directory name (default <timestamp>_diffusion)")
+    parser.add_argument("--run-name", default=None, help="run directory name (default <timestamp>_<policy>)")
     parser.add_argument("--stats-samples", type=int, default=None,
-                        help=f"samples for the normalisation statistics (default {block['stats_samples']})")
+                        help="samples for the normalisation statistics (default: the policy's stats_samples)")
     parser.add_argument("--smoke", action="store_true",
                         help=f"{SMOKE_STEPS} steps, batch {SMOKE_BATCH}, on CPU: proves the loop trains, nothing more")
     parser.add_argument("--image-hw", type=int, nargs=2, default=None, metavar=("H", "W"),
-                        help=f"encoder input size (default {block['encoder_image_hw']})")
+                        help="encoder input size (default: the policy's encoder_image_hw)")
     args = parser.parse_args(argv)
 
-    spec = PolicySpec.from_config()
+    block = training[args.policy]
+    spec = POLICIES[args.policy][0].from_config()
     if args.image_hw is not None:
         spec = replace(spec, image_hw=tuple(args.image_hw))
-    steps = SMOKE_STEPS if args.smoke else args.steps
-    batch_size = SMOKE_BATCH if args.smoke else args.batch_size
+    steps = SMOKE_STEPS if args.smoke else (int(block["train_iterations"]) if args.steps is None else args.steps)
+    batch = int(block["batch_size"]) if args.batch_size is None else args.batch_size
+    batch_size = SMOKE_BATCH if args.smoke else batch
     device = "cpu" if args.smoke else args.device
-    run_name = args.run_name or (f"{datetime.now().strftime('%Y%m%dT%H%M%S')}_diffusion_smoke" if args.smoke else None)
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    run_name = args.run_name or (f"{stamp}_{args.policy}_smoke" if args.smoke else None)
 
     record: dict[str, Any] = train(
-        args.sessions, steps=steps, batch_size=batch_size, learning_rate=args.lr,
-        weight_decay=float(block["weight_decay"]), seed=args.seed, device=device, out_dir=args.out_dir,
+        args.sessions, steps=steps, batch_size=batch_size,
+        learning_rate=float(block["learning_rate"]) if args.lr is None else args.lr,
+        weight_decay=float(block["weight_decay"]),
+        seed=int(block["seed"]) if args.seed is None else args.seed,
+        device=device, out_dir=args.out_dir,
         run_name=run_name, spec=spec, augment=not args.no_augment, stats_samples=args.stats_samples,
         workers=args.workers,
     )
-    print(f"run {record['run']}: {record['frames']} frames, {record['parameters'] / 1e6:.1f}M parameters")
+    print(f"run {record['run']} ({record['policy']}): {record['frames']} frames, "
+          f"{record['parameters'] / 1e6:.1f}M parameters")
     print(f"training config hash {record['config_hashes']['training']}")
     print(f"dataset manifest sha256 {record['dataset_manifest_sha256']}")
     print(f"loss step 1 {record['loss_first']:.6f} -> step {steps} {record['loss_last']:.6f} "

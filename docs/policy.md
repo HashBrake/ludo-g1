@@ -170,14 +170,72 @@ controller's 20 s `runtime.primitive_timeout_s` ends every primitive and the eng
 state change (5.5). `seed=` pins the initial noise, which is what makes an exported bundle
 reproducible.
 
+## `policy/act.py`
+
+```python
+from policy.act import ACTAdapter, ACTSpec, GoalACTPolicy
+
+model = GoalACTPolicy(ACTSpec.from_config())           # training: policy/train.py --policy act
+policy = ACTAdapter("data/checkpoints/<run>/bundle")   # inference, runtime/controller.py
+```
+
+The baseline of CLAUDE.md 5.7: lerobot 0.4.4's `ACTPolicy` (ResNet-18, chunk 32, VAE objective,
+temporal ensembling) wrapped — never patched — around **the same observation the Diffusion Policy
+takes**. The adaptation is not merely similar, it is the same code: `policy/act.py` imports the 1x1
+goal projection's normalisation buffers (`_Normalizer`), the frame conversion (`_image_tensor`), the
+camera keys and the latency benchmark from `policy/diffusion.py`. 5.7 requires the baseline to be
+trained on every dataset the primary is trained on, and a difference in inputs, normalisation or
+measurement would make the comparison say something other than "these two architectures differ".
+
+### What ACT does differently from the Diffusion Policy, and what the wrapper does
+
+| | Diffusion Policy | ACT |
+|---|---|---|
+| camera encoders | one ResNet-18 per camera (`use_separate_rgb_encoder_per_camera`) | **one shared** ResNet-18; `ACT.__init__` builds a single `self.backbone` and there is no per-camera option — so `act.encoder_per_camera` was removed from `config/training.yaml`, it never existed |
+| 5-channel `top` | refused by `DiffusionConfig.validate_features` | not refused by the config, but the shared 3-channel backbone raises *"expected input… to have 3 channels, but got 5"* — the same 1x1 goal projection is still the route |
+| observation history | `n_obs_steps` 2, and training repeats the frame (known gap below) | `ACTConfig` **refuses** any `n_obs_steps` but 1, and `LudoDataset` yields one frame — so the gap does not exist here |
+| chunk alignment | lerobot slices from `n_obs_steps - 1`; the wrapper samples the trajectory directly | `action_delta_indices` is `range(chunk_size)` = [0 … 31], already the dataset's alignment |
+| normalisation | statistics as buffers, STATE/ACTION min/max to [-1, 1] | the same buffers and the same min/max (upstream ACT maps them to mean/std, but lerobot's processor pipeline does not run for either model, and two baselines that normalise differently do not compare) |
+| pretrained backbone | `None` upstream | upstream default is `ResNet18_Weights.IMAGENET1K_V1`, which downloads at construction; `act.pretrained_backbone_weights: null` matches the Diffusion Policy so the comparison is not also a comparison of initialisations |
+| inference determinism | DDIM noise; `seed=` pins it | deterministic: the VAE encoder runs in training only, so the latent is zeros at inference |
+
+### Temporal ensembling lives in `ACTAdapter`, and why
+
+lerobot gates ensembling on `temporal_ensemble_coeff`, and setting it in 0.4.4 **forces
+`n_action_steps = 1`** (`configuration_act.py:137`: the policy must be queried every step, because
+`ACTPolicy.select_action` consumes exactly one ensembled action per call). Our contract is the other
+shape — `runtime/controller.py` queries at `rates.policy_hz` (10 Hz) and plays a chunk at
+`rates.action_hz` (30 Hz) — so the wrapped `ACTConfig` keeps `temporal_ensemble_coeff=None`
+(`select_action` is never called) and `TemporalEnsemble` does the averaging over the chunk.
+
+Query *k* predicts 32 actions for absolute action-steps `k·s + j`, where `s = round(action_hz /
+policy_hz)` = 3 is how far the controller advances between queries. An action-step `T` is therefore
+predicted by every query with `k·s ≤ T < k·s + 32`; ordering those predictions oldest first,
+
+```
+ensembled(T) = Σᵢ wᵢ·aᵢ / Σᵢ wᵢ,     wᵢ = exp(-coeff · i)
+```
+
+which is lerobot's own rule (`ACTTemporalEnsembler`, coefficient 0.01, older actions weighted more),
+written offline because lerobot's online recursion assumes the query stride is 1.
+`tests/test_act.py::test_temporal_ensemble_matches_lerobots_own` runs both at stride 1 and pins them
+to each other: 2.9e-08 against lerobot as it ships — that is its float32 weight table against this
+one's float64 — and 2.2e-16 when the same weights are computed in float64.
+
+`act()` returns `act.expose` (16) ensembled actions at `rates.action_hz`, so ACT's 32 is internal and
+the controller contract of 5.2 is unchanged. `s` is the *nominal* stride: neither adapter is told how
+many actions the controller actually played, so a late query makes the ensemble as stale as it makes
+a receding horizon.
+
 ## `policy/train.py`
 
 ```bash
 .venv/bin/python -m policy.train --sessions data/raw/<session> --steps 200000        # Greennode
+.venv/bin/python -m policy.train --sessions data/raw/<session> --policy act          # the baseline
 .venv/bin/python -m policy.train --sessions data/raw/mock_smoke --smoke              # 30 steps, CPU
 ```
 
-A plain torch loop (Adam, `diffusion.learning_rate`, `diffusion.weight_decay`) over `LudoDataset`
+A plain torch loop (Adam, `<policy>.learning_rate`, `<policy>.weight_decay`) over `LudoDataset`
 with the policy's own loss — no lerobot trainer, no hub. Each run writes
 `data/checkpoints/<run>/`:
 
@@ -185,10 +243,19 @@ with the policy's own loss — no lerobot trainer, no hub. Each run writes
   each session's `meta/info.json` and `episodes_meta.jsonl`, in session-name order), frame and episode
   counts, parameter count, first/last loss, wall time;
 - `loss.csv` — `step,loss,elapsed_s` for every step;
-- `checkpoint.pt` — `{"spec", "state_dict", "run"}`.
+- `checkpoint.pt` — `{"policy", "spec", "state_dict", "run"}`.
 
 Two runs are comparable exactly when their config hashes and manifest hash agree (R5, 5.6). A run
 also writes `data/logs/train_<run>.heartbeat` (section 7).
+
+`--policy act` is the whole difference between the two models of 5.7: the same sessions, the same
+`LudoDataset` (at `act.chunk` = 32 instead of `diffusion.chunk` = 16), the same split, the same
+statistics, the same loop, the same run directory, and `run.json`/`checkpoint.pt` record which model
+it was. Every default (steps, batch size, learning rate, weight decay, seed, encoder input size,
+statistics samples) comes from the chosen policy's block in `config/training.yaml`, so the flag
+cannot silently carry a diffusion hyperparameter into an ACT run. `train()` itself dispatches on the
+*type of the spec* it is given (`policy_kind`), so a caller that builds a spec never names the policy
+twice.
 
 The per-step training loss is a noisy estimate: `compute_loss` draws a fresh diffusion timestep and
 noise every step, so a single step's number says little. Compare `loss_mean_last_10`, or the
@@ -201,10 +268,13 @@ fixed-probe loss `tests/test_diffusion.py` uses (same batch, same seeded draw, t
 .venv/bin/python -m eval.run_eval --policy bundle data/checkpoints/<run>/bundle --backend mock
 ```
 
-A checkpoint becomes an inference bundle: `bundle.json` (format tag, the `PolicySpec`, the weights
-sha256, the source checkpoint and its sha256, the training run's hashes, what tracing did) and
-`weights.pt` (the `state_dict`, statistics included). `DiffusionAdapter` loads exactly that, and
-`eval/run_eval.py --policy bundle PATH` records the weights hash and the training run in every result.
+A checkpoint becomes an inference bundle: `bundle.json` (format tag, the policy name, the spec, the
+weights sha256, the source checkpoint and its sha256, the training run's hashes, what tracing did)
+and `weights.pt` (the `state_dict`, statistics included). Both models of 5.7 export the same way —
+the format tag is `ludo-g1/diffusion-bundle/1` or `ludo-g1/act-bundle/1` — and `open_bundle(path)` is
+the one reader that turns either back into a `runtime.policy_api.Policy`, so
+`eval/run_eval.py --policy bundle PATH` takes either without being told which and records the policy,
+the weights hash and the training run in every result.
 
 TorchScript is attempted and verified: the trace takes the diffusion noise as an **input** (otherwise
 the graph contains an `aten::randn` and `check_trace` compares two different random draws), and the
