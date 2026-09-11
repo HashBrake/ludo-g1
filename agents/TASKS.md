@@ -86,7 +86,7 @@ result: (opus, 2026-09-11T20:10+07:00, commit ac4fcc5)
   - New: H-002, H-003 in HARDWARE_NEEDED.md; Q-008, Q-009 in QUESTIONS.md. No blockers.
 
 ## T-003  Config files with UNMEASURED placeholders and a validated loader
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -170,7 +170,7 @@ result: (opus, 2026-09-11T19:20+07:00, commit 956147a; branch wt/t004)
     noted in BUILD_LOG.
 
 ## T-005  runtime/safety.py: envelope, session gate, rate limit; enable_session.py
-status: todo
+status: in_progress
 priority: P0
 phase: 0
 owner: opus
@@ -212,7 +212,7 @@ acceptance:
 notes: Interfaces are the contract for the real drivers in Phase 1; keep them minimal, no features nobody asked for.
 
 ## T-007  Engine contract and scripted stub engine
-status: todo
+status: in_progress
 priority: P0
 phase: 0
 owner: opus
@@ -249,7 +249,7 @@ acceptance:
 notes: `top` observation crop and the goal heatmaps depend on this frame; never apply geometric augmentation to it later (5.7).
 
 ## T-009  cloud/greennode.sh with a local fake transport
-status: review
+status: accepted
 priority: P1
 phase: 0
 owner: opus
@@ -335,9 +335,11 @@ owner: opus
 depends_on: T-003
 hardware: none
 deliverables:
-  - third_party/unitree_g1_mjcf/: copy of ~/Teleopit/assets/robots/unitree_g1/ (g1_29dof.xml, meshes/, LICENSE, README.md; skip
-    the dex3 and neck variants) with a MANIFEST.txt listing source path, copy date, and sha256 of every file; the copy is tracked
-    in git unless the meshes exceed 50 MB total, in which case say so in BUILD_LOG.md and stop for Fable to decide
+  - third_party/unitree_g1_mjcf/: copy of ~/Teleopit/assets/robots/unitree_g1/ restricted to g1_29dof.xml, LICENSE, README.md and
+    ONLY the 35 mesh files that g1_29dof.xml references (Fable measured: 19 MB; the full meshes/ tree is 63 MB and includes dex3,
+    avp and o6 variants that are not needed), keeping the meshes/ relative layout so `meshdir="meshes"` still resolves; a
+    MANIFEST.txt listing source path, copy date, and sha256 of every file; tracked in git
+  - config/robot.yaml `limits_source` repointed to the vendored file (the only edit to that file)
   - requirements.txt: add mujoco (latest 3.x that mink supports), mink, pico_bridge 0.2.1 pinned by the GitHub release URL and
     `--hash=sha256:...`; remove opencv-python-headless (D-008); re-resolve so `uv pip install -r requirements.txt --dry-run`
     reports no changes; record the resolved versions in docs/setup.md
@@ -376,3 +378,22 @@ acceptance:
   - tests pass with the printed pass rate >= 90%
   - mean solve time < 5 ms per call (measured, command logged)
 notes: No hardware, no drivers touched. This is the IK that D-006 replaces Teleopit with; keep it under 200 lines.
+
+## T-014  Worktree helper for parallel builders
+status: todo
+priority: P2
+phase: 0
+owner: opus
+depends_on: T-001
+hardware: none
+deliverables:
+  - tools/worktree_setup.sh BRANCH PATH: creates a git worktree from main, creates its .venv from requirements.txt, and makes the
+    git-ignored on-disk payloads available inside it (a real `_internal/` directory of symlinks into the main tree, as T-009 did by
+    hand, plus any other path listed in a small `tools/worktree_payloads.txt`), then runs `.venv/bin/python -m pytest -q` there
+  - tools/worktree_teardown.sh PATH: removes the worktree and deletes its branch only if it is fully merged into main
+  - docs/setup.md section on parallel builders
+acceptance:
+  - `bash tools/worktree_setup.sh wt/smoke /tmp/ludo-wt-smoke` ends with the full suite green inside the worktree (command and
+    output in BUILD_LOG.md), and `bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke` leaves `git worktree list` with main only
+  - `git status` in main is clean afterwards
+notes: Nothing under third_party/ is modified; the symlinks live only in the worktree and are git-ignored there.

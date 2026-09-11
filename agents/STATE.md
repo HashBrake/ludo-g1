@@ -1,12 +1,12 @@
 # STATE.md (Fable rewrites this every cycle)
 
-updated: 2026-09-11T20:30+07:00
+updated: 2026-09-11T21:10+07:00
 phase: 0 (discovery and scaffolding, no hardware motion)
 milestone: Phase 0 exit checks (CLAUDE.md section 6, Phase 0 "Verify")
-last_accepted_commit: 6709700 (T-001, T-002 SDK inventory, T-004 clock accepted; 33 tests green)
+last_accepted_commit: merge of wt/t009 (T-001, T-002, T-003, T-004, T-009 accepted; 103 tests green)
 loop: running
 
-next three tasks: T-003 config files (in progress), T-009 greennode script (in progress, parallel), T-005 safety gate
+next three tasks: T-005 safety gate (in progress), T-007 engine stub (in progress, parallel), T-012 IK dependencies and G1 model
 
 what Alois should look at (ten-second version):
 - QUESTIONS.md Q-001 (Greennode credentials), Q-002 (disk: 15 GB free vs 500 GB target), Q-003 (may I pip-install unitree_sdk2py), Q-004 (name the physical e-stop)
