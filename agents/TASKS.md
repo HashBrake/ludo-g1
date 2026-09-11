@@ -986,7 +986,7 @@ result: policy/dataset.py (LudoDataset + split_cell_pairs), tests/test_dataset.p
     all zero; episode tail padded with the last action and masked; top RGB bit-identical under
     augmentation with the jitter at zero strength while oblique, palm and the goal channels change.
   - DeprecationWarning count before -> after: 2817 -> 0.
-  commit: COMMIT_HASH
+  commit: 13b2806
 
 ## T-028  Eval protocol and runner on mocks
 status: in_progress

@@ -2268,3 +2268,7 @@ uv pip list --python .venv/bin/python | grep -i opencv         -> opencv-python 
   `config/safety.yaml` untouched, nothing under `third_party/` touched, `hardware/session.enable`
   never created or read for writing. Committed through the full pre-commit gate, no `--no-verify`
   (D-013).
+
+(T-027 commit: 13b2806, the commit that holds all the code, tests, config, requirements and docs of
+this task. This line and the TASKS.md `result:` hash are the only content of the follow-up commit,
+which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
