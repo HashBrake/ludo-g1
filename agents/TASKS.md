@@ -1472,7 +1472,7 @@ deliverables:
 acceptance:
   - tests pass with printed numbers; docs/policy.md and docs/cloud.md updated (cloud train passes --checkpoint-every)
 notes: Disk is 12 GB free; every test writes under tmp_path and deletes weights.
-result: (opus, 2026-09-12T06:20+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-12T06:40+07:00, commit 90d73c1)
   - tests/test_train.py 24 passed in 83 s (15 before); ruff clean; tests/test_act.py + tests/test_diffusion.py 27 passed in
     50 s; tests/test_greennode_train.py + tests/test_config.py 76 passed in 28 s.
   - Crash simulation: `python -m policy.train --checkpoint-every 2 --keep-last 1 --fault-at-step 5` in a subprocess dies at

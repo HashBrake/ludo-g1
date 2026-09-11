@@ -215,8 +215,10 @@ is 4.7 GB, so **delete them from the remote once a run is finished** and keep on
 `compute.disk_guard_factor` (2) × the estimated checkpoint size — 10.32 GB for the configured diffusion
 policy, 1.82 GB for ACT, 1.07 GB for `diffusion_small` — with a message naming Q-002; that estimate is
 printed by every run, and `--no-disk-guard` overrides the refusal. The local smoke command below does
-not pass `--checkpoint-every`: 30 steps never reach the first periodic write, and this laptop has 12 GB. The ACT baseline (5.7) is the same command with its own entry
-point, on the same sessions, so that the comparison always exists.
+not pass `--checkpoint-every`: 30 steps never reach the first periodic write, and this laptop has 12 GB.
+
+The ACT baseline (5.7) is the same command with its own entry point, on the same sessions, so that the
+comparison always exists.
 
 ### The same run without credentials (what is actually tested today)
 

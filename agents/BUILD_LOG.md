@@ -3652,7 +3652,7 @@ goes through `send()` -> `arm.send_targets` / `hand.send_pinch` -> `Guard.admit`
 action, and the test with the lunging policy shows the guard refusing 601 of 602 sends and admitting
 exactly the hold. `config/safety.yaml` untouched, `third_party/` untouched, no `--no-verify` (D-013).
 
-## T-036  Periodic checkpoints, crash resume, pruning and a disk guard  (opus, 2026-09-12T06:20+07:00)
+## T-036  Periodic checkpoints, crash resume, pruning and a disk guard  (opus, 2026-09-12T06:40+07:00, commit 90d73c1)
 
 ### What I changed
 
@@ -3705,7 +3705,12 @@ exactly the hold. `config/safety.yaml` untouched, `third_party/` untouched, no `
 .venv/bin/python -m pytest tests/test_act.py tests/test_diffusion.py -q   # 27 passed in 50 s (1 fixed, see findings)
 .venv/bin/python -m pytest tests/test_greennode_train.py tests/test_config.py -q   # 76 passed in 28 s
 .venv/bin/ruff check .                                                # clean
+git commit                                                            # pre-commit hook: ruff clean,
+                                                                      # 605 passed, 10 skipped in 338 s
 ```
+
+Commit `90d73c1`; this follow-up commit records the hash and repairs a run-together paragraph in
+`docs/cloud.md` (the ACT sentence had been glued to the end of the new one).
 
 | measurement | value |
 |---|---|
