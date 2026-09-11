@@ -217,7 +217,7 @@ result: (opus, 2026-09-11T21:55+07:00, commit 8c03733)
     mechanical range and a joint list that disagrees with config/robot.yaml.
 
 ## T-006  Mock drivers with the real driver interfaces
-status: in_progress
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -235,6 +235,30 @@ acceptance:
   - test: the mock hand maps pinch 0.0 and 1.0 to two distinct 15-joint vectors from config/hand.yaml
   - `grep -rn "Guard(" drivers/ | grep -v mock` is empty (only mocks construct simulated=True; real drivers will use simulated=False)
 notes: Interfaces are the contract for the real drivers in Phase 1; keep them minimal, no features nobody asked for.
+result: (opus, 2026-09-11T20:10+07:00, commit COMMIT_HASH)
+  - `.venv/bin/python -m pytest tests/test_mock_drivers.py -q` -> 51 passed in 1.4 s. Full suite
+    `.venv/bin/python -m pytest -q` -> 275 passed, 1 skipped (225 before). `.venv/bin/ruff check .` ->
+    "All checks passed!". PASS
+  - 10 s of mock arm state at 100 Hz -> exactly 1000 samples, every period exactly 10 000 000 ns,
+    timestamps strictly increasing (test_ten_seconds_of_arm_state_at_100_hz_is_1000_monotonic_samples).
+    Wall time of those 10 s of stream, driver construction included: 41.7 ms. PASS
+  - Out-of-envelope target raises SafetyViolation through the mock's own Guard: 2.5 rad step ->
+    rule=joint_velocity; slow ramp (1.0 rad/s, inside the velocity limit) -> rule=workspace_box at
+    -0.76 rad; NaN -> rule=non_finite; a refused command leaves the simulated arm unmoved. PASS
+  - Camera frames: top (480, 640, 3) uint8, oblique (480, 640, 3) uint8, palm (240, 320, 3) uint8, each
+    equal to its config/cameras.yaml policy_resolution; frame counter round-trips to 2**32-1. PASS
+  - Pinch 0.0 and 1.0 -> the two 15-joint vectors of config/hand.yaml (new `mock.open_pose` /
+    `mock.closed_pose`), 9 of 15 joints differing (the 6 idle ring/pinky joints are identical by
+    design), L1 13.85 rad; synergy(0.5) is their midpoint. PASS
+  - `grep -rn "Guard(" drivers/ | grep -v mock` -> empty (exit 1); the same grep for
+    `Guard.from_config(` is also empty outside drivers/mock/. Both asserted by a test. PASS
+  - Config: added `mock:` blocks to config/robot.yaml (arm_tau_s + status, state_hz, pose_hz + status,
+    pose_cycle_s, pose_radius_m) and config/hand.yaml (open_pose/closed_pose + status, glove_cycle_s,
+    glove_angle_amplitude_deg), per docs/config.md. The real pinch.open_pose/closed_pose stay the
+    literal UNMEASURED. Hashes: robot 1ae6aa90 -> 9dc5e64a, hand 5b615a57 -> 6f1507d5.
+    config/safety.yaml and runtime/config.py REQUIRED_KEYS untouched. Rationale in BUILD_LOG.
+  - Pre-existing flake reported in BUILD_LOG (tests/test_safety.py session-expiry test, ~1 in 6 runs,
+    wall-clock second boundary); not mine to edit under this task.
 
 ## T-007  Engine contract and scripted stub engine
 status: accepted

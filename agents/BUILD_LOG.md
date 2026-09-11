@@ -912,3 +912,91 @@ Gate: `.venv/bin/ruff check .` -> "All checks passed!"; `.venv/bin/python -m pyt
   the heartbeat for a moment, would close it.
 - No disagreement with the task as written beyond the two design calls above. No blockers.
 (T-007 commit: 5cab3e6; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-006  Mock drivers with the real driver interfaces  (opus, 2026-09-11T20:05+07:00)
+
+### What was built
+- `drivers/interfaces.py` — five `typing.Protocol`s (`ArmDriver`, `HandDriver`, `GloveDriver`,
+  `PoseDriver`, `CameraDriver`), all `runtime_checkable`, plus three frozen sample dataclasses
+  (`HandState`, `GloveSample`, `WristPose`). No behaviour, no config, no device knowledge. Every
+  sample is a `runtime.clock.Stamped`; both write calls are documented as guard-only paths.
+- `drivers/mock/ticker.py` — the one timing mechanism: a grid `origin + k*period` on an injectable
+  clock. `ticks()` (drains, for the arm's integration) and `sample()` (newest point, for everything
+  else). No threads, no sleeping.
+- `drivers/mock/g1_arm.py` `MockArm` — first-order lag towards the last **admitted** target,
+  `q += (target-q)*(1-exp(-dt/tau))` per state tick; `poll()` drains the stream, `read_state()`
+  returns the latest. Guard from `Guard.from_config(simulated=True)`; `send_targets` calls
+  `guard.admit(cmd, state, now_ns)` with the *injected* clock, so the rate and velocity limits are
+  judged on the same time base the test controls.
+- `drivers/mock/dexh15.py` `MockHand` — `send_pinch` admits a `MotionCommand` whose joints are held
+  at the rest pose (zero = MJCF `qpos0`) and only the pinch varies, then expands the **admitted**
+  scalar through the synergy; `palm_frame()` is a `MockCamera("palm")`.
+- `drivers/mock/cameras.py` `MockCamera` — one class for all three streams, sized from
+  `policy_resolution`; deterministic gradient frame carrying a 32-bit frame counter in row 0, read
+  back by `frame_index()` (a dropped/repeated frame is provable in the Phase 2 recorder tests).
+- `drivers/mock/pxcap.py` `MockGlove` (17 channels, degrees, triangle-wave pinch),
+  `drivers/mock/pico.py` `MockPose` (metres + xyzw quaternion, pico_bridge conventions).
+- `drivers/__init__.py` — `make(name, backend="mock", **kwargs)` over `DEVICES = (arm, hand, glove,
+  pose, top, oblique, palm)`; camera names checked against `config/cameras.yaml`; `backend="real"`
+  raises `NotImplementedError` naming the device.
+- `tests/test_mock_drivers.py` (51 tests), `docs/drivers.md`.
+
+### Config additions (the one config edit the task allowed; `REQUIRED_KEYS` untouched)
+Both are new top-level `mock:` blocks, read only by `drivers/mock/*.py`, following docs/config.md.
+- `config/robot.yaml` `mock:` — `arm_tau_s: 0.08` (+`_status: UNMEASURED`; a stand-in so Phase 2 has
+  a response to measure, **not** a claim about the arm, whose real number is `latency.arm_ms` plus
+  joint dynamics), `state_hz: 100` (no status: a design choice, pinned by a test to equal
+  `config/training.yaml rates.state_hz`; `control.state_hz: 500` is the real DDS publish rate and
+  would have made the 10 s acceptance check 5000 samples), `pose_hz: 120` (+status, docs/sdks.md
+  7.1), `pose_cycle_s`, `pose_radius_m` (waveform shape, describes nothing real).
+- `config/hand.yaml` `mock:` — `open_pose` / `closed_pose`, 15 values each (+status UNMEASURED), and
+  `glove_cycle_s`, `glove_angle_amplitude_deg`. **The real `pinch.open_pose` / `pinch.closed_pose`
+  are untouched and stay the literal UNMEASURED**: a wrong pose there closes the hand on a finger,
+  and `drivers/dexh15.py` must refuse to run while they are. The mock needed two distinct 15-vectors
+  to interpolate (acceptance 4) and could not get them from a placeholder that must stay a
+  placeholder; the stand-ins are the `joint_limits_rad` extremes for thumb+index+middle and a fixed
+  curl for the idle fingers, identical in both poses as 5.4 requires. A test asserts both that the
+  mock poses are UNMEASURED and that the real ones still are (R5).
+Config hashes changed by this: robot `1ae6aa90` -> `9dc5e64a`, hand `5b615a57` -> `6f1507d5`.
+`unmeasured("robot")` 13 -> 15, `unmeasured("hand")` 12 -> 14. `config/safety.yaml` untouched.
+
+### Commands run and measured results
+- `.venv/bin/python -m pytest tests/test_mock_drivers.py -q` -> **51 passed in 1.4 s**.
+- `.venv/bin/python -m pytest -q` -> **275 passed, 1 skipped in 21.4 s** (225 before, +50 new; the
+  skip is the motion autoskip with no session file).
+- `.venv/bin/ruff check .` -> "All checks passed!".
+- Acceptance 1 — 10 s of mock arm state at 100 Hz: **1000 samples**, every inter-sample period
+  exactly 10 000 000 ns, timestamps strictly increasing, `Stamped.ts_ns == payload.ts_ns` for all.
+  Wall time for those 10 s of stream (driver construction included): **41.7 ms**.
+- Acceptance 2 — out-of-envelope target raises `SafetyViolation`: a 2.5 rad step ->
+  `rule=joint_velocity` ("5.000 rad/s, limit 1.5"); a slow ramp of shoulder pitch (0.02 rad per
+  20 ms = 1.0 rad/s, inside the velocity limit) is refused at -0.76 rad with
+  `rule=workspace_box` ("left_wrist_yaw_link at [0.2842, 0.0954, 0.281] m is outside the box"). A
+  NaN target -> `rule=non_finite`, and a refused command leaves the simulated arm where it was.
+- Acceptance 3 — `top` (480, 640, 3) uint8, `oblique` (480, 640, 3) uint8, `palm` (240, 320, 3)
+  uint8, each matching its `policy_resolution`; `frame_index()` round-trips up to 2**32-1.
+- Acceptance 4 — `synergy(0.0)` and `synergy(1.0)` are the two 15-vectors from `config/hand.yaml`
+  exactly; **9 of 15 joints differ** (the 6 idle ring/pinky joints are identical by design),
+  L1 distance 13.85 rad; `synergy(0.5)` is their midpoint.
+- Acceptance 5 — `grep -rn "Guard(" drivers/ | grep -v mock` -> **empty** (exit 1). The test also
+  greps `Guard.from_config(`, because the mocks use the classmethod and the literal spelling alone
+  would make the criterion vacuous; both are empty outside `drivers/mock/`.
+
+### Notes and deviations
+- The mock hand's guard command holds the arm joints at zero. That is the MJCF `qpos0` rest pose
+  (runtime/fk.py), not a trajectory or a waypoint (R2): the hand is a separate device with its own
+  guard and has no business commanding the arm, but `Guard.admit` takes a whole `MotionCommand`, so
+  something has to fill the joint fields. Documented in the module docstring and in docs/drivers.md.
+- `MockArm.poll()` is mock-only and not part of `ArmDriver`: a real driver's stream comes from its
+  transport. It exists because "10 s of state at 100 Hz" needs a drainable stream to count.
+- Grid periods are integer nanoseconds, so one second of a 30 fps stream is 30 x 33 333 333 ns =
+  999 999 990 ns, not 1e9. Tests assert to within one period rather than pretending otherwise.
+- **Pre-existing flake, not mine:** `tests/test_safety.py::test_guard_on_hardware_stops_the_moment_the_session_expires`
+  failed once in ~6 full-suite runs and passes in isolation and on rerun. Mechanism: it writes
+  `enabled_at = now-59 s` with a 60 s window after truncating to whole seconds, so the session has
+  under ~1 s of validity left and expires between the write and the first `admit` when the run lands
+  near a second boundary. `tests/test_safety.py` is not mine to edit under this task; a 600 s window
+  (or `enabled_at = now - 1`) would close it.
+- No disagreement with the task as written. No blockers. Nothing under `third_party/` touched,
+  nothing imported from `tools/hardware_checks/` (asserted by a test), `hardware/session.enable`
+  neither created nor read for a write path.

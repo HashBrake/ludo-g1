@@ -110,3 +110,24 @@ glove:
   closed_distance_mm_status: UNMEASURED
   input_hz: 50
   input_hz_status: UNMEASURED
+
+# --- mock driver parameters (drivers/mock/dexh15.py, drivers/mock/pxcap.py; T-006) ---------------
+# Read ONLY by drivers/mock/*.py. drivers/dexh15.py (Phase 1, real hand) reads `pinch.open_pose` /
+# `pinch.closed_pose` above and must refuse to run while they are UNMEASURED; it never reads this
+# block. This block exists so that the mocks have no numeric constants of their own (section 7).
+mock:
+  # Stand-in synergy poses, so the mock has two distinct 15-vectors to interpolate between. They are
+  # NOT a proposal for the real synergy: the real poses stay the literal UNMEASURED until the Phase 1
+  # bench test, because a wrong pose closes the hand on a finger. Values here are the extremes of
+  # `joint_limits_rad` for the pinching fingers (thumb + index + middle) and a fixed mid-range curl
+  # for the idle fingers (`pinch.idle_fingers`), identical in both poses as 5.4 requires. Order is
+  # `joint_order`.
+  open_pose:   [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 0.00, 0.00, 0.00]
+  open_pose_status: UNMEASURED
+  closed_pose: [1.39, 1.39, 1.39, 1.39, 1.39, 1.39, 1.00, 1.00, 1.00, 1.00, 1.00, 1.00, 1.91, 1.51, 2.09]
+  closed_pose_status: UNMEASURED
+  # Shape of the synthetic glove stream: every encoder channel is a sine of this amplitude and period,
+  # phase-shifted per channel, and the pinch scalar is a triangle wave of the same period. It
+  # describes nothing real; the mock only needs a bounded, deterministic, repeatable waveform.
+  glove_cycle_s: 4.0
+  glove_angle_amplitude_deg: 40.0

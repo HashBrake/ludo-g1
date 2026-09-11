@@ -128,3 +128,27 @@ latency:
     cross-correlate the commanded step with the measured q; the lag at peak correlation is the
     latency. Same method for the hand (pinch scalar step vs getJointPositionsAngle) and for the input
     streams (shake test against a jointly visible event).
+
+# --- mock driver parameters (drivers/mock/, T-006) -----------------------------------------------
+# Read ONLY by drivers/mock/*.py. No real driver, and nothing under runtime/, policy/ or teleop/,
+# reads this block: it exists so that the mocks have no numeric constants of their own (section 7).
+mock:
+  # First-order lag of the mock arm: q += (target - q) * (1 - exp(-dt / arm_tau_s)) on every state
+  # tick. A stand-in so that Phase 2 latency tooling has something to measure against mocks; it is
+  # NOT a claim about the real arm, whose command-to-response behaviour is `latency.arm_ms` plus the
+  # joint's own dynamics and is measured in Phase 1.
+  arm_tau_s: 0.08
+  arm_tau_s_status: UNMEASURED
+  # Rate of the mock state stream. Equal to config/training.yaml `rates.state_hz` (CLAUDE.md 5.2),
+  # which a test pins; the real G1 publishes LowState_ at `control.state_hz` and the driver
+  # subsamples. A design choice, not a measurement, so it carries no status key.
+  state_hz: 100
+  # Rate of the mock controller-pose stream: the lab's `pico_input_hz` (docs/sdks.md 7.1). The real
+  # rate is whatever pico_bridge delivers and is a Phase 1 measurement.
+  pose_hz: 120
+  pose_hz_status: UNMEASURED
+  # Shape of the synthetic 6-DoF wrist pose: one revolution of a circle of `pose_radius_m` metres
+  # every `pose_cycle_s` seconds. Describes nothing real; the mock only needs a bounded,
+  # deterministic, repeatable path.
+  pose_cycle_s: 8.0
+  pose_radius_m: 0.1
