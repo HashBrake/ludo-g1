@@ -168,3 +168,127 @@ dataset.
 - Not a die reader, not a perception system, not an opponent worth playing.
 - Not a place to grow features. When the engine team delivers, `engine/stub.py` is deleted and
   `engine/interface.py` stays exactly as it is. That is the whole point of the split.
+
+## The engine over a socket (T-039)
+
+The real engine is another team's process. `engine/net.py` is the client, `engine/schema.py` is the
+wire format, and `engine/serve_stub.py` serves `StubEngine` on it so the remote path runs today:
+
+```bash
+.venv/bin/python -m engine.serve_stub --bind 127.0.0.1:5555 --seed 0
+.venv/bin/python -m runtime.controller --backend mock --engine tcp://127.0.0.1:5555 --seconds 20
+```
+
+```python
+from engine.net import NetEngineClient
+with NetEngineClient("tcp://127.0.0.1:5555") as engine:   # or NetEngineClient() for the configured url
+    cmd = engine.next_command()
+```
+
+`NetEngineClient` **is** an `EngineClient`: same three methods, same frozen dataclasses, same
+`RuntimeError` on contract misuse. `runtime/controller.py` cannot tell it from the in-process stub,
+and `build(..., engine=<url>)` is the only line that differs.
+
+**This is a plain TCP protocol, not ZeroMQ.** The task allowed ZeroMQ REQ/REP only if `pyzmq` were
+already installed (`.venv/bin/python -c "import zmq"` fails) and T-039 was not to add a dependency, so
+the transport is JSON lines over TCP from the standard library and the URL scheme is `tcp://`. A
+`zmq://` URL is accepted as a synonym and speaks the same protocol; nothing in this section depends on
+either library, which is the point -- the engine team implements *this document*, in whatever language.
+
+### The frame
+
+One JSON object per line, UTF-8, `\n` terminated. One request, one response, in order, on one
+connection (REQ/REP semantics). `json.dumps` escapes any newline inside a string, so a line break is
+always a frame boundary. Either end refuses a frame over 8 MiB (`schema.MAX_FRAME_BYTES`) rather than
+buffering without bound.
+
+Every message carries `"v"`, the schema version, currently **1**. A peer that receives another version
+refuses the frame (`ProtocolError`) instead of guessing at fields it does not know; bump the version
+only for a change a v1 peer could not read correctly.
+
+### The three ops
+
+`next_command` -- the next command, or `null` when there is nothing left to play:
+
+```json
+--> {"v":1,"op":"next_command"}
+<-- {"v":1,"ok":true,"result":{"primitive":"move",
+                               "src":{"id":"R-base-0","board_xy_mm":[-220.0,-220.0],"top_px":null},
+                               "dst":{"id":"track-12","board_xy_mm":[40.0,280.0],"top_px":null},
+                               "horse_id":"R0"}}
+<-- {"v":1,"ok":true,"result":null}
+```
+
+`report` -- exactly one per command handed out:
+
+```json
+--> {"v":1,"op":"report","outcome":{"success":false,
+                                    "observed_state_delta":{"horses":{"R0":["R-base-0","track-12"]}},
+                                    "failure_mode":"grasp_failed"}}
+<-- {"v":1,"ok":true,"result":null}
+```
+
+`board_state` -- the engine's view of the board, any JSON object:
+
+```json
+--> {"v":1,"op":"board_state"}
+<-- {"v":1,"ok":true,"result":{"robot_color":"R","game":0,"turn":3,"winner":null,"die":4,
+                               "horses":{"R0":"track-12"},"progress":{"R0":0},"failures":[]}}
+```
+
+| type | on the wire |
+|---|---|
+| `Primitive` | its value string: `"move"`, `"roll"`, `"recover"` |
+| `Cell` | `{"id": str, "board_xy_mm": [x, y], "top_px": [u, v] \| null}`; a `null` cell is a `None` cell |
+| `Command` | `{"primitive", "src", "dst", "horse_id"}`; `null` means "nothing left to play" |
+| `Outcome` | `{"success": bool, "observed_state_delta": object, "failure_mode": str \| null}` |
+
+### Errors: said no, versus not there
+
+An exception on the engine side is a **response**, not a dropped connection:
+
+```json
+<-- {"v":1,"ok":false,"error":{"type":"RuntimeError","message":"report() the outstanding roll first"}}
+```
+
+The client raises `schema.RemoteEngineError` (a `RuntimeError`, carrying `remote_type`), the
+connection stays up and the far side's state machine is untouched -- so the contract misuse that
+raises `RuntimeError` in process raises `RuntimeError` over a socket too.
+
+A **transport** failure is different: no connection, no response inside the budget, or a peer that
+went away raises `net.EngineUnavailable` (also a `RuntimeError`, but a class of its own). The two are
+never confused, because "the engine said no" and "the engine is not there" need different answers.
+
+### Timeouts and reconnection
+
+`config/training.yaml`:
+
+```yaml
+engine:
+  url: tcp://127.0.0.1:5555
+  request_timeout_s: 2.0
+  connect_timeout_s: 2.0
+```
+
+Every call is bounded end to end by `request_timeout_s`: the client never holds the controller's tick
+longer than that, whatever the far side does (including accepting the connection and then saying
+nothing, the case a naive client hangs on forever). On a timeout or a dropped peer the socket is
+closed and `EngineUnavailable` is raised; the **next** call reconnects, so an engine that restarts is
+picked up without restarting the controller. The connection is lazy -- constructing a client touches
+no socket -- so a controller can be built before the engine process is up.
+
+Budget note: the controller makes **one** `next_command`, **one** `report` and one `board_state` per
+command, plus one `board_state` per watchdog sample (`runtime.watchdog_interval_s`, 1 s). A 20 s
+primitive is therefore ~24 round trips, not 200: the engine is not in the 10 Hz path.
+
+### The served stub
+
+`engine/serve_stub.py` wraps any `EngineClient` (`StubServer(engine, "127.0.0.1:5555")`) and answers
+one connection at a time, requests in order. One connection is not a limitation but the contract:
+there is one outstanding command at any moment, so a second concurrent client would corrupt the state
+machine rather than share it. A client that disconnects frees the server for the next one, which is
+how the client's reconnect works. `--bind 127.0.0.1:0` takes a free port and prints `listening
+tcp://host:port` on stdout, which is what the tests read.
+
+The served stub is the same object as the in-process one, so the same seed produces the same stream:
+`tests/test_engine_net.py` drives 50 commands through both and compares them command by command.

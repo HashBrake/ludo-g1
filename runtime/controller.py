@@ -348,12 +348,17 @@ class Controller:
         return s
 
 
-def build(backend: str = "mock", *, seed: int = 0, policy: Policy | None = None, **kwargs) -> Controller:
-    """Wire a controller onto one backend: drivers, the stub engine and the placeholder pieces.
+def build(backend: str = "mock", *, seed: int = 0, policy: Policy | None = None,
+          engine: str | EngineClient = "stub", **kwargs) -> Controller:
+    """Wire a controller onto one backend: drivers, an engine and the placeholder pieces.
 
     ``backend="real"`` raises from :func:`drivers.make` until the Phase 1 drivers exist, and the
     default :class:`~runtime.policy_api.HoldPolicy` is refused on any backend but ``mock`` (R2): a
     real robot is never driven by a placeholder.
+
+    ``engine`` is ``"stub"`` (the in-process :class:`~engine.stub.StubEngine` on ``seed``), a URL of
+    an engine serving the protocol of ``engine/schema.py`` (``engine/net.py``, T-039), or an
+    :class:`~engine.interface.EngineClient` to use as given.
     """
     from drivers import make  # local: importing a driver costs nothing until one is built
     from engine.stub import StubEngine
@@ -366,11 +371,18 @@ def build(backend: str = "mock", *, seed: int = 0, policy: Policy | None = None,
             )
         policy = HoldPolicy()
     passthrough = {k: kwargs[k] for k in ("config_root", "now_ns") if kwargs.get(k) is not None}
+    if isinstance(engine, str):
+        if engine == "stub":
+            engine = StubEngine(seed)
+        else:
+            from engine.net import NetEngineClient  # local: no socket code on the in-process path
+
+            engine = NetEngineClient(engine, config_root=kwargs.get("config_root"))
     return Controller(
         arm=make("arm", backend, **passthrough),
         hand=make("hand", backend, **passthrough),
         cameras={name: make(name, backend, **passthrough) for name in ("top", "oblique")},
-        engine=StubEngine(seed),
+        engine=engine,
         policy=policy,
         perception=MockPerception(),
         **kwargs,
@@ -384,20 +396,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seconds", type=float, default=60.0, help="run length in seconds (default 60)")
     parser.add_argument("--max-commands", type=int, default=None, help="stop after this many commands")
     parser.add_argument("--seed", type=int, default=0, help="stub engine seed (default 0)")
+    parser.add_argument("--engine", default="stub",
+                        help="stub (default, in process) or the tcp:// url of an engine serving the "
+                             "protocol of engine/schema.py (see engine/serve_stub.py)")
     parser.add_argument("--session", default=None, help="session id, used for the heartbeat file name")
     parser.add_argument("--json-logs", action="store_true", help="JSON log lines instead of key=value")
     args = parser.parse_args(argv)
 
+    from engine.net import EngineUnavailable  # local: the in-process engine path opens no socket
     from runtime.log import configure
 
     configure(json=args.json_logs)
     try:
-        controller = build(args.backend, seed=args.seed, session=args.session)
+        controller = build(args.backend, seed=args.seed, engine=args.engine, session=args.session)
     except NotImplementedError as exc:
         print(f"cannot run on backend {args.backend!r}: {exc}")
         return 2
-    summary = controller.run(seconds=args.seconds, max_commands=args.max_commands)
-    print(f"\ncontroller run summary (session {controller.session}, backend {args.backend})")
+    except ValueError as exc:
+        print(f"cannot use engine {args.engine!r}: {exc}")
+        return 2
+    try:
+        summary = controller.run(seconds=args.seconds, max_commands=args.max_commands)
+    except EngineUnavailable as exc:
+        # A networked engine that is not there ends the run with the reason, not with a traceback.
+        # The loop itself is untouched: nothing retries an engine call, here or in Controller.run.
+        print(f"engine unavailable: {exc}")
+        return 3
+    print(f"\ncontroller run summary (session {controller.session}, backend {args.backend}, "
+          f"engine {args.engine})")
     for line in summary.lines():
         print(f"  {line}")
     print(f"  heartbeat          {controller.heartbeat_path}")

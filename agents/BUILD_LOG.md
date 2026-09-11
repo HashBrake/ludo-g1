@@ -3934,3 +3934,100 @@ from `tools/hardware_checks/`. R3: no guard is built because there is no command
 `config/safety.yaml` untouched. `hardware/session.enable` neither created, edited nor read. Nothing
 under `third_party/` modified or written to (the bundle is only read, and one `.so` of it is loaded
 into memory). Committed through the full pre-commit gate, no `--no-verify` (D-013).
+
+## T-039  Network engine client: the 5.5 contract over a socket  (opus, 2026-09-12T07:10+07:00)
+
+### Protocol choice: TCP JSON-lines, not ZeroMQ
+`.venv/bin/python -c "import zmq"` -> `ModuleNotFoundError: No module named 'zmq'`. pyzmq is not a
+transitive dependency of this project's environment, and T-039 may add none, so the task's stated
+fallback applies: a plain TCP JSON-lines protocol from the standard library. The acceptance URL is
+therefore `tcp://127.0.0.1:5555`, not `zmq://...` (a `zmq://` URL is accepted as a synonym and speaks
+the same protocol, so a URL written against the task's wording connects instead of failing obscurely).
+
+### What was built
+- **`engine/schema.py`** (240 lines): the wire format, in one place and versioned (`{"v": 1, ...}`).
+  Encode/decode for `Cell`, `Command`, `Outcome`; `request`/`ok_response`/`error_response`/`result_of`;
+  `handle(engine, message)`, the single dispatch of the three ops, used by the server. One JSON object
+  per line, 8 MiB frame cap. A frame of another version is refused (`ProtocolError`), never guessed at.
+  An engine-side exception is a *response* (`{"ok": false, "error": {...}}`), which the client re-raises
+  as `RemoteEngineError(RuntimeError)` -- so the contract misuse that raises `RuntimeError` in process
+  raises `RuntimeError` over a socket, and the connection stays up.
+- **`engine/net.py`** (205 lines): `NetEngineClient(url)`, an `EngineClient`. Lazy connect (a client
+  can be constructed before the engine is up), one request/one response in lock step, every call
+  bounded end to end by `engine.request_timeout_s`; on a timeout, a refused connection or a peer that
+  went away it raises `EngineUnavailable(RuntimeError)`, closes the socket, and the next call
+  reconnects. `parse_url` rejects a scheme it cannot speak at construction (port 0 is honoured as a
+  real request, not read as "use the default").
+- **`engine/serve_stub.py`** (165 lines): `StubServer(engine, bind)` + `python -m engine.serve_stub
+  --bind --seed --script --json-logs`. One connection at a time, requests in order (the contract has
+  one outstanding command, so a second concurrent client would corrupt the state machine); a client
+  that disconnects frees the server, which is how the client's reconnect works. `--bind host:0` takes
+  a free port and prints `listening tcp://host:port` on stdout, which is how the tests learn it.
+- **`runtime/controller.py`**: `--engine` (`stub`, default, or a URL) wired through `build(...,
+  engine=...)`, which also accepts an `EngineClient` object. `main()` turns an unspeakable URL into
+  exit 2 and an engine that is not there into `engine unavailable: ...` + exit 3, instead of a
+  traceback or a hang. The loop itself is untouched: nothing retries an engine call.
+- **`config/training.yaml`**: an `engine:` block (`url`, `request_timeout_s: 2.0`,
+  `connect_timeout_s: 2.0`). No placeholder values -- design choices, as that file requires.
+- **`docs/engine.md`**: "The engine over a socket (T-039)" -- the frame, the version rule, one JSON
+  example per op, the type table, the error model, the timeout/reconnect rules, the round-trip budget,
+  and what the served stub is. **`docs/controller.md`**: a "Which engine (`--engine`)" section.
+- **`tests/test_engine_net.py`** (43 tests): schema round trips, version and malformed-frame refusal,
+  URL parsing, the two acceptance checks, reconnect, remote errors, the frame cap, and the controller
+  CLI against a served engine. Every socket-wait test asserts an *elapsed time* as well as an
+  exception type, because "does not hang" is the criterion.
+
+### Commands run and measured results
+- `.venv/bin/python -c "import zmq"` -> ModuleNotFoundError (the protocol decision above).
+- `.venv/bin/ruff check .` -> All checks passed!
+- `.venv/bin/python -m pytest tests/test_engine_net.py -q` -> **43 passed in 4.15 s**.
+- `.venv/bin/python -m pytest tests/test_controller.py tests/test_engine_stub.py tests/test_config.py
+  tests/test_eval.py -q` -> **156 passed in 29.82 s** (the `engine:` config block and the `build()`
+  signature change break nothing).
+- Acceptance, two terminals:
+  `.venv/bin/python -m engine.serve_stub --bind 127.0.0.1:5555 --seed 0`
+  -> `listening tcp://127.0.0.1:5555`, then `serving engine=StubEngine`.
+  `.venv/bin/python -m runtime.controller --backend mock --engine tcp://127.0.0.1:5555 --seconds 20`
+  -> exit 0. Summary: `elapsed 20.06 s; commands executed 1 (roll=1); 0 success, 1 failure;
+  failure modes policy_stalled=1; stopped by watchdog=1; policy calls 199 = 9.92 Hz; actions sent
+  595 = 29.66 Hz; safety refusals 0; alignment failures 0`. The one command came off the socket
+  (`engine_connected host=127.0.0.1 port=5555`); the ROLL stalls because `HoldPolicy` never moves,
+  which is D-013 item 3 and R5, not a transport fault. Server side counted **24 requests** for that
+  one command: 1 `next_command` + 1 `report` + 2 `board_state` + 20 watchdog `board_state` samples
+  (one per `runtime.watchdog_interval_s`). The engine is not in the 10 Hz path; the number is in
+  docs/engine.md so the engine team sizes their server for it.
+- The 50-command parity check (acceptance deliverable 2) is
+  `test_fifty_commands_over_a_subprocess_match_the_in_process_stub`: `StubEngine(7)` in process versus
+  the same seed served by a `python -m engine.serve_stub` subprocess; it compares all 50 commands by
+  `(primitive, src.id, dst.id, horse_id)` **and** by full dataclass equality, then compares the two
+  `board_state()` dicts, and asserts 101 requests with 0 reconnects.
+- The dropped-server check is `test_a_dropped_server_raises_engine_unavailable_and_does_not_hang`:
+  the server subprocess is killed mid-game; the next call raised `EngineUnavailable` in **< 2.5 s**
+  (budget 2.0 s) with the URL in the message, and the call after that reconnected and reported
+  `cannot connect`. Two more: a socket that accepts and never answers times out inside its 0.5 s
+  budget (measured 0.4-1.5 s window), and the controller CLI against a dead port returns 3 in well
+  under its `--seconds 5`.
+
+### Disagreements and gaps
+- **`docs/config.md` does not mention the new `engine:` block.** That file was outside this task's
+  touch list (it was named only for the "new config file" branch, and I used `config/training.yaml`
+  instead, to avoid changing `config.NAMES`, which `tests/test_config.py` pins to six files and which
+  I may not edit). The block is documented in `docs/engine.md` and commented in the yaml itself. One
+  paragraph in `docs/config.md` closes it whenever Fable wants it.
+- **The engine block is not in `REQUIRED_KEYS`**, for the same reason (`runtime/config.py` was in the
+  touch list only for the new-file branch). It is in the same position as the existing `runtime:` and
+  `recorder:` blocks of that file, neither of which is in the schema either; `engine/net.py` raises a
+  `ConfigError` naming the block if it is missing.
+- `engine/net.py` accepts `zmq://` as a synonym for `tcp://`. Strictly the task's URL is unavailable,
+  and a hard rejection would be the more honest failure; I judged "connects and does the right thing"
+  better than "fails on a URL a reader of TASKS.md would naturally type", and both docs say plainly
+  that the transport is not ZeroMQ.
+
+### Safety
+R1: nothing here can produce a motion command -- `engine/` builds no `Guard`, touches no driver, and
+the acceptance run used `--backend mock` (a simulated robot, exempt by R1; every send still went
+through `Guard.admit`, 0 refusals). `hardware/session.enable` neither created, edited nor read. R2: no
+scripted motion, no literal joint target; the commands come from the stub over a socket and the
+motions from `HoldPolicy`. R3: `config/safety.yaml` untouched. Nothing under `third_party/` touched.
+The server binds loopback by default and speaks only the three contract ops. Committed through the
+full pre-commit gate, no `--no-verify` (D-013).

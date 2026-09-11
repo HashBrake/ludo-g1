@@ -63,6 +63,22 @@ runtime:
   # policy sooner than a working-but-slow one; it is not a safety limit (that is config/safety.yaml).
   watchdog_stall_s: 20.0
 
+# --- the networked game engine (5.5): engine/net.py, engine/serve_stub.py --------------------------
+# Where the real game engine listens and how long the controller waits for it. Design choices, not
+# measurements: the engine team has not delivered a process yet, and when it does, only `url` changes.
+# The protocol is the JSON-lines schema of engine/schema.py (docs/engine.md); pyzmq is not installed
+# and T-039 added no dependency, so the scheme is tcp://.
+engine:
+  # `--engine` on runtime/controller.py and `--bind` on engine/serve_stub.py both default to this.
+  url: tcp://127.0.0.1:5555
+  # An engine call must never hold the 10 Hz control tick (100 ms) for long, and it is called three
+  # times per command, not per tick. 2.0 s is generous for a local process and still bounded: past it
+  # the call raises EngineUnavailable, the socket is dropped and the next call reconnects.
+  request_timeout_s: 2.0
+  # Connecting is a separate budget from answering: a refused connection fails immediately, and this
+  # only bounds the case where the host accepts packets but never completes the handshake.
+  connect_timeout_s: 2.0
+
 # --- the teleop recorder (5.2, 5.6): teleop/recorder.py --------------------------------------------
 # Design choices, not measurements. The per-path latencies the recorder compensates with are in
 # config/robot.yaml `latency.*` and are Phase 1 measurements; nothing here is one.

@@ -1577,7 +1577,7 @@ result: (opus, 2026-09-12T05:10+07:00, commit 54be930)
     the pre-commit hook -> 596 passed, 10 skipped in 311 s (586 passed before this task). PASS
 
 ## T-039  Network engine client for the real game engine (contract of CLAUDE.md 5.5 over a socket)
-status: in_progress
+status: review
 priority: P2
 phase: 5
 owner: opus
@@ -1594,6 +1594,30 @@ acceptance:
   - tests pass; `runtime.controller --backend mock --engine zmq://127.0.0.1:5555 --seconds 20` works against serve_stub
     (command and output in BUILD_LOG.md)
 notes: This is the integration point the engine team will target; keep the schema in one place and versioned.
+result: (opus, 2026-09-12T07:10+07:00, commit COMMIT_HASH)
+  - Protocol: **TCP JSON-lines**, not ZeroMQ. `.venv/bin/python -c "import zmq"` -> ModuleNotFoundError, and T-039 adds no
+    dependency, so the task's stated fallback applies and the acceptance URL is `tcp://127.0.0.1:5555` (a `zmq://` URL is
+    accepted as a synonym for the same protocol). Schema in one place and versioned: engine/schema.py, `{"v": 1, ...}`.
+  - Built: engine/schema.py (wire format + the one dispatch), engine/net.py (`NetEngineClient`, `EngineUnavailable`),
+    engine/serve_stub.py (`StubServer` + `python -m engine.serve_stub --bind --seed --script`), `--engine` on
+    runtime.controller wired through `build()`, an `engine:` block in config/training.yaml (url, request_timeout_s 2.0,
+    connect_timeout_s 2.0), the schema and the timeout/reconnect rules in docs/engine.md, `--engine` in docs/controller.md.
+  - `.venv/bin/python -m pytest tests/test_engine_net.py -q` -> 43 passed in 4.15 s. PASS
+  - 50 commands round trip identical: `test_fifty_commands_over_a_subprocess_match_the_in_process_stub` drives StubEngine(7)
+    in process against the same seed served by a `python -m engine.serve_stub` subprocess; all 50 compared by
+    (primitive, src.id, dst.id, horse_id) and by full dataclass equality, plus both `board_state()` dicts. PASS
+  - Dropped server: `test_a_dropped_server_raises_engine_unavailable_and_does_not_hang` kills the server subprocess; the next
+    call raised EngineUnavailable in < 2.5 s (2.0 s budget) naming the URL, and the following call reconnected and reported
+    "cannot connect". A server that accepts and never answers raises inside its 0.5 s budget. PASS
+  - Acceptance run: `.venv/bin/python -m engine.serve_stub --bind 127.0.0.1:5555 --seed 0` then
+    `.venv/bin/python -m runtime.controller --backend mock --engine tcp://127.0.0.1:5555 --seconds 20` -> exit 0,
+    "commands executed 1 (roll=1), 0 success 1 failure, failure modes policy_stalled=1, stopped by watchdog=1,
+    policy calls 199 = 9.92 Hz, actions sent 595 = 29.66 Hz, safety refusals 0, alignment failures 0"; the server logged 24
+    requests for that command (1 next_command + 1 report + 2 + 20 watchdog board_state). Full output in BUILD_LOG.md. PASS
+  - Regression: `pytest tests/test_controller.py tests/test_engine_stub.py tests/test_config.py tests/test_eval.py -q` ->
+    156 passed; `.venv/bin/ruff check .` -> All checks passed!
+  - Gaps (BUILD_LOG): the `engine:` block is not in docs/config.md and not in `REQUIRED_KEYS`, both files being outside this
+    task's touch list for the training.yaml branch; it sits exactly where the existing `runtime:`/`recorder:` blocks do.
 
 ## T-038  Board perception from the top camera on synthetic images (placeholder until the engine team delivers)
 status: todo

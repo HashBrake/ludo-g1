@@ -18,6 +18,23 @@ print("\n".join(summary.lines()))
 `--backend real` refuses: the Phase 1 drivers do not exist, and `build()` refuses a placeholder
 policy on anything but mocks anyway (R2, below).
 
+## Which engine (`--engine`)
+
+`--engine stub` (the default) is the in-process `StubEngine` on `--seed`. `--engine <url>` is a game
+engine in another process, reached with `engine/net.py` over the protocol of `docs/engine.md`:
+
+```bash
+.venv/bin/python -m engine.serve_stub --bind 127.0.0.1:5555 --seed 0     # terminal 1
+.venv/bin/python -m runtime.controller --backend mock --engine tcp://127.0.0.1:5555 --seconds 20
+```
+
+The loop is identical either way -- a `NetEngineClient` *is* an `EngineClient` -- and `build("mock",
+engine=<url or an EngineClient>)` is the programmatic form. A URL the client cannot speak fails at
+construction (exit 2); an engine that is not there, or that stops answering, ends the run with
+`engine unavailable: ...` and exit 3 rather than a traceback or a hang, because every call is bounded
+by `engine.request_timeout_s` (2 s, `config/training.yaml`). Nothing in the loop retries an engine
+call: a run against a vanished engine stops, and the trial log keeps what it had.
+
 ## The cycle
 
 ```
