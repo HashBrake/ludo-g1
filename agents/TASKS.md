@@ -1104,7 +1104,7 @@ acceptance:
 notes: No credentials in git.
 
 ## T-032  Teleop loop on mocks: pose and glove in, IK, Guard, arm and hand out, recorder and UI attached
-status: in_progress
+status: review
 priority: P1
 phase: 2
 owner: opus
@@ -1126,3 +1126,26 @@ acceptance:
   - tests pass with the printed rate, error and timings; full suite green; ruff clean
 notes: No hardware; the real pose/glove/arm/hand drivers arrive in Phase 1 and slot into the same constructor. This is the
   path that will produce every training episode, so keep it small and obviously correct (under 250 lines).
+result: (opus, 2026-09-13T14:40+07:00, commit COMMIT_HASH)
+  - `.venv/bin/python -m pytest tests/test_teleop_loop.py -q` -> 14 passed. `.venv/bin/python -m pytest -q` ->
+    465 passed, 4 skipped (451 before). `.venv/bin/ruff check .` -> "All checks passed!". PASS
+  - 30 s run on mocks, fake clock: 901 ticks in 30.033 s = 30.000 Hz (budget 30 +/- 0.5), 901 admitted,
+    0 refused, printed by the test. PASS
+  - arm follows the IK target: |state - last admitted target| = 0.00274 rad, worst of the 8 joints, mock arm
+    tau 0.08 s (budget < 0.02 rad), printed. PASS
+  - ArmIK.solve per tick: mean 0.598 ms, p99 1.028 ms over 901 ticks (one 30 Hz period is 33.3 ms), printed. PASS
+  - out-of-box pose (the shipped mock circle, centred on the pelvis), 2 s: 61 ticks, 0 admitted, 61 refused
+    (workspace_box 37, joint_velocity 24), arm state still exactly the zero rest pose, guard.admitted == 0,
+    0 frames recorded. PASS
+  - recorded episode (3 s, recorder + operator UI): every `action` row is a command the guard admitted, in the
+    order it admitted them; 0 refused commands recorded. PASS
+  - `python -m teleop.loop --backend mock --seconds N` runs and prints rate, sends, frames, refusals by rule and
+    the IK timings; `--backend real` exits 2 from drivers.make. PASS
+  - teleop/loop.py is 248 lines (notes asked for under 250). PASS
+  - deviation logged in BUILD_LOG: the loop passes `GloveSample.pinch` through instead of calling
+    `pinch_from_glove`, because the tip-to-tip distance that function needs is the Phase 1 glove driver's to
+    compute (docs/teleop.md, T-020); `config/robot.yaml` gained `mock.pose_center_m` (default [0,0,0], no
+    behaviour change) so the one mock pose driver can be placed inside or outside the box.
+  - finding logged in BUILD_LOG: teleop has no clutch, so the first command of a session steps 0.443 rad in one
+    tick (allowed only by the command_gap_reset_s reference) or is refused 61 ticks running; proposed as a
+    follow-up task to be accepted before the first Phase 1 motion session.

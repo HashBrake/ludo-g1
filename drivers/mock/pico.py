@@ -7,9 +7,12 @@ no write call, no guard, nothing here can move anything.
 Conventions are pico_bridge's and are carried through unchanged: position in **metres**, rotation as
 a unit quaternion in **xyzw** order, in the headset's own frame -- ``teleop/retarget.py`` owns the
 transform into the robot frame (D-006), not the driver. The path is a circle of ``mock.pose_radius_m``
-traversed once per ``mock.pose_cycle_s`` with the wrist turning about z at the same rate, sampled on
-the ``mock.pose_hz`` grid (all in ``config/robot.yaml``). It describes no real hand: it exists so
-that alignment, skew and replay tests have a smooth, bounded, repeatable stream.
+traversed once per ``mock.pose_cycle_s`` with the wrist turning about z at the same rate, centred on
+``mock.pose_center_m`` and sampled on the ``mock.pose_hz`` grid (all in ``config/robot.yaml``). It
+describes no real hand: it exists so that alignment, skew and replay tests have a smooth, bounded,
+repeatable stream. The centre is configurable for one reason: a consumer that retargets this pose on
+to the arm (``teleop/loop.py``) needs a path the arm can reach and one it cannot, and the difference
+between those two is where the circle sits -- not a second mock.
 """
 
 from __future__ import annotations
@@ -42,11 +45,17 @@ class MockPose:
         self._ticker = Ticker(float(mock["pose_hz"]), now_ns)
         self._cycle_s = float(mock["pose_cycle_s"])
         self._radius_m = float(mock["pose_radius_m"])
+        self._center_m = np.asarray(mock["pose_center_m"], dtype=np.float64).reshape(-1)
+        if self._center_m.shape != (3,):
+            raise config.ConfigError(
+                f"config/robot.yaml: mock.pose_center_m must hold 3 metres, got {mock['pose_center_m']!r}"
+            )
         if not self._cycle_s > 0:
             raise config.ConfigError(f"config/robot.yaml: mock.pose_cycle_s must be positive, got {self._cycle_s}")
 
     def __repr__(self) -> str:
-        return f"MockPose(hz={self._ticker.hz:g}, cycle_s={self._cycle_s:g}, radius_m={self._radius_m:g})"
+        return (f"MockPose(hz={self._ticker.hz:g}, cycle_s={self._cycle_s:g}, radius_m={self._radius_m:g}, "
+                f"center_m={self._center_m.tolist()})")
 
     def read(self) -> Stamped[WristPose]:
         """The pose the stream is showing now, stamped with its grid time."""
@@ -56,6 +65,7 @@ class MockPose:
     def pose_at(self, ts_ns: int) -> WristPose:
         """The pose this mock produces at ``ts_ns``."""
         theta = 2.0 * math.pi * (ts_ns / 1e9) / self._cycle_s
-        position = self._radius_m * np.array([math.cos(theta), math.sin(theta), 0.5 * math.sin(2.0 * theta)])
+        offset = self._radius_m * np.array([math.cos(theta), math.sin(theta), 0.5 * math.sin(2.0 * theta)])
+        position = self._center_m + offset
         quat = np.array([0.0, 0.0, math.sin(theta / 2.0), math.cos(theta / 2.0)])
         return WristPose(position_m=position, quat_xyzw=quat)

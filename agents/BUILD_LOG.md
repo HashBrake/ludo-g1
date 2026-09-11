@@ -2374,3 +2374,102 @@ which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
 (T-028 commit: 6628491, which holds all of the code, tests and docs of this task. This line and the
 TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full pre-commit
 gate — no `--no-verify`, per D-013 item 1; an amend cannot fold in the hash it is recording.)
+
+## T-032  Teleop loop on mocks: pose and glove in, IK, Guard, arm and hand out  (opus, 2026-09-13T14:40+07:00)
+
+Worktree `wt/t032` at /home/alois/Desktop/ludo-g1-wt-t032; the main tree was touched only by
+`tools/worktree_setup.sh`.
+
+### What I changed
+
+- `teleop/loop.py` (new, 248 lines). `TeleopLoop(pose_driver, glove_driver, arm, hand, cameras,
+  engine, recorder, ui, now_ns, sleep_until, ik, config_root)`. One `tick()`: read pose + glove ->
+  `pico_to_g1_base` -> `ArmIK.solve` seeded from `arm.read_state()` -> `MotionCommand` ->
+  `arm.send_targets` / `hand.send_pinch` (each admits through its own `Guard`, R1/R3) -> the
+  *admitted* command to `ui.tick()` (hence the recorder), else `recorder.poll()` / `camera.grab()`,
+  which are read-only and allowed with no session. A `SafetyViolation` is counted by rule, logged and
+  the tick continues. `run(seconds)` ticks on `Recorder.next_grid_ns` when a recorder is attached and
+  on one `rates.action_hz` period otherwise, dropping missed instants rather than firing catch-up
+  commands. `LoopStats` counts ticks, sends, frames, refusals by rule and every IK solve time.
+  `build()` wires one backend (`real` raises from `drivers.make`); `main()` is
+  `python -m teleop.loop --backend mock --seconds N`.
+- `tests/test_teleop_loop.py` (new, 14 tests) on mocks and a fake clock.
+- `config/robot.yaml`: added `mock.pose_center_m: [0.0, 0.0, 0.0]` (a design choice about a synthetic
+  stream, so no `_status` key; `REQUIRED_KEYS` untouched). `drivers/mock/pico.py` reads it and offsets
+  the circle by it. Nothing else in the file changed and `tests/test_mock_drivers.py` is untouched and
+  green: the default is the origin, which is where the circle already was.
+- `docs/teleop.md`: new "The teleop loop" section (per-tick table, the grid, the pinch note, the
+  engage finding, the measurements) and "What is not here yet" rewritten around T-020 and T-021.
+
+### Why the mock circle needed a centre
+
+The IK target must be reachable *and* inside the workspace box for a session that works, and neither
+for the refusal case. The shipped mock pose is a 0.1 m circle about the pico frame origin, which
+under the placeholder identity `teleop.pico_to_pelvis` is the pelvis itself: outside the box on x
+(box min 0.17 m) and unreachable. Rather than write a second mock or a bespoke pose driver in the
+test, the one mock is now parameterised: the test's config copy puts the centre at [0.28, 0.15, 0.12]
+with radius 0.06 m and one turn per 120 s, and the shipped config is the out-of-box case. Measured
+before choosing: identity-orientation targets solve to under 1 mm over x 0.20..0.35, y 0.05..0.25 at
+z 0.10..0.15, and a full wrist turn (the mock's default 8 s cycle) is *not* reachable -- at 8 s the
+solver flips configuration and asks for up to 2.8 rad in a tick. 120 s sweeps a quarter turn in 30 s.
+
+### Commands run, and what they measured
+
+```
+.venv/bin/python -m pytest tests/test_teleop_loop.py -q     # 14 passed
+.venv/bin/python -m pytest -q                               # 465 passed, 4 skipped, 172.6 s
+.venv/bin/ruff check .                                      # All checks passed!
+.venv/bin/python -m teleop.loop --backend mock --seconds 2  # CLI, shipped config
+```
+
+| | |
+|---|---|
+| 30 s session on mocks, fake clock | 901 ticks in 30.033 s = **30.000 Hz** (budget 30 +/- 0.5), 901 admitted, **0 refused** |
+| arm tracking, mock lag `tau` 0.08 s | \|state - last admitted target\| = **0.00274 rad**, worst of the 8 joints (budget < 0.02) |
+| `ArmIK.solve` per tick | mean **0.598 ms**, p99 **1.028 ms** over 901 ticks (one 30 Hz period is 33.3 ms) |
+| engage / tracking joint steps | first admitted command 0.443 rad in one tick; afterwards max 0.231 rad/s, p99 0.157 rad/s |
+| out-of-box pose (shipped config), 2 s | 61 ticks, **0 admitted**, 61 refused: `workspace_box` 37, `joint_velocity` 24; arm state still exactly the zero rest pose, `guard.admitted == 0`, 0 frames |
+| recorded episode (3 s, recorder + UI built by the loop) | every `action` row is a command the guard admitted, in the order it admitted them |
+| suite before / after | 451 -> 465 passed (14 new), 4 skipped both times |
+
+### Finding: teleop has no clutch, and the first command is a lurch
+
+The operator's hand is wherever it is when the loop starts, so the first solved pose is far from the
+robot's. The guard *allows* that first step, because a fresh command is measured against the state
+aged `command_gap_reset_s` (0.5 s), not against one 33 ms tick: on the tuned mock circle the first
+admitted command steps 0.443 rad in one tick (13 rad/s instantaneous) and is inside the limit only by
+that rule. On the shipped circle the same effect refuses 61 ticks in a row instead. Neither is what
+should happen on hardware. `docs/teleop.md` and `teleop/retarget.py` both already assume a clutch
+("the first target is the current wrist pose", then the operator's motion is tracked as a delta);
+it is not built, and the task did not ask for it, so I did not add it. **Proposed follow-up task:
+a clutch in `teleop/loop.py` (engage sets a pose offset so the first target is the measured wrist
+pose; a key releases and re-engages), to be accepted before the first motion session of Phase 1.**
+I have logged it here rather than in TASKS.md, which I may not edit beyond T-032.
+
+### Notes / deviations
+
+- **`pinch_from_glove` is not called by the loop.** The deliverable says the pinch comes from it, but
+  it takes a thumb-to-index-tip *distance* in metres and `drivers.interfaces.GloveSample` carries
+  encoder angles and an already-derived `pinch` scalar; `docs/teleop.md` (T-013) states that turning
+  the 17 encoder angles into a tip-to-tip distance is the glove driver's job and a Phase 1 item
+  (T-020). The loop therefore passes `GloveSample.pinch` through, and the real `drivers/pxcap.py`
+  will be what calls `pinch_from_glove`. My alternative, had the distance existed, would have been
+  one line. Flagged here because it is a literal deviation from the deliverable text.
+- The constructor takes `cameras` and `engine` as the task names them and both do work: given a
+  recorder, an engine and cameras but no `ui`, the loop builds the `OperatorUI` that joins them (the
+  recording test relies on exactly this); `cameras` is otherwise grabbed once a tick when no recorder
+  is attached, so every stream still runs at the grid rate.
+- `--backend mock` on the *shipped* config refuses every command, as above; the CLI prints the
+  refusals by rule and an arm that never moved. That is the guard working, not a defect, and
+  docs/teleop.md says so.
+- `docs/drivers.md` lists `MockPose`'s config keys and now omits `mock.pose_center_m`; that file is
+  outside this task's touch list, so the row is left for Fable.
+- `teleop/loop.py` is 248 lines, under the 250 the notes named, with no docstring cut to get there
+  (D-013 guideline 2); the sibling-module route that guideline prefers was not available because the
+  task's file list is only `teleop/loop.py`.
+- R1-R6 intact: mock drivers only (their guards are `simulated=True` and every command still goes
+  through `Guard.admit` -- two tests assert `stats.sent == arm.guard.admitted`), no scripted
+  trajectory and no literal joint target in `teleop/` (a new test asserts `teleop/` imports nothing
+  from `tools/hardware_checks/`), `config/safety.yaml` untouched, nothing under `third_party/`
+  touched, the session file neither created nor named outside `runtime/safety.py`. Committed through
+  the full pre-commit gate, no `--no-verify` (D-013 item 1).

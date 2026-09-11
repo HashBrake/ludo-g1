@@ -376,7 +376,88 @@ anything else over the board.
 | real configured sizes (640x480 / 320x240), 3 s episode | 1927x817 px, 647 kB |
 | goal overlay on the first `top` frame | changed 3072/3072 px, peak \|diff\| 218/765, each channel peaking within 1 px of the stored cell centre |
 
+# The teleop loop
+
+`teleop/loop.py` is the 30 Hz loop that puts the three modules above together, and it is the path
+every training episode of Phase 3 will come from (CLAUDE.md 5.2, 5.3). It is deliberately small: no
+threads, no state of its own beyond the counters, and no number that it invented.
+
+```python
+from teleop.loop import TeleopLoop, build
+
+loop = build("mock")                       # drivers and cameras; "real" refuses until Phase 1
+loop = TeleopLoop(pose_driver=pose, glove_driver=glove, arm=arm, hand=hand, cameras=cams,
+                  engine=engine, recorder=rec, ui=None)   # given all three it builds the OperatorUI
+stats = loop.run(30.0)
+```
+
+```
+.venv/bin/python -m teleop.loop --backend mock --seconds 10
+```
+
+One tick:
+
+| # | call | why |
+|---|---|---|
+| 1 | `pose_driver.read()`, `glove_driver.read()` | read-only, allowed with no session (R1) |
+| 2 | `pico_to_g1_base(...)` | the controller pose in the pelvis frame the box and the IK work in |
+| 3 | `arm.read_state()` | the IK is seeded from the **measured** state, so it tracks the robot |
+| 4 | `ik.solve(...)` | the 8 joints of `action_order`; the solve time is timed and kept |
+| 5 | `arm.send_targets(cmd)`, `hand.send_pinch(...)` | each admits through its own `Guard` (R1, R3) |
+| 6 | `ui.tick(admitted)` (or `recorder.tick`) | the **admitted** command is the action the dataset stores |
+| 7 | `recorder.poll()` / `camera.grab()` | when nothing was written: read-only, keeps the buffers warm |
+
+A `SafetyViolation` is counted by rule, logged and the tick continues; the guard is the limiter, not
+a crash. A refused tick sends nothing and records nothing, so the dataset can only ever hold commands
+the robot was actually given (R5).
+
+The tick grid is `Recorder.next_grid_ns` when a recorder is attached — the recorder's grid is
+phase-locked to the board camera, so a command is issued at the instant the frame it is recorded
+against was taken — and one `rates.action_hz` period otherwise. A tick that over-runs its period
+drops the instants it missed rather than firing catch-up commands into the rate limiter, which is the
+rule `runtime/controller.py` follows too.
+
+**The pinch scalar comes from the glove driver** (`GloveSample.pinch`), not from a
+`pinch_from_glove` call here: the PxCap reports encoder angles and no tip positions, so the
+tip-to-tip distance that function normalises is the glove driver's to compute (see above, and T-020).
+The loop passes the scalar through; `drivers/dexh15.py` expands it through the synergy.
+
+## Engaging: no clutch yet
+
+The operator's hand is wherever it is when the loop starts, so the first solved pose is far from the
+robot's. The loop as built sends it, and the guard allows it, because a *fresh* command is measured
+against the state aged `command_gap_reset_s` (0.5 s) rather than against one tick: on the mock rig
+the first admitted command steps 0.443 rad in one 33.3 ms tick and every later one stays under
+0.24 rad/s. On hardware that is a lurch, and the clutch the `ArmIK` notes already assume (the first
+target is the *current* wrist pose, then the operator's motion is tracked as a delta) is what removes
+it. It is not built yet and must be before the first motion session; see `agents/BUILD_LOG.md` T-032.
+
+### Measured, `tests/test_teleop_loop.py` on the laptop
+
+```
+.venv/bin/python -m pytest tests/test_teleop_loop.py -q
+```
+
+| | |
+|---|---|
+| 30 s session on mocks, fake clock | 901 ticks in 30.033 s = **30.000 Hz**, 901 admitted, 0 refused |
+| arm tracking (mock lag `tau` 0.08 s) | \|state - last admitted target\| = **0.00274 rad**, worst of 8 joints |
+| `ArmIK.solve` per tick | mean **0.524 ms**, p99 **0.901 ms** (budget: one 30 Hz period, 33.3 ms) |
+| engage step / tracking steps | 0.443 rad in one tick, then max 0.231 rad/s, p99 0.157 rad/s |
+| out-of-box pose, 2 s | 61 ticks, **0 admitted**, 61 refused (`workspace_box` 37, `joint_velocity` 24), state unchanged |
+| recorded episode | every `action` row is a command the guard admitted, in the order it admitted them |
+
+The operator path is the mock Pico circle. Two configurations of that one mock make the two cases:
+`mock.pose_center_m` inside the workspace box (the test's config copy: centre [0.28, 0.15, 0.12] m,
+radius 0.06 m, one turn per 120 s, which is reachable with the mock's near-identity wrist
+orientation) and the shipped `[0, 0, 0]`, which under the placeholder identity `pico_to_pelvis` is
+the pelvis itself — unreachable, outside the box, and refused on every tick. That is also what the
+CLI shows on the shipped config: a summary of refusals and an arm that never moved.
+
 ## What is not here yet
 
-The clutch and the 30 Hz loop that wires `pico_bridge` -> `pico_to_g1_base` -> `ArmIK` ->
-`runtime/safety.py` -> `drivers/g1_arm.py` -> `OperatorUI.tick`.
+The clutch (above), and the real drivers this loop is written against: the Pico and PxCap streams
+(T-020) and the G1 arm write path with its measured actuation latency (T-021). Until those land the
+loop runs on mocks only; `build("real")` raises from `drivers.make`, and `config/robot.yaml`
+`teleop.pico_to_pelvis` and `latency.*` are still `UNMEASURED`, so a real session would be
+retargeting through an identity transform and aligning with zero latency.
