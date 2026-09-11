@@ -1252,3 +1252,4 @@ is a Phase 1 act, not a T-010 one. Fable's call.
   modified. That is now the fourth time by hand; a `tools/` helper is overdue.
 - The 5 s mock acceptance test adds ~5 s of wall clock to `pytest -q`; it is a real-clock rate
   measurement and cannot be shortened without weakening the criterion.
+(T-010 commit: f3e553d; this line and the TASKS.md result hash are the only content of the follow-up commit.)

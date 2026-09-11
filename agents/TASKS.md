@@ -395,7 +395,7 @@ acceptance:
   - `stream_stats.py --backend mock --seconds 5` reports 30 Hz +/- 1 and 0 drops (test)
   - if a Brio is attached at run time: 10 s of real stats recorded in BUILD_LOG.md
 notes: Read-only; no session needed. Do not touch the palm camera here (it comes with the DexH15 driver in Phase 1).
-result: (opus, 2026-09-11T23:55+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T23:55+07:00, commit f3e553d)
   - Acceptance 1, no camera attached: whole suite re-run with drivers.cameras.list_video_nodes stubbed to []
     (throwaway pytest plugin in the scratchpad) -> 318 passed, 9 skipped, 0 failed. Every camera skip is a
     `readonly` test and names the device or the config key, e.g. "no real oblique camera: ... no VIDEO_CAPTURE
