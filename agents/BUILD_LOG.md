@@ -581,3 +581,4 @@ Gate: `.venv/bin/ruff check .` -> "All checks passed!"; `.venv/bin/python -m pyt
   mine to edit, so it is reported here rather than fixed; a `state=(starting|running)` match, or polling
   the heartbeat for a moment, would close it.
 - No disagreement with the task as written beyond the two design calls above. No blockers.
+(T-007 commit: 5cab3e6; this line and the TASKS.md result hash are the only content of the follow-up commit.)
