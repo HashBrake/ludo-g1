@@ -1765,3 +1765,5 @@ R1-R6 intact. The recorder sends nothing: one test wraps the arm and hand driver
 scripted motion in `teleop/`; the test's operator stand-in trajectory lives in `tests/`. `config/safety.yaml`
 untouched, `hardware/session.enable` never created, nothing under `third_party/` touched. Every test wrote
 under `tmp_path`; `data/raw/` is still empty. No hardware needed, no blockers.
+
+(T-017 commit: 6beb49d; this line and the TASKS.md result hash are the only content of the follow-up commit.)

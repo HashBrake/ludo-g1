@@ -690,7 +690,7 @@ acceptance:
   - the three tests above pass with the printed skew and frame counts; full suite green; ruff clean
 notes: The operator UI and the real Pico/glove input are separate tasks. Never write outside data/raw/ (git-ignored).
 result:
-  commit: COMMIT_HASH
+  commit: 6beb49d
   versions: lerobot 0.4.4 (the last release that installs on Python 3.10; 0.5.0+ need >= 3.12), torch 2.9.1+cpu,
     torchvision 0.24.1+cpu, torchcodec 0.10.0. CPU wheels via three --find-links on the PyTorch CPU index; no
     nvidia-* package installed. `uv pip install --dry-run -r requirements.txt` -> "Would make no changes".
