@@ -2624,3 +2624,119 @@ immediately and re-made the same commit with `git commit --amend --no-edit`, whi
 full suite and printed "pre-commit: ok"; db2b922 is that commit and the bypassed one never survived.
 No `--no-verify` was used anywhere, but the effect was the same for one minute, so it is recorded
 here per D-013 item 1.)
+
+## T-033  Clutch and first-command step cap before any hardware motion (D-018)  (opus, 2026-09-11T23:58+07:00)
+
+T-032 measured a teleop stream engaging with a 0.443 rad step in one 33 ms tick, admitted by the
+guard. This task closes it in both places D-018 names: the envelope gains a cap on any command with a
+*fresh* velocity reference, and the loop gains a clutch so that a session starts from where the arm
+already is.
+
+### What changed
+
+- `runtime/safety.py`: `Envelope._velocity_reference` now also reports whether the reference is fresh
+  (no accepted command within `command_gap_reset_s`), and `check()` runs a new rule between the pinch
+  and velocity checks: on a fresh reference, per-joint `|clamped target - measured state|` may not
+  exceed `first_command_max_step_rad`. The `SafetyViolation` rule is `first_command_step` and the
+  message names the worst joint and its step. The step is measured on the **clamped** target, like
+  the box check, so a target the limits pulled back is judged as what would actually be sent. The
+  velocity rule is byte-for-byte unchanged for every non-fresh command; `Envelope.__init__` takes the
+  new number and refuses a non-positive one.
+- `config/safety.yaml`: one added key, `first_command_max_step_rad: 0.05` + `_status: UNMEASURED` +
+  the R3 comment. `git diff --stat config/safety.yaml` = `1 file changed, 8 insertions(+)`, no
+  deletions, nothing else touched: it is a tightening (the fresh allowance was
+  `joint_velocity_limit_rad_s * command_gap_reset_s` = 0.75 rad, it is now 0.05).
+- `config/robot.yaml` `teleop`: `clutch_engage_tolerance_rad: 0.05` and `clutch_ramp_s: 1.0`, both
+  with `_status: UNMEASURED`.
+- `config/training.yaml` `operator_ui.keys`: `engage: e`.
+- `teleop/loop.py`: `ClutchState` (disengaged -> engaging -> engaged) and `Clutch`. `Clutch.target()`
+  is called once a tick with the IK solution and the measured joints; disengaged it returns the
+  measured state (a hold, which still goes through `arm.send_targets` and the Guard), engaging it
+  returns `state + alpha * (ik - state)` with alpha linear over `clutch_ramp_s`, engaged it returns
+  the IK solution untouched. `request_engage()` is refused unless every one of the 8 joints was
+  within `clutch_engage_tolerance_rad` on the last tick, and it logs the refusal with the number. The
+  IK runs on every tick in every state, so the distance the operator has to close is always current.
+  Any `SafetyViolation` on an arm command calls `disengage()`. While disengaged the hand is commanded
+  its own measured pinch (`hand.read_state().payload.pinch`), not the glove's.
+- `teleop/operator_ui.py`: a `ClutchView` protocol (state, worst distance, `request_engage`) so the
+  display does not import the loop; an `engage` action bound to the config's key; the clutch state and
+  the worst joint distance appended to the first banner line; a UI without a clutch ignores the key.
+  The loop attaches its own clutch to the UI it builds and to one passed in.
+- tests: `tests/test_safety.py` (4 new/rewritten rule tests), `tests/test_teleop_loop.py` (the T-032
+  engage measurement rewritten as a refusal, the clutch engage and its step, a refusal disengaging,
+  the out-of-box case rewritten, 4 `Clutch` unit tests), `tests/test_operator_ui.py` (3 key/banner
+  tests over a stub clutch).
+- `docs/safety.md` (rule 5, the rule list, the piece table), `docs/teleop.md` ("Engaging: the clutch"
+  with the state table and the new measurements), `docs/drivers.md` (`mock.pose_center_m` on the
+  `MockPose` row, left over from T-032).
+
+### Commands run, and what they measured
+
+```
+.venv/bin/python -m pytest tests/test_safety.py -q -s
+.venv/bin/python -m pytest tests/test_teleop_loop.py -q -p no:randomly
+.venv/bin/python -m pytest tests/test_operator_ui.py -q -p no:randomly
+.venv/bin/ruff check .
+.venv/bin/python -m pytest tests/ -q          # the pre-commit gate runs this
+```
+
+| measurement | value |
+|---|---|
+| the T-032 engage, handed straight to the arm | IK target **0.443 rad** from the measured state; refused, rule **`first_command_step`**, `guard.admitted == 0`, arm still at 0.0 rad |
+| fresh-reference cap in the envelope | 0.05 rad admitted, 0.055 rad refused (the velocity rule alone would have allowed 0.75 rad) |
+| clutch engage on the engageable circle | IK target **0.0188 rad** from the state (tolerance 0.05) -> engage accepted |
+| **first admitted command after engaging** | **0.000000 rad** on every joint (alpha starts at 0); worst single tick of the whole 1 s ramp **0.004801 rad**, against the 0.05 cap |
+| clutch engage on the T-032 circle | worst joint 0.434 rad away -> `request_engage()` returns False, 47 holds sent, 0 refused, arm at 0.0 rad |
+| refusal while engaged | one `command_rate` refusal -> clutch `disengaged`, loop keeps holding, sends resume |
+| 0.5 s holding + 30 s engaged session | 917 ticks in 30.567 s = **30.000 Hz**, 917 admitted, **0 refused**; tracking error 0.00283 rad; IK mean 0.344 ms, p99 0.513 ms |
+| worst commanded step over that session | 0.164 rad/s, p99 0.161 rad/s (limit 1.5) |
+| out-of-box (shipped) circle, 2 s | 61 ticks, 61 holds admitted, **0 refused**, arm never left 0.0 rad; the IK target's wrist is at [0.101, 0.0, 0.001] m, outside the box, and is never sent |
+| clutch ramp, `|ik - state| = 0.04` rad | 0.0 / 0.01 / 0.02 / 0.04 / 0.04 rad at 0 / 250 / 500 / 1000 / 1500 ms |
+
+### How a test engages the clutch (the "drive the pose there" bit)
+
+`MockPose` at t=0 is `centre + [radius, 0, 0]` with an identity quaternion, and the wrist of the
+all-zero arm pose is at `fk.left_arm_fk(0)` = [0.1998, 0.1487, 0.0952] m with a quaternion that is
+identity to 1e-4 (measured: [2.9e-5, 2.7e-5, -9.6e-5, 1.0]). So `engage_center()` in
+`tests/test_teleop_loop.py` puts the circle through the rest wrist pose, the IK solution at t=0 is
+the rest pose itself, and the clutch may engage: that is the test driving the operator's hand to the
+robot. The radius is 0.01 m there, so the whole circle stays within a couple of centimetres. The
+T-032 circle ([0.28, 0.15, 0.12], radius 0.06) is kept as the case that is reachable but **not**
+engageable, which is what the two new refusal tests use.
+
+### Notes / deviations
+
+- **Three test files outside the task's touch list changed**, because the envelope got tighter and
+  they send a first command that steps further than 0.05 rad from the state: `tests/test_recorder.py`
+  and `tests/test_operator_ui.py` (their rigs' operator stand-in now blends in from the arm's measured
+  state over one second -- the same thing the clutch does -- in a new `Rig.engaged_target`, four
+  lines each plus the docstring; `tests/test_dataset.py` and `tests/test_dataset_view.py` import that
+  rig and needed nothing) and `tests/test_mock_drivers.py` (six tests that sent a 0.1-2.5 rad first
+  command now send a hold first and step from it inside the velocity limit, through a new `engage()`
+  helper; the rules they assert are unchanged). None of them belongs to the parallel T-030 worktree
+  (policy/act.py, policy/train.py). Without these edits the suite cannot be green, so there was no
+  version of this task that touched only the listed files.
+- **`teleop/loop.py` is 369 lines against the task's "under 300"**, with no docstring cut to get
+  there. The clutch is two classes with `from_config`, a repr and five methods; the sibling module
+  D-013 guideline 2 prefers (`teleop/clutch.py`) was not in the task's file list, and the deliverable
+  says "teleop/loop.py: a clutch", so I kept it in the file and am flagging the size here, exactly as
+  T-017 did for `teleop/recorder.py`. If Fable wants 300, the mechanical move is `ClutchState` +
+  `Clutch` (115 lines) to `teleop/clutch.py`, re-exported from `teleop.loop`.
+- **`teleop/operator_ui.py` got a little more than "clutch state display only"**: it also binds the
+  `engage` key to `clutch.request_engage()`. It has to -- the key comes from
+  `config/training.yaml operator_ui.keys`, which only the UI reads, and the UI validates that every
+  action in that map exists. It can do exactly one thing to the clutch (ask), it cannot overrule a
+  refusal, and a test asserts no other key touches the clutch at all.
+- **The out-of-box mock session no longer reports refusals** (T-032 reported 61 refusals in 2 s; it
+  is now 61 admitted holds and 0 refusals). That is the clutch working: the unreachable target is
+  never sent at all. The test still asserts, independently, that the target's wrist is outside the
+  box and that the arm never moved, so the old signal is not lost.
+- `runtime/config.py` `REQUIRED_KEYS["safety"]` does **not** list the new key (that file is outside
+  the touch list). `Envelope.from_config` raises a `KeyError` rather than a `ConfigError` if it is
+  ever removed; adding it to the schema is a one-line follow-up for Fable.
+- R1-R6 intact: no motion command was sent to real hardware (mocks only, `simulated=True` guards,
+  every command still through `Guard.admit`), no scripted trajectory anywhere in `teleop/` (the hold
+  is the arm's own measured state, and the R2 import test still passes), `hardware/session.enable`
+  neither created nor named, nothing under `third_party/` touched, `config/safety.yaml` changed only
+  by the one added key and only in the tightening direction. Committed through the full pre-commit
+  gate, no `--no-verify` (D-013 item 1).

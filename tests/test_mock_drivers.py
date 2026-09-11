@@ -54,6 +54,19 @@ def command(joints=0.0, pinch: float = 0.0) -> MotionCommand:
     return MotionCommand(arm=q[:ARM_DOF], waist_yaw=float(q[ARM_DOF]), pinch=pinch)
 
 
+def engage(arm: MockArm, clk, cmd: MotionCommand, *, over_s: float = 0.2) -> MotionCommand:
+    """Send ``cmd`` the way a stream is allowed to: a hold first, then a step inside the limit.
+
+    ``config/safety.yaml`` ``first_command_max_step_rad`` refuses a *first* command further than
+    0.05 rad from the measured state (D-018, T-033), so a test that wants the arm somewhere else
+    commands the arm's own state first -- zero motion -- and then walks there over ``over_s``, which
+    the velocity rule judges against that hold. This is what ``teleop/loop.py``'s clutch does.
+    """
+    arm.send_targets(command(arm.read_state().payload.joints))
+    clk.advance(over_s)
+    return arm.send_targets(cmd)
+
+
 # --------------------------------------------------------------------------------------------------
 # the contract: every mock satisfies the protocol the real driver will satisfy
 # --------------------------------------------------------------------------------------------------
@@ -192,7 +205,7 @@ def test_arm_state_lags_the_commanded_target_with_the_configured_time_constant()
     target = command([-0.2, 0, 0, 0, 0, 0, 0, 0])
 
     clk.advance(0.1)
-    arm.send_targets(target)
+    engage(arm, clk, target)
     assert arm.read_state().payload.arm[0] == pytest.approx(0.0)  # not instantaneous
 
     clk.advance(tau)
@@ -207,9 +220,9 @@ def test_arm_lag_is_monotone_and_never_overshoots() -> None:
     clk = FakeClock()
     arm = MockArm(now_ns=clk)
     clk.advance(0.1)
-    arm.send_targets(command([-0.2, 0, 0, 0, 0, 0, 0, 0], pinch=1.0))
+    engage(arm, clk, command([-0.2, 0, 0, 0, 0, 0, 0, 0], pinch=1.0))
     clk.advance(1.0)
-    track = [s.payload.arm[0] for s in arm.poll()]
+    track = [s.payload.arm[0] for s in arm.poll()]  # the engaging hold holds it at 0.0 first
     assert all(b <= a for a, b in zip(track, track[1:], strict=False))
     assert min(track) >= -0.2
 
@@ -244,6 +257,8 @@ def test_an_out_of_envelope_velocity_raises_safety_violation() -> None:
     clk = FakeClock()
     arm = MockArm(now_ns=clk)
     clk.advance(0.1)
+    arm.send_targets(command(0.0))  # the stream engages at the state, so the jump is not the first
+    clk.advance(0.02)
     with pytest.raises(SafetyViolation) as exc:
         arm.send_targets(command([2.5, 0, 0, 0, 0, 0, 0, 0]))
     assert exc.value.rule == "joint_velocity"
@@ -267,7 +282,7 @@ def test_a_refused_command_does_not_move_the_simulated_arm() -> None:
     clk = FakeClock()
     arm = MockArm(now_ns=clk)
     clk.advance(0.1)
-    arm.send_targets(command([-0.1, 0, 0, 0, 0, 0, 0, 0]))
+    engage(arm, clk, command([-0.1, 0, 0, 0, 0, 0, 0, 0]))
     clk.advance(1.0)
     settled = arm.read_state().payload.joints.copy()
     with pytest.raises(SafetyViolation):
@@ -294,7 +309,8 @@ def test_joint_targets_outside_the_joint_limits_are_clamped_not_sent_raw() -> No
     clamp = -float(config.load("safety")["waist_yaw_clamp_rad"])
     effective = max(lower, clamp)  # the tighter of the joint limit and the waist clamp
     clk.advance(0.1)
-    admitted = arm.send_targets(command([0, 0, 0, 0, 0, 0, 0, effective - 0.4]))
+    # 0.6 rad of waist over 0.45 s is 1.33 rad/s, inside the velocity limit the hold is judged by.
+    admitted = engage(arm, clk, command([0, 0, 0, 0, 0, 0, 0, effective - 0.4]), over_s=0.45)
     assert "waist_yaw_joint" in admitted.clamped
     assert admitted.waist_yaw == pytest.approx(effective)
 

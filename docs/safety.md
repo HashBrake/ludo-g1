@@ -19,7 +19,7 @@ violation of R3, and Fable audits for it every phase (CLAUDE.md section 8).
 | Piece | Rule | What it does |
 |---|---|---|
 | `SessionGate` | R1 | Is a human-enabled motion session running right now? |
-| `Envelope` | R3 | Joint limits, waist clamp, workspace box, velocity, command rate, pinch range |
+| `Envelope` | R3 | Joint limits, waist clamp, workspace box, velocity, first-command step, command rate, pinch range |
 | `Guard` | both | `admit()`: gate (unless simulated), then envelope, always |
 
 ## R1: the session gate
@@ -90,13 +90,23 @@ The envelope may only ever be tighter than the hardware.
 4. **Pinch.** The scalar is clamped to `hand.pinch_scalar_range` (reported as `pinch_scalar`) and
    then slew-limited to `hand.pinch_rate_limit_per_s` against the last accepted pinch (reported as
    `pinch_rate`). The hand is one scalar, and a fast finger is not a reason to drop an arm command.
-5. **Joint velocity.** `|target - reference| / dt` must stay under `joint_velocity_limit_rad_s`, or
+5. **First-command step.** A command whose velocity reference is *fresh* — the first command of a
+   stream, or the first after a gap longer than `command_gap_reset_s` — is compared against the
+   **measured state**, and no joint may be further from it than `first_command_max_step_rad`
+   (0.05 rad), or the command is *rejected* with the rule `first_command_step` naming the worst
+   joint. Nobody is tracking the arm at that moment, so the command is not a step in a trajectory,
+   it is a jump to wherever the new sender happens to be pointing. T-032 measured a teleop stream
+   engaging with a **0.443 rad** jump in one 33 ms tick, which the velocity rule below allowed
+   because it ages a fresh reference by `command_gap_reset_s` (0.75 rad of slack); D-018 closed
+   that. A sender that wants to move the arm somewhere else engages from where the arm is and walks
+   there under the velocity limit — which is exactly what `teleop/loop.py`'s clutch does.
+6. **Joint velocity.** `|target - reference| / dt` must stay under `joint_velocity_limit_rad_s`, or
    the command is *rejected*. The reference is the previously accepted command and the monotonic time
    since it. When the previous command is older than `command_gap_reset_s` — and for the first
    command of a stream — the reference is instead the **measured state**, aged by exactly
-   `command_gap_reset_s`: a fresh command may step the arm by `velocity_limit × gap_reset` from where
-   the arm actually is, and no further. That is what stops a lunge when a stalled stream resumes.
-6. **Workspace box.** `fk(joints)` gives the position of `workspace_box_m.point`
+   `command_gap_reset_s`. That fresh case is the one rule 5 caps first, so in practice the velocity
+   rule governs a stream that is already running and rule 5 governs how one starts.
+7. **Workspace box.** `fk(joints)` gives the position of `workspace_box_m.point`
    (`left_wrist_yaw_link`) in `workspace_box_m.frame` (`g1_pelvis`); it must lie inside
    `[min + margin_m, max - margin_m]`, or the command is *rejected*. The box is checked on the
    **clamped** targets, so what is checked is exactly what would be sent. The frame, the point and
@@ -165,9 +175,10 @@ module.
 A limit that the arm can simply be held at is **clamped** (joint limits, waist clamp, pinch range and
 slew): stopping the whole command because the operator pushed a joint 2° past its limit would make
 teleoperation unusable and would not make anything safer. Everything that indicates the command is
-*wrong* rather than merely far — a velocity step, a point outside the box, a command rate that cannot
-be real, a NaN, a missing session — raises `SafetyViolation`, whose `rule` field names which of
-`command_rate`, `non_finite`, `joint_velocity`, `workspace_box`, `session_gate` refused it. Every
+*wrong* rather than merely far — a velocity step, a first command that jumps, a point outside the box,
+a command rate that cannot be real, a NaN, a missing session — raises `SafetyViolation`, whose `rule`
+field names which of `command_rate`, `non_finite`, `first_command_step`, `joint_velocity`,
+`workspace_box`, `session_gate` refused it. Every
 rejection is logged through `runtime.log` as `safety_reject` with the rule and the numbers.
 
 ## Two clocks, never mixed

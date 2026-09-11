@@ -1186,7 +1186,7 @@ result: (opus, 2026-09-13T14:40+07:00, commit db2b922)
     follow-up task to be accepted before the first Phase 1 motion session.
 
 ## T-033  Clutch and first-command step cap before any hardware motion (D-018)
-status: in_progress
+status: review
 priority: P0
 phase: 1
 owner: opus
@@ -1214,6 +1214,35 @@ acceptance:
     and its status/comment (Fable checks that nothing was loosened)
 notes: T-021 (first real motion) now depends on this task. Also add `mock.pose_center_m` to the MockPose row in docs/drivers.md
   (left over from T-032).
+result: (opus, 2026-09-12T00:20+07:00, commit COMMIT_HASH)
+  - `.venv/bin/python -m pytest tests/test_safety.py -q -s` -> 61 passed. `tests/test_teleop_loop.py` -> 23 passed.
+    `tests/test_operator_ui.py` -> 14 passed. `tests/test_mock_drivers.py` -> 48 passed. Full suite through the
+    pre-commit hook -> FULL_SUITE. `.venv/bin/ruff check .` -> "All checks passed!". PASS
+  - `git diff --stat config/safety.yaml` -> `1 file changed, 8 insertions(+)`: only first_command_max_step_rad,
+    its `_status: UNMEASURED` sibling and the R3 comment. Nothing loosened (the fresh-reference allowance went
+    from joint_velocity_limit_rad_s * command_gap_reset_s = 0.75 rad to 0.05 rad). PASS
+  - the T-032 engage, handed straight to the arm: the IK target is 0.443 rad from the measured state; the guard
+    refuses it with rule `first_command_step` naming left_shoulder_pitch_joint, guard.admitted == 0 and the arm
+    is still exactly at the zero rest pose. Printed by the test. PASS
+  - first admitted command after engaging the clutch: 0.000000 rad on every joint (alpha starts at 0), against
+    the 0.05 rad cap; the worst single tick of the whole 1 s ramp is 0.004801 rad. Printed. PASS
+  - the clutch engages only from a pose the arm is in: on the mock circle drawn through the rest wrist pose the
+    IK target is 0.0188 rad away and `e` engages; on the T-032 circle it is 0.434 rad away and `e` is refused,
+    47 holds sent, 0 refused, the arm never leaves 0.0 rad. Printed. PASS
+  - a refusal while engaged disengages: one `command_rate` refusal -> clutch `disengaged`, the loop keeps
+    sending holds and never re-engages itself. Printed. PASS
+  - 0.5 s holding + 30 s engaged on mocks: 917 ticks in 30.567 s = 30.000 Hz, 917 admitted, 0 refused, tracking
+    error 0.00283 rad, IK mean 0.344 ms / p99 0.513 ms, worst commanded step 0.164 rad/s. PASS
+  - out-of-box (shipped) circle, 2 s: 61 ticks, 61 holds admitted, 0 refused, arm unmoved; the test also asserts
+    independently that the IK target's wrist ([0.101, 0.0, 0.001] m) is outside the box and that the clutch
+    refuses to engage into it. PASS (the T-032 "61 refused" number is now "61 never sent")
+  - deviations logged in BUILD_LOG: (1) tests/test_mock_drivers.py, tests/test_recorder.py and
+    tests/test_operator_ui.py needed their first commands to engage from the measured state, so three files
+    outside the task's touch list changed (none of them the parallel T-030 worktree's); (2) teleop/loop.py is
+    369 lines against "under 300" with no docstring cut, the sibling module D-013 prefers not being in the file
+    list; (3) teleop/operator_ui.py also binds the `e` key to clutch.request_engage(), which is the only way the
+    configured key can reach the clutch; (4) runtime/config.py REQUIRED_KEYS does not list the new safety key
+    (that file is outside the touch list).
 
 ## T-034  Observation history in the dataset (n_obs_steps frames per sample)
 status: todo

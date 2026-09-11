@@ -102,6 +102,7 @@ def bare_envelope() -> Envelope:
         velocity_limit_rad_s=env.velocity_limit_rad_s,
         command_rate_limit_hz=env.command_rate_limit_hz,
         command_gap_reset_s=env.command_gap_reset_s,
+        first_command_max_step_rad=env.first_command_max_step_rad,
         watchdog_timeout_s=env.watchdog_timeout_s,
         pinch_range=env.pinch_range,
         pinch_rate_limit_per_s=env.pinch_rate_limit_per_s,
@@ -282,7 +283,10 @@ def test_envelope_from_config_uses_the_committed_numbers() -> None:
     assert env.velocity_limit_rad_s == safety["joint_velocity_limit_rad_s"]
     assert env.command_rate_limit_hz == safety["command_rate_limit_hz"]
     assert env.watchdog_timeout_s == safety["watchdog_timeout_s"]
+    assert env.first_command_max_step_rad == safety["first_command_max_step_rad"]
     assert env.pinch_range == tuple(safety["hand"]["pinch_scalar_range"])
+    # D-018: the fresh-reference cap is a tightening of the velocity rule, never a widening.
+    assert env.first_command_max_step_rad < env.velocity_limit_rad_s * env.command_gap_reset_s
 
 
 def test_envelope_applies_the_box_margin_inward() -> None:
@@ -368,14 +372,53 @@ def test_rate_limit_rejects_the_second_command_inside_one_period_and_accepts_aft
     env.check(cmd, st, now_ns=period_ns)  # exactly one period later: accepted
 
 
-def test_velocity_limit_rejects_a_target_too_far_from_the_measured_state() -> None:
+def test_a_fresh_command_may_not_step_further_than_the_first_command_cap(capsys) -> None:
+    """D-018: the first command of a stream is measured against the state and may barely move it."""
     env = envelope()
-    reach = env.velocity_limit_rad_s * env.command_gap_reset_s  # the fresh-reference step allowance
+    cap = env.first_command_max_step_rad
     st = state(0.0, ts_ns=0)
-    env.check(command(reach * 0.9), st, now_ns=0)  # just inside
+    env.check(command(cap), st, now_ns=0)  # exactly at the cap: accepted
     env.reset()
     with pytest.raises(SafetyViolation) as excinfo:
-        env.check(command(reach * 1.1), st, now_ns=0)
+        env.check(command(cap * 1.1), st, now_ns=0)
+    assert excinfo.value.rule == "first_command_step"
+    assert "left_shoulder_pitch_joint" in str(excinfo.value)  # the worst joint is named
+    with capsys.disabled():
+        print(f"\nfresh-reference cap: {cap:g} rad admitted, {cap * 1.1:g} rad refused as "
+              f"{excinfo.value.rule} (the velocity rule alone would have allowed "
+              f"{env.velocity_limit_rad_s * env.command_gap_reset_s:g} rad)")
+
+
+def test_the_first_command_cap_is_judged_on_the_clamped_target() -> None:
+    """A target outside the joint limits is clamped first, and the step is measured on the clamp."""
+    env = envelope()
+    beyond = np.zeros(JOINT_DIM)
+    beyond[-1] = 100.0  # far outside the waist clamp, which pulls it back to waist_yaw_clamp_rad
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(beyond), state(0.0), now_ns=0)
+    assert excinfo.value.rule == "first_command_step"
+    assert f"{float(config.load('safety')['waist_yaw_clamp_rad']):.4f} rad" in str(excinfo.value)
+
+
+def test_the_first_command_cap_applies_only_while_the_reference_is_fresh() -> None:
+    """R3: once a stream is running the velocity rule takes over, unchanged, and allows far more."""
+    env = envelope()
+    step = 0.3  # 6x the fresh cap ...
+    env.check(command(0.0), state(0.0), now_ns=0)
+    dt_ns = int(0.4 * SECOND_NS)  # ... but 0.75 rad/s over 0.4 s, inside the gap and the limit
+    assert 0.4 <= env.command_gap_reset_s and step / 0.4 < env.velocity_limit_rad_s
+    out = env.check(command(step), state(0.0), now_ns=dt_ns)
+    assert out.clamped == ()
+
+
+def test_velocity_limit_rejects_a_target_too_far_from_the_previous_accepted_command() -> None:
+    env = envelope()
+    st = state(0.0, ts_ns=0)
+    env.check(command(0.0), st, now_ns=0)
+    dt_ns = int(0.4 * SECOND_NS)
+    reach = env.velocity_limit_rad_s * 0.4  # what the velocity rule allows over that interval
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(reach * 1.1), st, now_ns=dt_ns)
     assert excinfo.value.rule == "joint_velocity"
     assert "rad/s" in str(excinfo.value)
 
@@ -397,8 +440,12 @@ def test_a_gap_longer_than_command_gap_reset_falls_back_to_the_state() -> None:
     st = state(0.0)
     env.check(command(0.0), st, now_ns=0)
     gap_ns = int(env.command_gap_reset_s * SECOND_NS) + SECOND_NS
-    # Far from the stale command but still within one fresh step of the measured state: accepted.
-    env.check(command(env.velocity_limit_rad_s * env.command_gap_reset_s * 0.9), st, now_ns=gap_ns)
+    # Within the fresh cap of the measured state: accepted, and it is the state it is judged against.
+    env.check(command(env.first_command_max_step_rad * 0.9), st, now_ns=gap_ns)
+    # A resume is a fresh reference too, so the same cap applies to it (D-018).
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(env.first_command_max_step_rad * 1.5), st, now_ns=gap_ns + 2 * SECOND_NS)
+    assert excinfo.value.rule == "first_command_step"
 
 
 def test_workspace_box_rejects_a_point_outside_it() -> None:

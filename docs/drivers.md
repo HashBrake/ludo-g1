@@ -94,7 +94,7 @@ too-frequent or non-finite command exactly as the robot will. `drivers/mock/` is
 | `MockHand` | pinch scalar in, synergy out, palm camera included | `hand.yaml` `mock.open_pose` / `mock.closed_pose`, `device.command_hz` |
 | `MockCamera` | gradient frame carrying the frame counter in row 0 (`frame_index()` reads it back) | `cameras.yaml` `<name>.policy_resolution`, `fps` |
 | `MockGlove` | one sine per channel, triangle-wave pinch scalar | `hand.yaml` `glove.input_hz`, `mock.glove_*`, `training.yaml` `observation.extra_recorded.glove_channels` |
-| `MockPose` | a slow circle with the wrist turning about z | `robot.yaml` `mock.pose_hz`, `mock.pose_cycle_s`, `mock.pose_radius_m` |
+| `MockPose` | a slow circle with the wrist turning about z | `robot.yaml` `mock.pose_hz`, `mock.pose_cycle_s`, `mock.pose_radius_m`, `mock.pose_center_m` |
 
 The arm's lag is a **stand-in**, not a model: `mock.arm_tau_s` is UNMEASURED and exists so that the
 Phase 2 recorder and latency tooling have a response to measure against mocks. The real number is

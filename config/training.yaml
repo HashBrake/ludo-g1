@@ -89,6 +89,9 @@ operator_ui:
     toggle_perturbed: p
     abort: a
     quit: q
+    # The teleop clutch (D-018): `e` asks teleop/loop.py to engage, which it refuses unless the IK
+    # target is within config/robot.yaml `teleop.clutch_engage_tolerance_rad` of the measured state.
+    engage: e
   # The two goal markers, drawn in the `top` frame at the cell pixels runtime/goal.py reports.
   marker_radius_px: 14
   marker_thickness_px: 2

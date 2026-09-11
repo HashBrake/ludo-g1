@@ -25,6 +25,7 @@ from engine.stub import StubEngine
 from runtime import config
 from runtime.goal import GoalRenderer
 from runtime.types import ARM_DOF, MotionCommand
+from teleop.loop import ClutchState
 from teleop.operator_ui import ABORTED, MARKED_FAILURE, OperatorUI, UIState
 from teleop.recorder import SIDECAR, Recorder
 
@@ -94,6 +95,19 @@ class Rig:
         arm[5] = 0.1 * math.sin(phase + 2.0)
         return MotionCommand(arm=arm, waist_yaw=0.05 * math.sin(phase), pinch=0.5 + 0.4 * math.sin(phase))
 
+    def engaged_target(self, engaged_ns: int) -> MotionCommand:
+        """:meth:`target` blended in from the arm's measured state over one second.
+
+        A stream may not step the arm when it starts: ``config/safety.yaml``
+        ``first_command_max_step_rad`` refuses a first command further than 0.05 rad from the
+        measured state (D-018, T-033), and every :meth:`record` call after an idle is a fresh stream.
+        This is the test's stand-in for ``teleop/loop.py``'s clutch, which does exactly this.
+        """
+        want, measured = self.target(), self.arm.read_state().payload.joints
+        alpha = min(1.0, max(0.0, (self.clk.ns - engaged_ns) / SECOND_NS))
+        joints = measured + alpha * (want.joints - measured)
+        return MotionCommand(arm=joints[:ARM_DOF], waist_yaw=joints[ARM_DOF], pinch=want.pinch)
+
     def idle(self, seconds: float) -> None:
         """Advance the clock with no episode open, polling the devices as the real loop would."""
         until = self.clk.ns + round(seconds * SECOND_NS)
@@ -104,10 +118,10 @@ class Rig:
     def record(self, seconds: float) -> int:
         """Drive the teleop loop for ``seconds`` while the UI is recording. Returns frames written."""
         until = self.clk.ns + round(seconds * SECOND_NS)
-        next_tick, frames = self.clk.ns, 0
+        next_tick, frames, engaged_ns = self.clk.ns, 0, self.clk.ns
         while self.clk.ns < until:
             if self.clk.ns >= next_tick:
-                admitted = self.arm.send_targets(self.target())
+                admitted = self.arm.send_targets(self.engaged_target(engaged_ns))
                 self.hand.send_pinch(admitted.pinch)
                 frames += int(self.ui.tick(admitted))
                 next_tick = self.rec.next_grid_ns(self.clk.ns) or self.clk.ns + self.rec.period_ns
@@ -362,3 +376,61 @@ def test_thirty_second_headless_session_records_two_episodes(tmp_path) -> None:
           f"perturbed={[m['perturbed'] for m in (first, second)]}, "
           f"skew p99 {[round(m['skew_p99_ms'], 3) for m in (first, second)]} ms, aborted={ui.aborted}")
     assert [m["frames"] for m in (first, second)] == frames
+
+
+# --------------------------------------------------------------------------------------------------
+# the clutch (D-018, T-033): one key out, one state and one number in
+# --------------------------------------------------------------------------------------------------
+
+
+class StubClutch:
+    """What :class:`teleop.operator_ui.ClutchView` allows: ask to engage, read a state and a number.
+
+    The real one is :class:`teleop.loop.Clutch` (tested in tests/test_teleop_loop.py). This stub is
+    here to prove the UI does nothing else to it -- it never engages one by itself, and it cannot
+    overrule a refusal.
+    """
+
+    def __init__(self, *, engages: bool = True, worst_distance_rad: float = 0.012) -> None:
+        self.state, self.worst_distance_rad = ClutchState.DISENGAGED, worst_distance_rad
+        self.engages, self.calls = engages, 0
+
+    def request_engage(self) -> bool:
+        self.calls += 1
+        if self.engages:
+            self.state = ClutchState.ENGAGED
+        return self.engages
+
+
+def test_the_engage_key_reaches_the_clutch_and_the_banner_shows_its_state(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    clutch = StubClutch()
+    ui = rig.ui
+    ui.clutch = clutch  # the teleop loop attaches its own the same way (teleop/loop.py)
+    assert "e=engage" in ui.lines()[2]
+    assert "clutch disengaged 0.012" in ui.lines()[0]
+    assert ui.handle_key("e") is ui.state and clutch.calls == 1
+    assert "clutch engaged 0.012" in ui.lines()[0]
+    rig.rec.close()
+
+
+def test_the_ui_reports_a_refused_engage_and_never_engages_anything_itself(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    clutch = StubClutch(engages=False, worst_distance_rad=0.44)
+    ui = rig.ui
+    ui.clutch = clutch
+    assert ui.engage() is False and clutch.state is ClutchState.DISENGAGED
+    # Every other key, in every state, leaves the clutch alone: only `e` may ask it for anything.
+    for key in ("s", "p", "x", "y", "a", "q"):
+        ui.handle_key(key)
+    assert clutch.calls == 1
+    rig.rec.close()
+
+
+def test_a_ui_without_a_clutch_ignores_the_engage_key(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    assert rig.ui.clutch is None
+    assert rig.ui.engage() is False
+    assert "clutch" not in rig.ui.lines()[0]
+    assert rig.ui.handle_key("e") is UIState.ARMED  # inert, not an error
+    rig.rec.close()

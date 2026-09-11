@@ -403,9 +403,10 @@ One tick:
 | 2 | `pico_to_g1_base(...)` | the controller pose in the pelvis frame the box and the IK work in |
 | 3 | `arm.read_state()` | the IK is seeded from the **measured** state, so it tracks the robot |
 | 4 | `ik.solve(...)` | the 8 joints of `action_order`; the solve time is timed and kept |
-| 5 | `arm.send_targets(cmd)`, `hand.send_pinch(...)` | each admits through its own `Guard` (R1, R3) |
-| 6 | `ui.tick(admitted)` (or `recorder.tick`) | the **admitted** command is the action the dataset stores |
-| 7 | `recorder.poll()` / `camera.grab()` | when nothing was written: read-only, keeps the buffers warm |
+| 5 | `clutch.target(ik, measured)` | the measured state while disengaged, the IK once engaged, a blend in between |
+| 6 | `arm.send_targets(cmd)`, `hand.send_pinch(...)` | each admits through its own `Guard` (R1, R3) |
+| 7 | `ui.tick(admitted)` (or `recorder.tick`) | the **admitted** command is the action the dataset stores |
+| 8 | `recorder.poll()` / `camera.grab()` | when nothing was written: read-only, keeps the buffers warm |
 
 A `SafetyViolation` is counted by rule, logged and the tick continues; the guard is the limiter, not
 a crash. A refused tick sends nothing and records nothing, so the dataset can only ever hold commands
@@ -422,15 +423,40 @@ rule `runtime/controller.py` follows too.
 tip-to-tip distance that function normalises is the glove driver's to compute (see above, and T-020).
 The loop passes the scalar through; `drivers/dexh15.py` expands it through the synergy.
 
-## Engaging: no clutch yet
+## Engaging: the clutch
 
 The operator's hand is wherever it is when the loop starts, so the first solved pose is far from the
-robot's. The loop as built sends it, and the guard allows it, because a *fresh* command is measured
-against the state aged `command_gap_reset_s` (0.5 s) rather than against one tick: on the mock rig
-the first admitted command steps 0.443 rad in one 33.3 ms tick and every later one stays under
-0.24 rad/s. On hardware that is a lurch, and the clutch the `ArmIK` notes already assume (the first
-target is the *current* wrist pose, then the operator's motion is tracked as a delta) is what removes
-it. It is not built yet and must be before the first motion session; see `agents/BUILD_LOG.md` T-032.
+robot's: T-032 measured that first command stepping **0.443 rad in one 33.3 ms tick** on the mock
+rig. On hardware that is a lurch. D-018's answer is two changes, and both are now in:
+
+* `config/safety.yaml` `first_command_max_step_rad` (0.05 rad, UNMEASURED). The guard refuses any
+  command with a fresh velocity reference that is further than this from the **measured** state, with
+  the rule `first_command_step`. The 0.443 rad target above is refused by it today; a test measures
+  exactly that and asserts the arm did not move. See `docs/safety.md`.
+* `teleop/loop.py`'s `Clutch`, which is what a session engages through.
+
+```
+disengaged --e (only if every joint is within clutch_engage_tolerance_rad)--> engaging
+engaging --after clutch_ramp_s--> engaged --any guard refusal for the arm--> disengaged
+```
+
+| state | what the loop commands | what the operator sees |
+|---|---|---|
+| `disengaged` | the arm's **own measured state** — a hold, a legitimate zero-motion command that still goes through the guard, not a scripted trajectory (R2) | `clutch disengaged 0.443` on the banner: the worst joint's distance to engage |
+| `engaging` | `state + alpha * (ik - state)`, alpha ramping 0 → 1 over `clutch_ramp_s` (1.0 s) | `clutch engaging 0.019` |
+| `engaged` | the IK solution, untouched | `clutch engaged 0.002` |
+
+The IK runs on every tick in every state, which is what keeps that distance current and lets the
+operator walk their hand to the robot before pressing anything. `e` (`config/training.yaml`
+`operator_ui.keys.engage`) asks the clutch to engage; the **clutch** decides, and it refuses unless
+every one of the 8 joints is already within `config/robot.yaml` `teleop.clutch_engage_tolerance_rad`
+(0.05 rad, UNMEASURED, and never above the guard's cap). Any `SafetyViolation` on an arm command
+disengages it again — the loop never resumes tracking on its own, the operator engages deliberately.
+Disengaged, the **hand** holds its current pinch too: the operator's fingers are not passed through
+to a robot that is not tracking their arm.
+
+The CLI has no keyboard, so `python -m teleop.loop` holds for its whole run and says so in its
+summary. Engaging is a windowed-mode (`OperatorUI.run_window`) action.
 
 ### Measured, `tests/test_teleop_loop.py` on the laptop
 
@@ -440,23 +466,28 @@ it. It is not built yet and must be before the first motion session; see `agents
 
 | | |
 |---|---|
-| 30 s session on mocks, fake clock | 901 ticks in 30.033 s = **30.000 Hz**, 901 admitted, 0 refused |
-| arm tracking (mock lag `tau` 0.08 s) | \|state - last admitted target\| = **0.00274 rad**, worst of 8 joints |
-| `ArmIK.solve` per tick | mean **0.524 ms**, p99 **0.901 ms** (budget: one 30 Hz period, 33.3 ms) |
-| engage step / tracking steps | 0.443 rad in one tick, then max 0.231 rad/s, p99 0.157 rad/s |
-| out-of-box pose, 2 s | 61 ticks, **0 admitted**, 61 refused (`workspace_box` 37, `joint_velocity` 24), state unchanged |
+| 0.5 s holding + 30 s engaged on mocks, fake clock | 917 ticks in 30.567 s = **30.000 Hz**, 917 admitted, **0 refused** |
+| arm tracking (mock lag `tau` 0.08 s) | \|state - last admitted target\| = **0.00283 rad**, worst of 8 joints |
+| `ArmIK.solve` per tick | mean **0.344 ms**, p99 **0.513 ms** (budget: one 30 Hz period, 33.3 ms) |
+| engaging | IK target **0.0188 rad** from the state; first admitted command after `e` is the state itself (**0.000000 rad**); worst single tick of the 1 s ramp **0.004801 rad** (cap 0.05) |
+| tracking steps, whole session | first admitted command 0.0 rad from the state; worst commanded step **0.164 rad/s**, p99 0.161 rad/s (limit 1.5) |
+| the T-032 engage, raw | the IK target is **0.443 rad** from the state; the guard refuses it as **`first_command_step`** and the arm does not move |
+| the same circle through the clutch | worst joint 0.434 rad away, so `e` is **refused**; 47 holds sent, 0 refused, arm at 0.0 rad |
+| refusal while engaged | one `command_rate` refusal → clutch `disengaged`, loop keeps holding |
+| out-of-box pose, 2 s | 61 ticks, 61 **holds** admitted, 0 refused; the IK target's wrist is at [0.101, 0.0, 0.001] m, outside the box, and is never sent |
 | recorded episode | every `action` row is a command the guard admitted, in the order it admitted them |
 
-The operator path is the mock Pico circle. Two configurations of that one mock make the two cases:
-`mock.pose_center_m` inside the workspace box (the test's config copy: centre [0.28, 0.15, 0.12] m,
-radius 0.06 m, one turn per 120 s, which is reachable with the mock's near-identity wrist
-orientation) and the shipped `[0, 0, 0]`, which under the placeholder identity `pico_to_pelvis` is
-the pelvis itself — unreachable, outside the box, and refused on every tick. That is also what the
-CLI shows on the shipped config: a summary of refusals and an arm that never moved.
+The operator path is the mock Pico circle. Three configurations of that one mock make the three
+cases: `mock.pose_center_m` drawn through the wrist pose of the arm's own rest pose (radius 0.01 m —
+the session that engages and tracks), centre [0.28, 0.15, 0.12] m with radius 0.06 m (inside the
+workspace box, but 0.44 rad of joint travel from the rest pose: reachable, not engageable), and the
+shipped `[0, 0, 0]`, which under the placeholder identity `pico_to_pelvis` is the pelvis itself —
+unreachable and outside the box. On the last two the arm never moves at all, and on the shipped one
+that is what the CLI shows: every command a hold, and a clutch that stays disengaged.
 
 ## What is not here yet
 
-The clutch (above), and the real drivers this loop is written against: the Pico and PxCap streams
+The real drivers this loop is written against: the Pico and PxCap streams
 (T-020) and the G1 arm write path with its measured actuation latency (T-021). Until those land the
 loop runs on mocks only; `build("real")` raises from `drivers.make`, and `config/robot.yaml`
 `teleop.pico_to_pelvis` and `latency.*` are still `UNMEASURED`, so a real session would be

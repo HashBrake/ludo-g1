@@ -102,6 +102,20 @@ class Rig:
         arm[5] = 0.1 * math.sin(phase + 2.0)
         return MotionCommand(arm=arm, waist_yaw=0.05 * math.sin(phase), pinch=0.5 + 0.4 * math.sin(phase))
 
+    def engaged_target(self, engaged_ns: int) -> MotionCommand:
+        """:meth:`target` blended in from the arm's measured state over one second.
+
+        A stream may not step the arm when it starts: ``config/safety.yaml``
+        ``first_command_max_step_rad`` refuses a first command further than 0.05 rad from the
+        measured state (D-018, T-033). So the first command of an episode *is* the measured state and
+        the stand-in operator is blended in, which is what ``teleop/loop.py``'s clutch does on the
+        real rig. Still no hard-coded robot motion: the shape is the operator stand-in above (R2).
+        """
+        want, measured = self.target(), self.arm.read_state().payload.joints
+        alpha = min(1.0, max(0.0, (self.clk.ns - engaged_ns) / SECOND_NS))
+        joints = measured + alpha * (want.joints - measured)
+        return MotionCommand(arm=joints[:ARM_DOF], waist_yaw=joints[ARM_DOF], pinch=want.pinch)
+
     def run(self, seconds: float, command: Command | None = None, *, poll_hz: float = POLL_HZ) -> None:
         """Record one episode: poll at ``poll_hz``, command and tick on the dataset grid."""
         rec = self.rec
@@ -111,11 +125,12 @@ class Rig:
         rec.start_episode(command or move_command())
         poll_ns, want = round(SECOND_NS / poll_hz), round(seconds * rec.fps)
         next_tick, budget = self.clk.ns, want * 8 + 1000
+        engaged_ns = self.clk.ns
         while rec.episode.frames < want:
             budget -= 1
             assert budget > 0, f"only {rec.episode.frames} of {want} frames after the tick budget"
             if self.clk.ns >= next_tick:
-                admitted = self.arm.send_targets(self.target())
+                admitted = self.arm.send_targets(self.engaged_target(engaged_ns))
                 self.hand.send_pinch(admitted.pinch)
                 rec.tick(admitted)
                 # Commands go on the recorder's own frame grid, which is the board camera's.

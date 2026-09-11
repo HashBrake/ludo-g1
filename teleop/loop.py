@@ -4,7 +4,9 @@ This is the path every training episode comes from, so it is deliberately small.
 read the Pico pose and the glove (read-only, allowed with no session, R1); express the pose in the
 pelvis frame with :func:`teleop.retarget.pico_to_g1_base`; solve the 8 commanded joints with
 :class:`teleop.retarget.ArmIK` seeded from the arm's *measured* state, so the solver tracks the robot
-and not its own last answer; send that plus the glove's pinch scalar through ``arm.send_targets`` and
+and not its own last answer; pass that through the :class:`Clutch`, which holds the arm at its own
+measured state until the operator engages it from a pose the robot is already in (D-018); send the
+result plus the glove's pinch scalar through ``arm.send_targets`` and
 ``hand.send_pinch``, which admit through :meth:`runtime.safety.Guard.admit` (R1, R3); hand the
 **admitted** command to the operator UI, which gives it to the recorder while an episode is open, so
 the dataset holds what the robot was told and never a target that was refused (R5).
@@ -18,7 +20,7 @@ No threads: time comes from the injected ``now_ns`` and ``sleep_until``, so the 
 session on a fake clock in a second. The grid is the recorder's own
 (:meth:`teleop.recorder.Recorder.next_grid_ns`, phase-locked to the board camera) when a recorder is
 attached, and a plain period otherwise. docs/teleop.md, "The teleop loop", has the wiring, the
-engage-without-a-clutch measurement, and what is still missing (T-020, T-021).
+clutch, and what is still missing (T-020, T-021).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -37,12 +40,114 @@ from engine.interface import EngineClient
 from runtime import clock, config
 from runtime.log import configure, get_logger
 from runtime.safety import SafetyViolation
-from runtime.types import ARM_DOF, MotionCommand
+from runtime.types import ARM_DOF, JOINT_DIM, MotionCommand
 from teleop.operator_ui import OperatorUI
 from teleop.recorder import Recorder
 from teleop.retarget import ArmIK, pico_to_g1_base
 
-__all__ = ["LoopStats", "TeleopLoop", "build", "main"]
+__all__ = ["Clutch", "ClutchState", "LoopStats", "TeleopLoop", "build", "main"]
+
+
+class ClutchState(Enum):
+    """Where the clutch is. Only ``ENGAGED`` passes the operator's IK solution through untouched."""
+
+    DISENGAGED = "disengaged"  # the arm is commanded to hold its own measured state
+    ENGAGING = "engaging"      # blending from the measured state towards the IK target
+    ENGAGED = "engaged"        # the IK target, unmodified
+
+
+class Clutch:
+    """Nothing tracks the operator until the operator's hand is where the robot's already is (D-018).
+
+    :meth:`target` is called once a tick with the IK solution and the measured joints and returns
+    what the loop commands. Disengaged that is the measured state -- a hold, which is a legitimate
+    zero-motion command and not a trajectory (R2) -- while the IK keeps running so the operator can
+    see how far off they are. :meth:`request_engage` is the operator's key and is refused unless
+    every one of the 8 joints was within ``teleop.clutch_engage_tolerance_rad`` of the state on the
+    last tick; then the blend ``state + alpha * (ik - state)`` ramps alpha 0 -> 1 over
+    ``teleop.clutch_ramp_s`` (both in ``config/robot.yaml``), so engaging costs no step.
+
+    The guard is still what decides: ``config/safety.yaml`` ``first_command_max_step_rad`` refuses a
+    first command this clutch would have let through, and any arm refusal disengages it again.
+    """
+
+    def __init__(
+        self,
+        *,
+        tolerance_rad: float,
+        ramp_s: float,
+        now_ns: Callable[[], int] = clock.now_ns,
+    ) -> None:
+        self.tolerance_rad, self.ramp_s, self._now = float(tolerance_rad), float(ramp_s), now_ns
+        if not self.tolerance_rad > 0 or self.ramp_s < 0:
+            raise config.ConfigError(
+                f"config/robot.yaml teleop.clutch_engage_tolerance_rad must be positive and "
+                f"clutch_ramp_s >= 0, got {self.tolerance_rad} and {self.ramp_s}"
+            )
+        self.state = ClutchState.DISENGAGED
+        #: Per-joint |ik - measured| as of the last :meth:`target` call: what engaging is judged on.
+        self.distance_rad = np.full(JOINT_DIM, np.inf)
+        self._engaged_ns: int | None = None
+        self._log = get_logger("teleop.clutch")
+
+    @classmethod
+    def from_config(cls, *, root: Path | str | None = None, now_ns: Callable[[], int] = clock.now_ns) -> Clutch:
+        teleop = config.load("robot", root=root)["teleop"]
+        return cls(tolerance_rad=float(teleop["clutch_engage_tolerance_rad"]),
+                   ramp_s=float(teleop["clutch_ramp_s"]), now_ns=now_ns)
+
+    def __repr__(self) -> str:
+        return (f"Clutch(state={self.state.value}, worst={self.worst_distance_rad:.4f} rad, "
+                f"tolerance={self.tolerance_rad:g} rad, ramp={self.ramp_s:g} s)")
+
+    @property
+    def holding(self) -> bool:
+        """True while the arm is held at its measured state and nothing is being passed through."""
+        return self.state is ClutchState.DISENGAGED
+
+    @property
+    def worst_distance_rad(self) -> float:
+        """The worst of the 8 joints between the IK target and the measured state, last tick."""
+        return float(np.max(self.distance_rad))
+
+    def request_engage(self) -> bool:
+        """The operator's key. Refused, and logged, unless every joint is inside the tolerance."""
+        if self.state is not ClutchState.DISENGAGED:
+            return False
+        if not self.worst_distance_rad <= self.tolerance_rad:
+            self._log.warning("clutch_engage_refused", worst_rad=round(self.worst_distance_rad, 4),
+                              tolerance_rad=self.tolerance_rad)
+            return False
+        self.state, self._engaged_ns = ClutchState.ENGAGING, self._now()
+        self._log.info("clutch_engaging", ramp_s=self.ramp_s, worst_rad=round(self.worst_distance_rad, 4))
+        return True
+
+    def disengage(self, reason: str) -> None:
+        """Drop back to holding. The operator engages again, deliberately."""
+        if self.state is not ClutchState.DISENGAGED:
+            self._log.warning("clutch_disengaged", reason=reason, state=self.state.value)
+        self.state, self._engaged_ns = ClutchState.DISENGAGED, None
+
+    def alpha(self, now_ns: int) -> float:
+        """The blend weight now: 0 while disengaged, 1 once engaged, linear in between."""
+        if self.state is ClutchState.DISENGAGED:
+            return 0.0
+        if self.state is ClutchState.ENGAGED or self._engaged_ns is None or self.ramp_s <= 0:
+            return 1.0
+        return min(1.0, max(0.0, (now_ns - self._engaged_ns) / (self.ramp_s * 1e9)))
+
+    def target(self, ik: np.ndarray, measured: np.ndarray, now_ns: int) -> np.ndarray:
+        """The 8 joints to command this tick, and record the distance the operator has to close."""
+        ik = np.asarray(ik, dtype=np.float64)
+        measured = np.asarray(measured, dtype=np.float64)
+        self.distance_rad = np.abs(ik - measured)
+        weight = self.alpha(now_ns)
+        if self.state is ClutchState.ENGAGING and weight >= 1.0:
+            self.state = ClutchState.ENGAGED
+            self._log.info("clutch_engaged")
+        if self.state is ClutchState.ENGAGED:
+            return ik
+        return measured if weight <= 0.0 else measured + weight * (ik - measured)
 
 
 def _sleep_until(ts_ns: int) -> None:
@@ -114,6 +219,7 @@ class TeleopLoop:
         now_ns: Callable[[], int] = clock.now_ns,
         sleep_until: Callable[[int], None] = _sleep_until,
         ik: ArmIK | None = None,
+        clutch: Clutch | None = None,
         config_root: Path | str | None = None,
     ) -> None:
         self._pose, self._glove, self._arm, self._hand = pose_driver, glove_driver, arm, hand
@@ -121,21 +227,29 @@ class TeleopLoop:
         self._now, self._sleep_until, self._config_root = now_ns, sleep_until, config_root
         self.period_ns = round(1e9 / float(config.load("training", root=config_root)["rates"]["action_hz"]))
         self.ik = ArmIK(root=config_root) if ik is None else ik
+        self.clutch = Clutch.from_config(root=config_root, now_ns=now_ns) if clutch is None else clutch
         self.recorder = recorder
         if ui is None and recorder is not None and engine is not None and self._cameras:
-            ui = OperatorUI(engine=engine, recorder=recorder, cameras=self._cameras,
+            ui = OperatorUI(engine=engine, recorder=recorder, cameras=self._cameras, clutch=self.clutch,
                             now_ns=now_ns, config_root=config_root)
         self.ui = ui
+        if ui is not None and ui.clutch is None:  # a UI built elsewhere still shows and keys this clutch
+            ui.clutch = self.clutch
         self.stats = LoopStats()
         self.last_admitted: MotionCommand | None = None  # the last command the guard admitted
         self._log = get_logger("teleop.loop")
 
     def __repr__(self) -> str:
         return (f"TeleopLoop(hz={1e9 / self.period_ns:g}, recorder={self.recorder is not None}, "
-                f"ui={self.ui is not None}, ticks={self.stats.ticks})")
+                f"ui={self.ui is not None}, clutch={self.clutch.state.value}, ticks={self.stats.ticks})")
 
     def tick(self) -> MotionCommand | None:
-        """Read the operator, solve, send, record. Returns the admitted command, or None if refused."""
+        """Read the operator, solve, send, record. Returns the admitted command, or None if refused.
+
+        The clutch decides what is commanded: the measured state while it is disengaged (a hold),
+        the IK solution once the operator has engaged it, a blend in between (D-018). The IK runs
+        either way, so the distance the operator has to close is always current.
+        """
         pose = self._pose.read().payload
         glove = self._glove.read().payload
         position, quat = pico_to_g1_base(pose.position_m, pose.quat_xyzw, root=self._config_root)
@@ -144,7 +258,11 @@ class TeleopLoop:
         joints = self.ik.solve(position, quat, measured)
         self.stats.ik_ms.append((time.perf_counter_ns() - started_ns) / 1e6)
         self.stats.ticks += 1
-        admitted = self._send(MotionCommand(arm=joints[:ARM_DOF], waist_yaw=joints[ARM_DOF], pinch=glove.pinch))
+        target = self.clutch.target(joints, measured, self._now())
+        # Disengaged, the hand holds what it has: the operator's fingers are not passed through to a
+        # robot that is not tracking their arm.
+        pinch = self._hand.read_state().payload.pinch if self.clutch.holding else glove.pinch
+        admitted = self._send(MotionCommand(arm=target[:ARM_DOF], waist_yaw=target[ARM_DOF], pinch=pinch))
         self._observe(admitted)
         return admitted
 
@@ -154,6 +272,7 @@ class TeleopLoop:
             admitted = self._arm.send_targets(cmd)
         except SafetyViolation as exc:
             self._refused("arm", exc)
+            self.clutch.disengage(f"the guard refused an arm command: {exc.rule}")
             return None
         try:
             self._hand.send_pinch(admitted.pinch)
@@ -241,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nteleop loop summary (backend {args.backend})")
     for line in stats.lines():
         print(f"  {line}")
+    print(f"  clutch           {loop.clutch.state.value}, worst joint {loop.clutch.worst_distance_rad:.3f} rad "
+          f"from the state (tolerance {loop.clutch.tolerance_rad:g}; the operator engages it with a key)")
     return 0
 
 

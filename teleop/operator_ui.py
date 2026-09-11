@@ -14,6 +14,10 @@ The state machine, one command at a time::
 :class:`~engine.interface.Outcome`, because the engine hands out exactly one command per report (5.5)
 and it is the engine, not this UI, that decides on a retry.
 
+One more key, ``e``, asks the teleop loop's clutch to engage (D-018); the clutch is what decides
+whether it may, and the banner shows its state and how far the operator still has to close. A UI
+built without a clutch ignores the key.
+
 **Nothing here moves anything and nothing here generates a target** (R2). The teleop loop hands its
 already-admitted action to :meth:`OperatorUI.tick`; this file never builds a :class:`MotionCommand`,
 never touches a driver, and reads the board camera only to draw it. docs/teleop.md has the keys, the
@@ -25,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 import cv2
 import numpy as np
@@ -37,7 +42,24 @@ from runtime.log import get_logger
 from runtime.types import MotionCommand
 from teleop.recorder import Recorder
 
-__all__ = ["ABORTED", "MARKED_FAILURE", "OperatorUI", "UIState"]
+__all__ = ["ABORTED", "MARKED_FAILURE", "ClutchView", "OperatorUI", "UIState"]
+
+
+class ClutchView(Protocol):
+    """The teleop clutch as this UI sees it: one key press in, one state and one number out.
+
+    Implemented by :class:`teleop.loop.Clutch`. The protocol lives here so that the display does not
+    import the loop (the loop imports this module), and so that what the UI can do to the clutch is
+    exactly this: ask it to engage. It never engages it by itself and never builds a target (R2).
+    """
+
+    @property
+    def state(self) -> Enum: ...
+
+    @property
+    def worst_distance_rad(self) -> float: ...
+
+    def request_engage(self) -> bool: ...
 
 #: ``Outcome.failure_mode`` for an episode the operator threw away. CLAUDE.md 6.5 has no label for
 #: it because it is a collection event, not a robot failure mode, and eval never produces one.
@@ -69,6 +91,7 @@ class OperatorUI:
         engine: EngineClient,
         recorder: Recorder,
         cameras: Mapping[str, CameraDriver],
+        clutch: ClutchView | None = None,
         now_ns: Callable[[], int] = clock.now_ns,
         headless: bool = True,
         goal: GoalRenderer | None = None,
@@ -77,10 +100,11 @@ class OperatorUI:
         if "top" not in cameras:
             raise ValueError(f"OperatorUI needs the 'top' camera to draw the board; got {sorted(cameras)}")
         self._ui = ui = config.load("training", root=config_root)["operator_ui"]
+        self.clutch = clutch
         self._actions: dict[str, Callable[[], bool]] = {
             "start": self.start, "stop": self.stop, "mark_success": lambda: self.mark(True),
             "mark_failure": lambda: self.mark(False), "toggle_perturbed": self.toggle_perturbed,
-            "abort": self.abort, "quit": self.quit,
+            "abort": self.abort, "quit": self.quit, "engage": self.engage,
         }
         self._keys: dict[str, str] = {str(key).lower(): str(action) for action, key in ui["keys"].items()}
         if sorted(self._keys.values()) != sorted(self._actions) or any(len(c) != 1 for c in self._keys):
@@ -182,6 +206,18 @@ class OperatorUI:
         self._arm()
         return True
 
+    def engage(self) -> bool:
+        """``e``: ask the teleop loop's clutch to engage (D-018). The clutch is what decides.
+
+        It refuses unless the operator's solved pose is already within
+        ``teleop.clutch_engage_tolerance_rad`` of the robot's measured joints, and nothing here can
+        overrule that. With no clutch attached -- a UI running without the loop -- the key does
+        nothing at all rather than pretending it engaged something.
+        """
+        if self.clutch is None:
+            return self._ignored("engage")
+        return self.clutch.request_engage()
+
     def quit(self) -> bool:
         """``q``: abort anything open and ask :meth:`run_window` to stop."""
         if self.state is not UIState.IDLE:
@@ -211,12 +247,18 @@ class OperatorUI:
         cv2.circle(frame, centre, int(self._ui["marker_dot_px"]), color, -1)
         return px
 
+    def _clutch_field(self) -> str:
+        """``clutch <state> <worst joint distance to engage, rad>``, or nothing when there is none."""
+        if self.clutch is None:
+            return ""
+        return f"   clutch {self.clutch.state.value} {min(self.clutch.worst_distance_rad, 9.999):.3f}"
+
     def lines(self) -> list[str]:
-        """The three banner lines: the command, the episode, the keys."""
+        """The three banner lines: the command and the clutch, the episode, the keys."""
         f, episode = self._command_fields(), self.recorder.episode
         return [
             f"{(f['primitive'] or 'no command').upper()}   src {f['src'] or '-'} (green)"
-            f"   dst {f['dst'] or '-'} (magenta)",
+            f"   dst {f['dst'] or '-'} (magenta){self._clutch_field()}",
             f"{self.state.value.upper()}   {self.elapsed_s:5.1f} s   {0 if episode is None else episode.frames} frames"
             f"   perturbed {'YES' if self.perturbed else 'no'}   kept {len(self.recorder.episodes)}"
             f"   aborted {self.aborted}",

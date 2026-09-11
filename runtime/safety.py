@@ -9,10 +9,10 @@ Three pieces, documented for humans in ``docs/safety.md``:
     one who runs it.
 
 :class:`Envelope`
-    R3. Joint limits, waist clamp, workspace box, joint velocity limit, command rate limit and the
-    pinch scalar range and slew, all read from ``config/safety.yaml``. Out-of-limit joint targets and
-    an out-of-range pinch are clamped and reported; a velocity, box, rate or non-finite violation
-    raises :class:`SafetyViolation`.
+    R3. Joint limits, waist clamp, workspace box, joint velocity limit, first-command step cap,
+    command rate limit and the pinch scalar range and slew, all read from ``config/safety.yaml``.
+    Out-of-limit joint targets and an out-of-range pinch are clamped and reported; a step, velocity,
+    box, rate or non-finite violation raises :class:`SafetyViolation`.
 
 :class:`Guard`
     The two together. ``Guard.admit`` is what a driver calls; there is no other way in, and there is
@@ -287,7 +287,7 @@ def _mechanical_ranges(robot: dict) -> dict[str, tuple[float, float]]:
 
 
 class Envelope:
-    """R3. The workspace box, joint limits, waist clamp, rate and velocity limits, and the hand range.
+    """R3. Box, joint limits, waist clamp, rate, step and velocity limits, and the hand range.
 
     One envelope instance owns the rate-limit and velocity reference for one command stream; it is
     not thread-safe and is not shared between two drivers. :meth:`reset` drops the reference, which
@@ -307,6 +307,7 @@ class Envelope:
         velocity_limit_rad_s: float,
         command_rate_limit_hz: float,
         command_gap_reset_s: float,
+        first_command_max_step_rad: float,
         watchdog_timeout_s: float,
         pinch_range: tuple[float, float],
         pinch_rate_limit_per_s: float,
@@ -324,6 +325,7 @@ class Envelope:
         self.velocity_limit_rad_s = float(velocity_limit_rad_s)
         self.command_rate_limit_hz = float(command_rate_limit_hz)
         self.command_gap_reset_s = float(command_gap_reset_s)
+        self.first_command_max_step_rad = float(first_command_max_step_rad)
         self.watchdog_timeout_s = float(watchdog_timeout_s)
         self.pinch_range = (float(pinch_range[0]), float(pinch_range[1]))
         self.pinch_rate_limit_per_s = float(pinch_rate_limit_per_s)
@@ -339,6 +341,8 @@ class Envelope:
             )
         if self.command_rate_limit_hz <= 0 or self.velocity_limit_rad_s <= 0:
             raise config.ConfigError("config/safety.yaml: rate and velocity limits must be positive")
+        if self.first_command_max_step_rad <= 0:
+            raise config.ConfigError("config/safety.yaml: first_command_max_step_rad must be positive")
 
     def __repr__(self) -> str:
         return (
@@ -420,6 +424,7 @@ class Envelope:
             velocity_limit_rad_s=float(safety["joint_velocity_limit_rad_s"]),
             command_rate_limit_hz=float(safety["command_rate_limit_hz"]),
             command_gap_reset_s=float(safety["command_gap_reset_s"]),
+            first_command_max_step_rad=float(safety["first_command_max_step_rad"]),
             watchdog_timeout_s=float(safety["watchdog_timeout_s"]),
             pinch_range=(float(hand["pinch_scalar_range"][0]), float(hand["pinch_scalar_range"][1])),
             pinch_rate_limit_per_s=float(hand["pinch_rate_limit_per_s"]),
@@ -444,10 +449,11 @@ class Envelope:
     def check(self, cmd: MotionCommand, state: RobotState, now_ns: int | None = None) -> MotionCommand:
         """Return the command to send, or raise :class:`SafetyViolation`.
 
-        Order: command rate, finiteness, joint and waist clamping, pinch range and slew, joint
-        velocity, workspace box. Clamping happens before the velocity and box checks, so what is
-        checked is exactly what would be sent. The returned command's ``clamped`` names every field
-        that was pulled in. The last accepted command is recorded only when every check passed.
+        Order: command rate, finiteness, joint and waist clamping, pinch range and slew, the
+        first-command step cap, joint velocity, workspace box. Clamping happens before the step,
+        velocity and box checks, so what is checked is exactly what would be sent. The returned
+        command's ``clamped`` names every field that was pulled in. The last accepted command is
+        recorded only when every check passed.
         """
         now_ns = clock.now_ns() if now_ns is None else int(now_ns)
 
@@ -488,7 +494,21 @@ class Envelope:
 
         # 5. joint velocity, against the previous accepted command, or against the measured state when
         #    the previous command is older than command_gap_reset_s (config/safety.yaml).
-        reference, dt_s, source = self._velocity_reference(state, now_ns)
+        reference, dt_s, source, fresh = self._velocity_reference(state, now_ns)
+
+        # 5a. a fresh reference means nobody is tracking this arm yet: the first command of a stream,
+        #     or the first after a gap. It may not step the arm at all (D-018). The velocity rule
+        #     alone would allow velocity_limit * gap_reset here, which is a lurch, not a step.
+        if fresh:
+            step = np.abs(clipped - reference)
+            worst = int(np.argmax(step))
+            if step[worst] > self.first_command_max_step_rad:
+                raise self._reject(
+                    "first_command_step",
+                    f"{self.names[worst]} would step {step[worst]:.4f} rad from the measured state on a "
+                    f"command with a fresh reference (limit first_command_max_step_rad "
+                    f"{self.first_command_max_step_rad:g} rad); a stream engages from where the arm is",
+                )
         speed = np.abs(clipped - reference) / dt_s
         worst = int(np.argmax(speed))
         if speed[worst] > self.velocity_limit_rad_s:
@@ -515,19 +535,21 @@ class Envelope:
             _log.debug("safety_clamp", fields=tuple(clamped))
         return MotionCommand(arm=clipped[:-1], waist_yaw=float(clipped[-1]), pinch=pinch, clamped=tuple(clamped))
 
-    def _velocity_reference(self, state: RobotState, now_ns: int) -> tuple[np.ndarray, float, str]:
-        """``(reference joints, dt seconds, description)`` for the velocity check.
+    def _velocity_reference(self, state: RobotState, now_ns: int) -> tuple[np.ndarray, float, str, bool]:
+        """``(reference joints, dt seconds, description, fresh)`` for the velocity check.
 
         Normally the previous accepted command and the monotonic time since it. After a gap longer
         than ``command_gap_reset_s`` -- and for the first command of a stream -- the reference is the
-        measured state, aged by exactly ``command_gap_reset_s``: a fresh command may step the arm by
-        ``velocity_limit * gap_reset`` from where the arm actually is, and no further.
+        measured state, aged by exactly ``command_gap_reset_s``, and ``fresh`` is True: such a
+        command is capped by ``first_command_max_step_rad`` instead, which is far tighter than the
+        ``velocity_limit * gap_reset`` the velocity rule alone would allow (D-018).
         """
         if self._last_ns is not None and self._last_joints is not None:
             dt_s = (now_ns - self._last_ns) / 1e9
             if 0 < dt_s <= self.command_gap_reset_s:
-                return self._last_joints, dt_s, f"previous accepted command {dt_s * 1e3:.1f} ms ago"
-        return state.joints, self.command_gap_reset_s, f"measured state, fresh after {self.command_gap_reset_s:g} s"
+                return self._last_joints, dt_s, f"previous accepted command {dt_s * 1e3:.1f} ms ago", False
+        gap = self.command_gap_reset_s
+        return state.joints, gap, f"measured state, fresh after {gap:g} s", True
 
     def _forward(self, joints: np.ndarray) -> np.ndarray:
         """The workspace-box point for ``joints``. Fails closed when fk is missing or misbehaves."""

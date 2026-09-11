@@ -183,6 +183,18 @@ teleop:
   # Phase 1 choice once the rig and the table height are measured.
   rest_pose_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   rest_pose_rad_status: UNMEASURED
+  # The teleop clutch (teleop/loop.py, D-018). Nothing is passed through to the arm until the
+  # operator asks to engage AND every one of the 8 commanded joints of the IK solution is within
+  # `clutch_engage_tolerance_rad` of the measured state; then the loop blends from the state to the
+  # IK target over `clutch_ramp_s`. The tolerance is a placeholder: how close an operator can
+  # actually bring the controller by hand, and how much residual step the arm may take at engage,
+  # are Phase 1 measurements on the rig. It must stay at or below config/safety.yaml
+  # `first_command_max_step_rad`, which is what refuses the command if the clutch lets one through.
+  clutch_engage_tolerance_rad: 0.05
+  clutch_engage_tolerance_rad_status: UNMEASURED
+  # Seconds the blend takes to go from the measured state (alpha 0) to the full IK target (alpha 1).
+  clutch_ramp_s: 1.0
+  clutch_ramp_s_status: UNMEASURED
   # Solver settings for teleop/retarget.py ArmIK (mink over the vendored G1 MJCF). These are design
   # choices, not measurements, so they carry no `_status`; the joint limits and the velocity limit
   # the solver obeys are NOT here, they are read from config/safety.yaml (R3).
