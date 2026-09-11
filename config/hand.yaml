@@ -7,14 +7,20 @@
 # --- transport (docs/sdks.md 4.2) ----------------------------------------------------------------
 device:
   # Modbus RTU over a USB serial adapter. Port, baud and slave address are the SDK example's values
-  # (third_party/dexh15_sdk/DexH15 SDK/linux_x86/dexh15/python/position_control.py:27,29,31).
-  port: UNMEASURED          # e.g. /dev/serial/by-id/...; /dev/ttyUSB0 in the example
+  # (third_party/dexh15_sdk/DexH15 SDK/linux_x86/dexh15/python/position_control.py:27,29,31), none of
+  # which has yet been confirmed against this hand: it has never been plugged in (H-003), so all
+  # three are placeholders. drivers/dexh15.py resolves the port in this order: an explicit port=
+  # argument, then this key, then discovery of the `usb_id` below among /dev/ttyUSB* and /dev/ttyACM*.
+  port: UNMEASURED          # a /dev/serial/by-id/... path, never /dev/ttyUSBn: node numbers move
   baud: 4000000
+  baud_status: UNMEASURED
   slave_address: 0x78
+  slave_address_status: UNMEASURED
   usb_id: "067b:23a3"       # recorded by the Paxini teleop bundle
   # Bring-up order is mandatory and lives in drivers/dexh15.py, not here:
   # open port -> initModbusDevice -> initMotorPosition -> setMotorControlMode(POSITION_CONTROL_MODE)
-  # -> enableMotor.
+  # -> enableMotor. Only the first two are in the read-only driver of T-019; the rest arrive with the
+  # write path (T-022), because everything after initModbusDevice changes the hand's state.
   command_hz: 30
   command_hz_status: UNMEASURED
 
@@ -28,6 +34,17 @@ device:
 # order is NOT the URDF XML order (pxcap_pro_left_dexh15.yaml:3). Phase 1 verifies it on hardware by
 # commanding one joint at a time and watching which one moves. Until then `joint_order_status` is
 # UNMEASURED and nothing may rely on it.
+#
+# T-019 adds one independent corroboration of the FINGER half of that hypothesis, from the installed
+# SDK itself rather than from the teleop bundle: the pxdex FingerType enum numbers the fingers
+# INDEX_FINGER 1, MIDDLE_FINGER 2, RING_FINGER 3, PINKY_FINGER 4, THUMB_FINGER 5
+# (.venv/lib/python3.10/site-packages/pxdex/dh15.pyi:261; read back with
+# `.venv/bin/python -c "import pxdex.dh15 as d; print({k: int(v) for k, v in d.FingerType.__members__.items()})"`),
+# which is the same finger order in the same direction. It says nothing about the three joints
+# within a finger, and it is still not a measurement: only the hand can settle that. The hand was
+# never reached in T-019 (H-003 still open), so the length of getJointPositionsAngle is unverified
+# too -- drivers/dexh15.py refuses to hand out a state whose length disagrees with this list rather
+# than reshaping it silently.
 joint_order:
   - left_index_joint_0
   - left_index_joint_1

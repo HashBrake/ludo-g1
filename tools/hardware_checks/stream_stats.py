@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
-"""Read-only: stream one device for N seconds and report rate, drops and jitter (T-010, T-018).
+"""Read-only: stream one device for N seconds and report rate, drops and jitter (T-010, T-018, T-019).
 
 This is the Phase 1 read-only check of CLAUDE.md section 6 ("stream every device at target rate for
 10 minutes and report drop rates and jitter"). ``--stream`` picks the device: one of the three
-camera streams of ``config/cameras.yaml`` (``top``, ``oblique``, ``palm``), or ``arm`` for the G1's
-``rt/lowstate`` state stream. It takes samples as fast as the device delivers them and reports what
-the stream actually did:
+camera streams of ``config/cameras.yaml`` (``top``, ``oblique``, ``palm``), ``arm`` for the G1's
+``rt/lowstate`` state stream, or ``hand`` for the DexH15's joint angles. It takes samples as fast as
+the device delivers them and reports what the stream actually did:
 
 * **achieved rate** -- ``(samples - 1) / span``, the rate the timestamps imply, not what the device
   claims through ``CAP_PROP_FPS`` or what ``config/robot.yaml`` ``control.state_hz`` says;
 * **drops** -- gaps longer than 1.5 nominal periods, and the number of frames those gaps swallowed;
 * **jitter** -- ``|interval - nominal period|`` at p50 and p99, in milliseconds.
 
-Timestamps come from the driver, i.e. from ``runtime.clock.now_ns`` at the instant the frame or the
-``LowState_`` message arrived, which is the same clock the recorder aligns streams on
-(docs/clock.md). Cameras are polled with ``grab()`` and de-duplicated by timestamp; the arm is
-drained with ``poll()``, which hands over every message its subscriber callback stamped, so a slow
-poll loop cannot invent a drop that the stream did not have.
+Timestamps come from the driver, i.e. from ``runtime.clock.now_ns`` at the instant the frame, the
+``LowState_`` message or the Modbus reply arrived, which is the same clock the recorder aligns
+streams on (docs/clock.md). Cameras are polled with ``grab()`` and the hand with ``read_state()``,
+both de-duplicated by timestamp; the arm is drained with ``poll()``, which hands over every message
+its subscriber callback stamped, so a slow poll loop cannot invent a drop that the stream did not
+have. The hand has no queue to drain: one ``read_state()`` is one synchronous Modbus round trip, so
+what is measured there is the achieved rate of back-to-back reads.
 
 ``--backend mock`` needs no hardware at all and exits 0 with nothing plugged in: it streams
-``drivers.mock.MockCamera`` or ``drivers.mock.MockArm``, whose samples are a grid on the same clock,
-so it exercises this tool's statistics end to end and is what the acceptance tests run.
-``--backend real`` opens the device.
+``drivers.mock.MockCamera``, ``drivers.mock.MockArm`` or ``drivers.mock.MockHand``, whose samples are
+a grid on the same clock, so it exercises this tool's statistics end to end and is what the
+acceptance tests run. ``--backend real`` opens the device.
 
-This script only reads: a camera is a sensor and the arm driver has no writer at all (T-018), so no
-motion command can be produced from here and no hardware session is needed (R1, R2).
+This script only reads: a camera is a sensor, the arm driver has no writer at all (T-018) and the
+hand driver has none either (T-019), so no motion command can be produced from here and no hardware
+session is needed (R1, R2).
 
 Usage:
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 10
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream top --device /dev/video2 --json
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 600
+    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream hand --seconds 600
 
 Exit codes: 0 statistics were produced, 2 usage error, 3 no usable stream (absent, busy or silent).
 """
@@ -58,9 +62,12 @@ NO_STREAM = 3
 #: The name this exit code had when cameras were the only stream (T-010); kept for callers.
 NO_CAMERA = NO_STREAM
 
-#: Streams this tool can read: the camera names of config/cameras.yaml, plus the G1 state stream.
+#: Streams this tool can read: the camera names of config/cameras.yaml, the G1 state stream and the
+#: DexH15's joint angles.
 CAMERAS: tuple[str, ...] = ("top", "oblique", "palm")
-STREAMS: tuple[str, ...] = (*CAMERAS, "arm")
+#: Streams that are not cameras, i.e. that carry no frame and no policy resolution.
+NOT_CAMERAS: tuple[str, ...] = ("arm", "hand")
+STREAMS: tuple[str, ...] = (*CAMERAS, *NOT_CAMERAS)
 
 #: A gap longer than this many nominal periods counts as a drop.
 DROP_FACTOR = 1.5
@@ -116,23 +123,26 @@ def stats(ts_ns: list[int], expected_hz: float) -> dict[str, Any]:
     }
 
 
-def stream(camera: Any, seconds: float, poll_s: float = 0.0, warmup: int = 0) -> list[int]:
-    """Grab from ``camera`` for ``seconds`` and return one timestamp per distinct frame.
+def stream(source: Any, seconds: float, poll_s: float = 0.0, warmup: int = 0) -> list[int]:
+    """Take samples from ``source`` for ``seconds`` and return one timestamp per distinct sample.
 
-    A real camera blocks in ``read()`` until the next frame, so every ``grab()`` is a new frame. A
-    mock reports whatever the grid currently shows, so repeated timestamps are polls of the same
-    frame and are dropped here; ``poll_s`` keeps that loop from spinning.
+    One acquisition is one call: ``grab()`` on a camera, ``read_state()`` on the hand -- both return
+    a :class:`runtime.clock.Stamped` and both block until the device has answered, so every call to
+    a real device yields a new sample. A mock reports whatever its grid currently shows, so repeated
+    timestamps are polls of the same sample and are dropped here; ``poll_s`` keeps that loop from
+    spinning.
 
-    ``warmup`` frames are grabbed and discarded first, so that auto-exposure settling and the first
+    ``warmup`` samples are taken and discarded first, so that auto-exposure settling and the first
     allocation do not show up as jitter.
     """
+    take = getattr(source, "grab", None) or source.read_state
     for _ in range(warmup):
-        camera.grab()
+        take()
     out: list[int] = []
     deadline = clock.now_ns() + int(seconds * 1e9)
     last: int | None = None
     while clock.now_ns() < deadline:
-        ts = camera.grab().ts_ns
+        ts = take().ts_ns
         if last is None or ts > last:
             out.append(ts)
             last = ts
@@ -177,11 +187,27 @@ def _build(backend: str, name: str, device: str | None) -> tuple[Any, float, flo
         expected_hz = float(robot["control"]["state_hz"])
         return G1Arm(), expected_hz, DRAIN_POLL_FRACTION / expected_hz
 
+    if name == "hand":
+        # No queue to drain: read_state() is one synchronous Modbus round trip (docs/drivers.md).
+        expected_hz = float(config.load("hand")["device"]["command_hz"])
+        if backend == "mock":
+            from drivers.mock import MockHand
+
+            return MockHand(), expected_hz, MOCK_POLL_FRACTION / expected_hz
+        from drivers.dexh15 import DexH15
+
+        return DexH15(), expected_hz, 0.0
+
     expected_hz = float(config.load("cameras")[name]["fps"])
     if backend == "mock":
         from drivers.mock import MockCamera
 
         return MockCamera(name), expected_hz, MOCK_POLL_FRACTION / expected_hz
+    if name == "palm":
+        # The palm camera is the hand's, and is opened through the Paxini SDK (T-019).
+        from drivers.dexh15 import PalmCamera
+
+        return PalmCamera(device=device), expected_hz, 0.0
     from drivers.cameras import V4L2Camera
 
     return V4L2Camera(name, device=device), expected_hz, 0.0
@@ -197,6 +223,17 @@ def _print_human(report: dict[str, Any]) -> None:
     if "mode_machine" in probe:
         print(f"robot        mode_machine {probe['mode_machine']}, mode_pr {probe['mode_pr']}, tick {probe['tick']}")
         print(f"probe rate   {probe['state_hz']:.1f} Hz over {probe['samples']} samples in {probe['window_s']:g} s")
+    if "slave_address" in probe:
+        print(
+            f"hand         slave 0x{probe['slave_address']:02x} at {probe['baud']} baud, "
+            f"{probe['joints']} joints, connected {probe['connected']}"
+        )
+        print(
+            f"versions     sn {probe['serial_number'] or '?'}, hardware {probe['hardware_version'] or '?'}, "
+            f"firmware {probe['firmware_version'] or '?'}, sdk {probe['sdk_version'] or '?'}"
+        )
+        measurable = "measurable" if probe["pinch_measurable"] else "nan (config/hand.yaml pinch.* UNMEASURED)"
+        print(f"pinch        {measurable}")
     if report.get("policy_resolution"):
         print(f"policy size  {report['policy_resolution'][0]}x{report['policy_resolution'][1]}")
     print(f"samples      {s['frames']} in {s['span_s']:.2f} s (warmup {report['warmup']} discarded)")
@@ -232,16 +269,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.warmup < 0:
         print("--warmup must be >= 0", file=sys.stderr)
         return 2
-    if args.device and (args.backend != "real" or name == "arm"):
+    if args.device and (args.backend != "real" or name in NOT_CAMERAS):
         print("--device only means anything for a real camera", file=sys.stderr)
         return 2
 
     # Both live in modules with heavy imports (cv2, the DDS idl), so they are imported lazily; name
     # them before the try so that every path below can catch them.
     from drivers.cameras import CameraUnavailable
+    from drivers.dexh15 import HandUnavailable
     from drivers.g1_arm import ArmUnavailable
 
-    unavailable = (CameraUnavailable, ArmUnavailable)
+    unavailable = (CameraUnavailable, ArmUnavailable, HandUnavailable)
     try:
         source, expected_hz, poll_s = _build(args.backend, name, args.device)
     except unavailable as exc:
@@ -268,17 +306,23 @@ def main(argv: list[str] | None = None) -> int:
     selection = getattr(source, "selection", None)
     # MockCamera carries its policy size as width/height; V4L2Camera as a policy_resolution pair.
     size = list(getattr(source, "policy_resolution", (getattr(source, "width", 0), getattr(source, "height", 0))))
-    device = "mock" if args.backend == "mock" else f"{source.interface} {source.topic}" if name == "arm" else None
+    device: str | None = None
+    if args.backend == "mock":
+        device = "mock"
+    elif name == "arm":
+        device = f"{source.interface} {source.topic}"
+    elif name == "hand":
+        device = f"{source.port} slave 0x{source.slave_address:02x}"
     report: dict[str, Any] = {
         "stream": name,
         "backend": args.backend,
         "device": device if device is not None else selection.describe() if selection is not None else "mock",
-        "policy_resolution": None if name == "arm" else size,
+        "policy_resolution": None if name in NOT_CAMERAS else size,
         "warmup": args.warmup,
         "probe": None if probe is None else dataclasses.asdict(probe),
         "stats": measured,
     }
-    if name != "arm":
+    if name in CAMERAS:
         report["camera"] = name  # the key this report carried before --stream existed (T-010)
     if args.json:
         json.dump(report, sys.stdout, indent=2, sort_keys=True)

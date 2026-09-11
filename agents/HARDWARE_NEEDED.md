@@ -38,6 +38,16 @@ Steps:
 2. Do not power-enable the hand's motors; nothing in this check enables a motor.
 3. Confirm serial permissions: `ls -l /dev/ttyUSB* /dev/ttyACM*`; if the nodes are not group `dialout`
    readable, run `sudo usermod -aG dialout $USER` and log out and in again.
-Post-check the agent runs: `.venv/bin/python tools/hardware_checks/list_devices.py --json` and records the
-Brio's video node + USB id, the DexH15 palm-camera node, and the two serial nodes with their USB ids into
-docs/sdks.md, replacing the UNMEASURED rows.
+Post-check the agent runs (T-019 adds the last three lines; all read-only, no session):
+```
+.venv/bin/python tools/hardware_checks/list_devices.py --json
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream hand --seconds 600 --json
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --camera palm --seconds 600 --json
+.venv/bin/python -m pytest -m readonly tests/test_dexh15.py -q
+```
+and records the Brio's video node + USB id, the DexH15 palm-camera node, and the two serial nodes with
+their USB ids into docs/sdks.md, replacing the UNMEASURED rows; the serial by-id path goes into
+config/hand.yaml `device.port` and the palm node into config/cameras.yaml `palm.device` first, or the
+last three commands exit 3 naming exactly those keys. The two stream runs are the 10-minute hand-state
+and palm-camera statistics that T-019's first acceptance line asks for, and the achieved joint read
+rate they report is the A3 verdict for docs/sdks.md 4.6 and section 9.

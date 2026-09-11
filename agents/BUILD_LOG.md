@@ -3244,3 +3244,131 @@ R2: no scripted motion, no literal joint target; `drivers/` still imports nothin
 `tools/hardware_checks/`. R3: no guard is built because there is no command path to guard;
 `config/safety.yaml` untouched. `hardware/session.enable` neither created, edited nor read. Nothing
 under `third_party/` touched. Committed through the full pre-commit gate, no `--no-verify` (D-013).
+
+---
+
+## T-019  DexH15 driver, read-only state and palm camera  (2026-09-12, branch wt/t019)
+
+Built in the worktree `/home/alois/Desktop/ludo-g1-wt-t019` (branch `wt/t019`, created with
+`tools/worktree_setup.sh`). **The hand was never reached: it has never been plugged in (H-003 open),
+and no `/dev/ttyUSB*` or `/dev/ttyACM*` node existed at any point during this task.** Everything
+below that is a number about the hand is therefore a number about a fake, and is labelled as such.
+
+### What changed
+- **`drivers/dexh15.py` (new, 485 lines).** `DexH15`, the read half of `HandDriver`: it opens the
+  Modbus port and binds the slave (`openModbusDevice` -> `initModbusDevice`, nothing after that),
+  then only queries. `read_state()` is **one** synchronous round trip (`getJointPositionsAngle`,
+  stamped on the reply, converted to real radians with `calculateRealAngle` on the connected slave);
+  `full_state()` adds `getMotorPosition` and `getFingerResultantForce` for the dataset (5.6);
+  `probe()` reports SN, hardware/firmware/SDK versions and the link. `send_pinch` raises
+  `NotImplementedError` naming T-022. The SDK is imported lazily in `default_control` /
+  `default_camera`, so importing the module pulls in neither `pxdex` nor `cv2` (a test asserts it in
+  a fresh interpreter). Port discovery mirrors `drivers/cameras.py`: explicit `port=`, then
+  `config/hand.yaml` `device.port`, then the lowest-numbered serial node carrying `device.usb_id`.
+  Everything unavailable -- unconfigured port, absent adapter, silent slave, anything the SDK throws,
+  a closed driver -- is a `HandUnavailable` naming the port, as `CameraUnavailable`/`ArmUnavailable`
+  already do.
+- **`PalmCamera` (same module).** The hand's built-in camera through `pxdex.dh15.DexH15Camera`:
+  `connectCameraDevice` -> `setCameraConfig(config/cameras.yaml palm.resolution, palm.fps)` ->
+  `getFrame`, downscaled to `palm.policy_resolution` (320x240) so it is indistinguishable from
+  `MockCamera` and `V4L2Camera` downstream. It needs no Modbus link, is found by the same
+  `drivers.cameras.resolve_device` (so an absent one still raises `CameraUnavailable` naming
+  `palm.device`), and `DexH15.palm_frame()` builds it **lazily**, on the first call.
+- **`drivers/__init__.py`.** `make("hand", backend="real")` -> `DexH15`; `make("palm",
+  backend="real")` -> `PalmCamera` (the palm camera belongs to the hand's SDK). Both read-only, no
+  session, no guard.
+- **`tools/hardware_checks/stream_stats.py`.** `--stream hand` (real: `DexH15`, mock: `MockHand`) and
+  `--camera palm --backend real` now going through `PalmCamera`. `stream()` takes one sample per call
+  through `grab()` on a camera and `read_state()` on the hand -- there is no queue to drain on a
+  Modbus bus, so what `--stream hand` measures is the achieved rate of back-to-back reads. Hand
+  fields added to the human-readable report; `HandUnavailable` joins the exit-3 set.
+- **`config/hand.yaml`.** `device.baud` and `device.slave_address` are now tagged
+  `_status: UNMEASURED` -- they are the SDK example's values and have never been confirmed against
+  this hand. `device.port`'s comment states the resolution order and that it must be a
+  `/dev/serial/by-id/...` path. The `joint_order` warning gains one **independent corroboration of
+  the finger half** of the hypothesis, from the installed SDK rather than from the Paxini teleop
+  bundle: `FingerType` numbers the fingers INDEX 1, MIDDLE 2, RING 3, PINKY 4, THUMB 5
+  (`pxdex/dh15.pyi:261`), the same order and direction as
+  `pxcap_pro_left_dexh15.yaml:122`. It says nothing about the three joints inside a finger and is not
+  a measurement, so `joint_order_status` stays `UNMEASURED` and the driver refuses a live joint
+  vector whose length disagrees with the list rather than reshaping it.
+- **`tests/test_dexh15.py` (new, 613 lines)**, `docs/drivers.md` ("The real hand" + "The palm
+  camera", tables, factory, stream check), `agents/HARDWARE_NEEDED.md` (H-003's post-check).
+
+### Commands run and what they measured
+```
+.venv/bin/python -m pytest -q                      -> 573 passed, 10 skipped, 774.07 s
+.venv/bin/python -m pytest tests/test_dexh15.py -q -> 33 passed, 3 skipped, 5.52 s
+.venv/bin/ruff check / format --check              -> clean on every file touched
+grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py
+  -> one hit, drivers/dexh15.py:373, inside the send_pinch NotImplementedError message
+grep -c initMotorPosition drivers/dexh15.py        -> 0
+stream_stats.py --backend mock --stream hand --seconds 60 --json
+  -> 1801 samples in 60.000 s, 30.000 Hz (expected 30), 0 drops, 0 frames missed,
+     interval p50/p99/max 33.3333/33.3333/33.3333 ms, jitter p50/p99/max 0.0/0.0/0.0 ms
+stream_stats.py --backend mock --camera palm --seconds 60 --json
+  -> 1800 samples in 59.9667 s, 30.000 Hz, 0 drops, jitter p50/p99/max 0.0/0.0/0.0 ms
+stream_stats.py --backend real --stream hand --seconds 1   -> exit 3, "config/hand.yaml device.port
+     is UNMEASURED and no /dev/ttyUSB*, /dev/ttyACM* node has usb id 067b:23a3 ... H-003"
+stream_stats.py --backend real --camera palm --seconds 1   -> exit 3, "palm: config/cameras.yaml
+     palm.device is UNMEASURED and palm.usb_id gives nothing to discover with ..."
+ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id     -> all three: No such file or directory
+.venv/bin/python -c "import pxdex.dh15 as d; d.DexH15Control().getSDKVersion()" -> DexHandSDK_3.2.1
+```
+The two 60 s mock runs are a check of this tool's statistics on the hand and palm paths, nothing
+more: a mock's samples are a grid on an injected clock, so 30.000 Hz and 0.0 ms jitter describe the
+grid, not any device (R5).
+
+### The fakes
+`FakeControl` and `FakeCamera` in `tests/test_dexh15.py` carry the method names and return shapes of
+`pxdex.dh15.DexH15Control` and `DexH15Camera` as the installed stubs declare them
+(`.venv/lib/python3.10/site-packages/pxdex/dh15.pyi:83-171`): `(ret, list[float])` pairs from
+`getJointPositionsAngle`/`calculateRealAngle`, a `Dex15MotorPosition` with `motor1_pos..motor7_pos`,
+a list of `ForcePoint(x, y, z)`, the 5-tuple from `getDeviceInfo`, and an `ndarray` from `getFrame`.
+33 tests cover the whole unpacking path, both unavailability regimes and the R1/R2 greps.
+
+### One conversion that cannot be done off-device
+`DexH15Kinematic.calculateRealAngle` rejects **every** vector length without a hand
+(`normalized angle count error` for 14, 15, 16 and 20 values, with and without a
+`hardware_version` string), so the normalised->real conversion goes through
+`DexH15Control.calculateRealAngle(slave_address, ...)` on the connected slave, which is the only
+route that knows the hand's hardware version. That also means the real-radian half of `HandState` is
+completely unexercised against hardware.
+
+### Files changed outside the task's touch list, and why
+Same two files T-018 had to touch for the same reason, and with the same minimal edit:
+- `tests/test_cameras.py:189` and `tests/test_mock_drivers.py:107` asserted that
+  `make(name, backend="real")` raises `NotImplementedError` for every actuated device including
+  `hand`. Giving `hand` a real read-only driver -- a deliverable of this task -- makes that false, so
+  `hand` moved out of both lists with a comment naming T-019, exactly as `arm` moved out at T-018 and
+  the cameras at T-010. `glove` and `pose` are still asserted to raise. Nothing else in either file
+  changed.
+
+### Not met, and why
+- **Acceptance 1 (hand present) is OPEN, as the task said to expect.** The hand has never been
+  plugged in. There are no 10-minute hand-state or palm-camera statistics, no achieved joint read
+  rate, and therefore **no A3 verdict**: `docs/sdks.md` is untouched, because writing a verdict
+  without a measurement is exactly what R5 forbids. H-003 stays OPEN; its post-check now carries the
+  four exact commands that produce those numbers, and says which two config keys
+  (`config/hand.yaml device.port`, `config/cameras.yaml palm.device`) must be filled in first. What
+  is still unknown after this task: the achieved `getJointPositionsAngle` rate, whether 15 is the
+  length it really returns, the joint slot order, the palm camera's native format and resolution, the
+  hand's serial permissions, and whether `calculateRealAngle` works at all on this unit.
+- **`drivers/dexh15.py` is 485 lines, not under 300** (314 code, 84 docstring, 78 blank, 8 comment).
+  Disagreement logged per the protocol, and the same one as T-018: D-013 item 2's remedy is a sibling
+  module, but the task's touch-list does not include one and is the more specific instruction, so I
+  kept one file. The module is genuinely two devices -- the Modbus hand and the V4L2 palm camera --
+  plus serial-node discovery. If Fable prefers the split, moving `PalmCamera` to
+  `drivers/palm_camera.py` (about 80 lines) and the discovery helpers to a shared module with
+  `drivers/cameras.py`'s identical sysfs walk (about 70) takes it to roughly 330; that is a
+  one-commit follow-up.
+
+### Safety
+R1: no motion command is possible from this code. It never powers a motor, never sets a control mode
+and never writes a target; `grep` proves the SDK's three writing verbs appear only inside the
+`send_pinch` refusal, and `initMotorPosition` -- which rewrites the hand's zero -- appears nowhere.
+R2: no scripted motion, no literal joint target; `drivers/` still imports nothing from
+`tools/hardware_checks/` and names no such path. R3: no guard is built because there is no command
+path to guard; `config/safety.yaml` untouched. `hardware/session.enable` neither created, edited nor
+read. Nothing under `third_party/` touched. Committed through the full pre-commit gate, no
+`--no-verify` (D-013).

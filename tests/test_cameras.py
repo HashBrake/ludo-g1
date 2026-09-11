@@ -187,14 +187,16 @@ def test_depth_request_names_the_missing_package() -> None:
 
 
 def test_the_factory_still_refuses_the_actuated_devices() -> None:
-    # `arm` left this list in T-018: it has a real, read-only driver now (tests/test_g1_arm.py).
-    for name in ("hand", "glove", "pose"):
+    # `arm` left this list in T-018 and `hand` in T-019: both have a real, read-only driver now
+    # (tests/test_g1_arm.py, tests/test_dexh15.py).
+    for name in ("glove", "pose"):
         with pytest.raises(NotImplementedError):
             make(name, backend="real")
 
 
 def test_the_factory_reports_an_absent_camera_as_unavailable() -> None:
-    """`palm` is unconfigured on purpose (Phase 1, DexH15): the factory must not crash on it."""
+    """`palm` is unconfigured on purpose: the factory must not crash on it. It is the hand's own
+    camera and goes through drivers/dexh15.py since T-019, but raises the same CameraUnavailable."""
     with pytest.raises(CameraUnavailable):
         make("palm", backend="real")
 

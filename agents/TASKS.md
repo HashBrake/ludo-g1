@@ -783,7 +783,7 @@ result: drivers/g1_arm.py (332 lines) -- G1Arm, the read half of ArmDriver: Chan
   commit: 3f3df45 (pre-commit hook: ruff clean, 533 passed, 7 skipped in 1346 s under load; no --no-verify)
 
 ## T-019  DexH15 driver, read-only state and palm camera, 10-minute stream stats
-status: in_progress
+status: review
 priority: P0
 phase: 1
 owner: opus
@@ -803,6 +803,23 @@ acceptance:
   - without: suite green, tests skipped with the device path in the reason
 notes: The motors stay disabled. A `grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py` must show only the
   NotImplementedError stub for send_pinch.
+result: commit COMMIT_HASH (branch wt/t019). The hand was NEVER reached: it has never been plugged in
+  (H-003 open) and no /dev/ttyUSB* or /dev/ttyACM* node existed during the task.
+  - suite: 573 passed, 10 skipped, 774.07 s (`.venv/bin/python -m pytest -q`); tests/test_dexh15.py alone
+    33 passed, 3 skipped. ruff check and ruff format --check clean on every file touched.
+  - the 3 new skips name the device path: "config/hand.yaml device.port is UNMEASURED and no
+    /dev/ttyUSB*, /dev/ttyACM* node has usb id 067b:23a3 ... H-003" (2) and "palm: config/cameras.yaml
+    palm.device is UNMEASURED ..." (1). stream_stats --backend real exits 3 with the same two reasons.
+  - R1/R2: `grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py` -> one hit, line 373, inside the
+    send_pinch NotImplementedError message; `grep -c initMotorPosition` -> 0. A test asserts both.
+  - mock statistics (the tool's own path, not a device): --stream hand 60 s -> 1801 samples, 30.000 Hz,
+    0 drops, jitter p50/p99/max 0.0/0.0/0.0 ms; --camera palm 60 s -> 1800 samples, 30.000 Hz, 0 drops.
+  - acceptance 1 (hand present) is OPEN and H-003 stays open: no 10-minute hand or palm statistics, no
+    achieved joint read rate, and no A3 verdict written (docs/sdks.md untouched, R5). H-003's post-check
+    now carries the four commands that produce those numbers.
+  - deviations logged in BUILD_LOG.md: drivers/dexh15.py is 485 lines (not under 300), and tests/
+    test_cameras.py + tests/test_mock_drivers.py needed the same one-line list edit T-018 made, because
+    make("hand", backend="real") no longer raises NotImplementedError.
 
 ## T-020  Glove and controller pose drivers, read-only, 10-minute stream stats
 status: todo
