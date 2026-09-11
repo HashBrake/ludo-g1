@@ -1116,3 +1116,133 @@ a 0.707 px systematic bias would otherwise slide under the 1.0 px acceptance bou
 - The `tests/test_greennode_local.py` flake reported under T-007 did not reproduce in the runs here.
 - No blockers. The only unmet criterion is acceptance 3, which needs H-001 and a Brio.
 (T-008 commit: 63d998f; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+---
+
+## T-013  Controller-pose to 8-DoF arm IK prototype  (2026-09-11T23:55+07:00)
+
+### What changed
+- `teleop/retarget.py` (new, 200 code lines / 318 with docstrings): `ArmIK` (mink over the vendored
+  `third_party/unitree_g1_mjcf/g1_29dof.xml`), `pico_to_g1_base`, `pinch_from_glove`, `IkResult`.
+  `ArmIK.solve(target_pos_m, target_quat_xyzw, q_current) -> q8` in `config/robot.yaml` `action_order`;
+  `solve_detailed(..., record_steps=)` adds the iteration count, the residual errors, the converged
+  flag and every intermediate configuration. `fk_pose(q8)` gives the target point's pose, whose
+  position is bit-identical to `runtime.fk.left_arm_fk(q8)` (same model instance geometry, same base,
+  same frozen joints) plus the orientation the box does not need.
+- `tests/test_retarget.py` (new, 30 tests).
+- `config/robot.yaml`: new `teleop` block -- `pico_to_pelvis` (4x4, identity, UNMEASURED),
+  `rest_pose_rad` (8 zeros, UNMEASURED), `teleop.ik` (solver settings, design choices, no `_status`).
+- `docs/teleop.md` (new); `docs/config.md`: the future-tense T-012 sentence fixed, and the new
+  `teleop` keys documented under `config/robot.yaml`.
+- Nothing else. No driver, no motion command, no scripted trajectory, `config/safety.yaml` untouched.
+
+### Commands and measured results
+```
+.venv/bin/ruff check .                      -> All checks passed!
+.venv/bin/python -m pytest -q               -> 327 passed, 1 skipped in 28.5 s   (297 before + 30 new;
+                                               the skip is tests/test_scaffold.py's motion autoskip)
+.venv/bin/python -m pytest tests/test_retarget.py -q   -> 30 passed
+```
+The last command prints both acceptance numbers (`capsys.disabled()`, so they appear on a plain `-q` run):
+
+```
+ArmIK cold solve, 50 reachable targets from the rest pose: pass rate 100% (50/50) within 5 mm and
+3 deg; position error median 0.301 mm / p90 0.910 mm, orientation error median 0.092 deg / p90 0.223 deg
+ArmIK solve time on this laptop: warm (tracking, 250 calls) mean 0.632 ms, p99 9.204 ms; cold from the
+rest pose (50 calls) mean 3.896 ms, max 9.125 ms
+```
+
+- **acceptance 1, pass rate: 100% (50/50), required >= 90%.** Targets are the forward kinematics of
+  random joint draws inside the `config/safety.yaml` limits (waist clamp applied) whose wrist lands
+  inside the workspace box with `margin_m` removed, so every one is reachable by construction; seed
+  fixed at 0, so the number is reproducible. Max iterations used: <= 30 (asserted).
+- **acceptance 2, mean solve time: 0.632 ms warm, required < 5 ms.** "Warm" is the teleop case as the
+  task's clarification defines it: the previous solution as the seed and the target moved +-3 mm,
+  250 calls. Cold from the rest pose is reported separately at 3.896 ms mean (also under 5 ms, but it
+  is not what a 30 Hz loop pays). Three repeat runs of the benchmark gave warm means of 0.628 /
+  0.659 / 0.628 ms. The warm p99 of 9.2 ms is the handful of calls that hit the 30-iteration budget
+  near a singularity; still well inside the 33 ms tick.
+- Also asserted: every solution and every intermediate step inside the safety joint limits and the
+  waist clamp; every step's largest joint move <= `joint_velocity_limit_rad_s * step_dt_s` = 0.15 rad
+  (and > half of it, so the limit is actually binding and the test is not vacuous); no uncommanded
+  joint and no floating-base dof moves by more than 1e-9 over a solve.
+
+### Disagreement, and what I did instead (Fable's design guidance, `dt`)
+The guidance said to run the solver's damped-least-squares steps at "`dt` from config (use the 30 Hz
+action period)". **That makes the acceptance criterion unreachable, and I deviated.** Measured, with
+`dt = 1/30 s`: each iteration may move a joint by at most `1.5 * 1/30 = 0.05 rad`, so 30 iterations
+cover 1.5 rad, while the 50 sampled targets sit a median of 1.78 rad (min 0.77, max 2.51) from the
+rest pose in the worst joint. The result is a travel-limited, not convergence-limited, failure:
+
+```
+dt=1/30  pass=32/50  mean 6.71 ms  mean 27.0 iters      <- Fable's dt
+dt=0.05  pass=46/50  mean 7.16 ms  mean 24.0 iters
+dt=0.10  pass=50/50  mean 4.37 ms  mean 15.8 iters      <- chosen
+dt=0.15  pass=48/50  mean 3.42 ms  mean 12.4 iters
+dt=0.30  pass=49/50  mean 2.35 ms  mean  9.1 iters
+```
+(sweep: scratchpad script, same sampler and seed as the test.)
+
+So `config/robot.yaml` `teleop.ik.step_dt_s` is **0.1 s and is documented as a trust-region size, not
+a control period**: with the safety velocity limit it bounds one iteration at 0.15 rad, and 30 of them
+cover 4.5 rad, wider than the widest commanded joint range. The reasoning is that a solver iteration
+is a Newton step, not a control tick; reading it as a control tick would mean a cold solve is a
+1-second arm traverse, which is not what a `solve` call is. The command-level velocity limit is a
+different guarantee and is enforced where it belongs, in `runtime/safety.py`, against the *measured*
+state and *real* elapsed monotonic time -- which is strictly stronger than anything the IK could
+promise, because the IK does not know when its output will be sent or where the arm actually is.
+
+The consequence, stated plainly in the module header and in `docs/teleop.md`: a single **cold** solve
+can return a pose further from `q_current` than one 30 Hz tick at 1.5 rad/s allows, and the guard will
+refuse that command. In teleop it never arises -- the operator's hand moves continuously and the loop
+engages from a clutch, so every solve is warm (1-3 iterations, sub-millisecond, sub-millimetre steps).
+If Fable prefers the other reading, the alternative is to keep `step_dt_s` at 1/30 and either raise
+`max_iters` to ~120 (mean cold solve would be ~15 ms, warm unchanged) or relax the acceptance to
+"reached within 30 iterations *of travel*". I did not do either, because both change a number the
+task fixed; this way only a number the task did not fix moved.
+
+### Other design calls
+- **Freezing the other 21 joints and the base.** Done as a hard constraint, not a task: every other
+  hinge gets a `mink.VelocityLimit` of **0.0** and the floating base a `FreeJointVelocityLimit(0, 0)`,
+  so the QP itself cannot move them. Measured drift over a solve is below 1e-9 rad (QP round-off), and
+  a test asserts it. Masking the solved velocity afterwards -- the other option in the guidance --
+  was rejected: the task Jacobian would then be solved over dofs that are not actually free and the
+  masked step would not achieve the task, hurting convergence for no gain.
+- The uncommanded joints are held at the model's `qpos0` (zero for all of them), which is exactly what
+  `runtime/fk.py` does, rather than at "their `config/robot.yaml` rest values" -- `config/robot.yaml`
+  lists only the 8 commanded joints, and inventing rest values for the legs and the right arm would
+  let the IK and the workspace box disagree about geometry. The new `teleop.rest_pose_rad` therefore
+  covers the 8 commanded joints only.
+- **Safety limits reach the solver through `MjModel.jnt_range`.** `mink.ConfigurationLimit` has no
+  custom-limits argument, so `ArmIK` writes the `config/safety.yaml` limits (waist clamp already
+  applied) into its **own** model instance's `jnt_range`. `mj_kinematics` does not read `jnt_range`,
+  so `runtime/fk.py`'s geometry is untouched; `ArmIK` loads its own `MjModel` and never mutates the
+  one `runtime.fk.kinematics()` caches.
+- **The IK targets `config/safety.yaml` `workspace_box_m.point`**, not a hard-coded body name, so when
+  Phase 1 moves the checked point to the DexH15 fingertip site (D-010) the IK follows the box instead
+  of silently aiming somewhere else. Body or site is resolved from the model, as `runtime/fk.py` does.
+- **The output is clamped to the joint limits** on the way out. That is belt and braces and is said to
+  be so in the docstring: `runtime/safety.py` is what decides whether a command may be sent (R3).
+- `teleop.ik` went into `config/robot.yaml` rather than staying as constants in code (section 7).
+  This is more than the "UNMEASURED placeholder keys" the task listed me as allowed to add, and I flag
+  it for review: the alternative was module-level numeric constants, which section 7 forbids and the
+  phase audit looks for. The block carries no `_status` keys because none of it is a measurement.
+- `pinch_from_glove` needed no new `config/hand.yaml` keys: `glove.open_distance_mm` (90.0) and
+  `glove.closed_distance_mm` (10.0) already existed and are already UNMEASURED. `config/hand.yaml` is
+  therefore unchanged. The mapping is linear between them and clamped to `pinch.scalar_range`.
+- `pico_to_g1_base` transforms **both** halves of the pose and converts xyzw <-> wxyz at the boundary
+  (pico_bridge is xyzw, mujoco and mink are wxyz). A test with a non-identity 90-degree-yaw transform
+  in a temporary config root proves the rotation is composed and not just carried through, which an
+  identity-only test could never show.
+
+### Notes
+- R1-R6 intact. `teleop/retarget.py` imports `numpy`, `mujoco`, `mink`, `runtime.config`, `runtime.fk`,
+  `runtime.types` and nothing else; no driver, no `tools/hardware_checks/`, no motion command, no
+  literal joint target or waypoint list. `config/safety.yaml` and `runtime/config.py` untouched.
+- Staged by name only: another builder is working on `drivers/cameras.py` in a separate worktree.
+- Open question for Fable, non-blocking: `teleop.rest_pose_rad` is all zeros today, which D-010 puts
+  inside the box but which is not a sensible teleop home pose (the arm points forward at zero). The
+  real one is a Phase 1 choice on the rig; it is the posture target, so it also picks which elbow
+  configuration the IK settles into, and changing it later changes solutions. Worth deciding before
+  the first collection session rather than after.
+- No blockers.

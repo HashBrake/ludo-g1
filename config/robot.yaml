@@ -152,3 +152,50 @@ mock:
   # deterministic, repeatable path.
   pose_cycle_s: 8.0
   pose_radius_m: 0.1
+
+# --- teleop retargeting (teleop/retarget.py, T-013, D-006) ---------------------------------------
+# The operator's left hand reaches the robot through two maps: the Pico controller's 6-DoF pose is
+# expressed in the pelvis frame, then an 8-DoF IK turns that pose into the 8 commanded joints. Both
+# maps live here; neither may hold a constant in code (section 7).
+teleop:
+  # Rigid transform from the pico_bridge controller frame ("pico_native", metres, quaternion xyzw --
+  # docs/sdks.md 7.1) to the G1 pelvis frame that config/safety.yaml's box and runtime/fk.py work in.
+  # Row-major 4x4 [R t; 0 1], applied as p_pelvis = R @ p_pico + t. Identity is a placeholder, NOT a
+  # claim that the two frames coincide: the real transform is a Phase 1 calibration (the operator
+  # holds the controller at known board cells and the transform is solved for).
+  pico_to_pelvis:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  pico_to_pelvis_status: UNMEASURED
+  # Rest pose of the 8 commanded joints, in `action_order` (7 arm joints then waist yaw), radians.
+  # It is the IK's posture target and its default seed. Zero is the MJCF `qpos0`, which is where
+  # runtime/fk.py holds every uncommanded joint, and D-010 measured the wrist there at
+  # [0.20, 0.15, 0.10] m in the pelvis frame, inside the workspace box. The teleop home pose is a
+  # Phase 1 choice once the rig and the table height are measured.
+  rest_pose_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  rest_pose_rad_status: UNMEASURED
+  # Solver settings for teleop/retarget.py ArmIK (mink over the vendored G1 MJCF). These are design
+  # choices, not measurements, so they carry no `_status`; the joint limits and the velocity limit
+  # the solver obeys are NOT here, they are read from config/safety.yaml (R3).
+  ik:
+    # qpsolvers backend for the per-iteration QP. `daqp` is the only one installed (requirements.txt).
+    solver: daqp
+    max_iters: 30
+    # Integration timestep of ONE solver iteration. It is a trust-region size, not a control period:
+    # with config/safety.yaml `joint_velocity_limit_rad_s` it bounds each iteration's joint step at
+    # 1.5 * 0.1 = 0.15 rad, so `max_iters` iterations cover 4.5 rad, wider than the widest commanded
+    # joint range. The command-level velocity limit is a different thing and is enforced by
+    # runtime/safety.py against the measured state and real elapsed time, not here.
+    step_dt_s: 0.1
+    # Relative weights of the two halves of the wrist task, and the pull back towards `rest_pose_rad`
+    # that picks one configuration out of the 8-DoF null space of a 6-DoF target.
+    position_cost: 1.0
+    orientation_cost: 0.5
+    posture_cost: 0.001
+    # Levenberg-Marquardt damping, which is what keeps the step finite near a kinematic singularity.
+    lm_damping: 0.001
+    # Iterating stops early once the wrist is within both tolerances of the target.
+    position_tolerance_m: 0.001
+    orientation_tolerance_rad: 0.005

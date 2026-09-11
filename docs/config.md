@@ -84,13 +84,20 @@ and the per-path actuation latencies.
   roll/pitch/yaw 19/20/21. Source and verification: `docs/sdks.md` section 2.4. `G1JointIndex` lives
   in the SDK's *example*, not in the installed `unitree_sdk2py` package.
 - `limit_rad` is the **mechanical** range from the G1 MJCF, not a safety limit. The limits that are
-  enforced are in `config/safety.yaml`. `limits_source` points at the MJCF; T-012 vendors it into
-  `third_party/` and that path must then be repointed.
+  enforced are in `config/safety.yaml`. `limits_source` points at the vendored MJCF that T-012 put
+  under `third_party/unitree_g1_mjcf/`; that same file is the model `runtime/fk.py` and
+  `teleop/retarget.py` load.
 - `action_order` is the 9-D action vector of CLAUDE.md 5.3: 7 arm joints, waist yaw, pinch scalar.
   Anything that builds or consumes an action reads this list.
 - `topics.command` is `rt/arm_sdk` and nothing else (D-007). `rt/lowcmd` owns the legs.
 - Every entry under `latency` is `0.0` + `UNMEASURED` until Phase 1 measures it with the method
   written in `latency.method`. `runtime/clock.py` applies them (`docs/clock.md`).
+- `teleop` holds the two operator-side maps of `teleop/retarget.py` (T-013, `docs/teleop.md`):
+  `pico_to_pelvis`, the 4x4 from the Pico controller frame to the pelvis frame, an UNMEASURED
+  identity until Phase 1 calibrates it; `rest_pose_rad`, the 8 commanded joints' rest pose, which is
+  the IK's posture target and seed; and `teleop.ik`, the solver settings. The `ik` block carries no
+  `_status` because it is design choices, and it holds no limits: the joint limits and the velocity
+  limit the solver obeys are read from `config/safety.yaml` (R3).
 
 ### `config/safety.yaml`
 

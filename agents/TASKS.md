@@ -490,7 +490,7 @@ result:
     `uv pip install --reinstall-package opencv-python -r requirements.txt`. See agents/BUILD_LOG.md T-012.
 
 ## T-013  Controller-pose to 8-DoF arm IK prototype (pulled forward from Phase 2, non-hardware)
-status: in_progress
+status: review
 priority: P1
 phase: 2
 owner: opus
@@ -512,6 +512,31 @@ acceptance:
   - mean solve time < 5 ms per call (measured, command logged)
 notes: No hardware, no drivers touched. This is the IK that D-006 replaces Teleopit with; keep it under 200 lines. Also fix the
   future-tense sentence about T-012 in docs/config.md.
+result: (commit COMMITHASH)
+  - `.venv/bin/ruff check .` -> All checks passed!; `.venv/bin/python -m pytest -q` -> 327 passed, 1 skipped
+    (297 before + 30 new in tests/test_retarget.py; the skip is the motion autoskip)
+  - acceptance 1, printed pass rate: `.venv/bin/python -m pytest tests/test_retarget.py -q` ->
+    "pass rate 100% (50/50) within 5 mm and 3 deg; position error median 0.301 mm / p90 0.910 mm,
+    orientation error median 0.092 deg / p90 0.223 deg"; every solve used <= 30 iterations (asserted).
+    Targets are the FK of random joint draws inside the config/safety.yaml limits (waist clamp applied)
+    landing inside the workspace box with margin_m removed, seed 0, so reachable by construction.
+  - acceptance 2, mean solve time: same command -> "warm (tracking, 250 calls) mean 0.632 ms, p99
+    9.204 ms; cold from the rest pose (50 calls) mean 3.896 ms, max 9.125 ms". Warm is the teleop case
+    of the task's clarification (previous solution as seed, target moved +-3 mm). Three repeats: 0.628 /
+    0.659 / 0.628 ms warm mean. Both are under the 5 ms budget.
+  - also asserted: solutions and every intermediate step inside the safety joint limits and the waist
+    clamp; largest per-step joint move <= joint_velocity_limit_rad_s * step_dt_s = 0.15 rad and > half of
+    it (so the limit binds); no uncommanded joint and no base dof moves by more than 1e-9 over a solve;
+    ArmIK.fk_pose position == runtime.fk.left_arm_fk to 1e-12
+  - teleop/retarget.py is 200 code lines (318 with docstrings and comments)
+  - DEVIATION for review: teleop.ik.step_dt_s is 0.1 s, not the 30 Hz action period of Fable's guidance.
+    At dt=1/30 the per-step velocity limit caps 30 iterations at 1.5 rad of travel while the targets sit a
+    median 1.78 rad from the rest pose, giving pass=32/50; measured sweep 32/46/50/48/49 at
+    dt=1/30/0.05/0.10/0.15/0.30. step_dt_s is documented as a solver trust region, not a control period;
+    the command-level velocity limit stays with runtime/safety.py. Full reasoning and the alternatives in
+    agents/BUILD_LOG.md T-013.
+  - also for review: config/robot.yaml gained a `teleop.ik` settings block (not just the UNMEASURED
+    placeholders the task listed), because section 7 forbids the equivalent constants in code
 
 ## T-014  Worktree helper for parallel builders
 status: todo
