@@ -22,9 +22,13 @@ Steps:
    `nmcli con add type ethernet ifname enp0s31f6 con-name robot-lan ipv4.method manual ipv4.addresses 192.168.123.2/24 connection.autoconnect yes`
    then `nmcli con up robot-lan` (profile already exists on this laptop for the prior teleop work; `nmcli con up robot-lan` may be enough).
 4. Check: `ping -c 2 192.168.123.164` answers.
-Post-check the agent runs: `.venv/bin/python tools/hardware_checks/list_devices.py` prints the interface with
-`<-- G1 LAN`, and (once T-005 and the read-only state reader exist) a 10 s LowState read reports a non-zero
-`get_state_counter`. No motion command is involved in either check.
+5. Put the interface name that holds 192.168.123.2 into `config/robot.yaml` `network.dds_interface`
+   (it is the literal `UNMEASURED` today; the read-only arm driver refuses to run while it is).
+Post-check the agent runs (updated by T-018, now that the read-only state reader exists):
+`.venv/bin/python tools/hardware_checks/list_devices.py` prints the interface with `<-- G1 LAN`, then
+`.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 10` exits 0 and
+reports a non-zero rate on `rt/lowstate` (the Phase 1 acceptance run is the same command with `--seconds 600`).
+No motion command is involved in either check: the arm driver of T-018 creates no DDS writer at all.
 
 ## H-003  Plug in the Brio, the DexH15 and the PxCap Pro glove once, for enumeration only  (opus, 2026-09-11T20:05+07:00)
 Needed to finish the UNMEASURED rows of docs/sdks.md (native resolutions, /dev node names, USB ids, serial

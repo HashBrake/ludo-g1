@@ -187,7 +187,8 @@ def test_depth_request_names_the_missing_package() -> None:
 
 
 def test_the_factory_still_refuses_the_actuated_devices() -> None:
-    for name in ("arm", "hand", "glove", "pose"):
+    # `arm` left this list in T-018: it has a real, read-only driver now (tests/test_g1_arm.py).
+    for name in ("hand", "glove", "pose"):
         with pytest.raises(NotImplementedError):
             make(name, backend="real")
 

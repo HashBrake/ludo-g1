@@ -736,7 +736,7 @@ result:
     list did not allow the sibling module D-013 suggests. All three explained in BUILD_LOG.md.
 
 ## T-018  G1 arm driver, read-only state stream (rt/lowstate) and 10-minute stream stats
-status: in_progress
+status: review
 priority: P0
 phase: 1
 owner: opus
@@ -755,6 +755,32 @@ acceptance:
   - with the LAN up (H-002): `stream_stats.py --stream arm --seconds 600` output in BUILD_LOG.md: rate within 5% of the SDK's
     500 Hz (or whatever the SDK delivers; record it), drop count, jitter p50/p99; 10 minutes, per CLAUDE.md Phase 1
 notes: No publisher, no motion. If the robot is in a mode where rt/lowstate is silent, record it and stop.
+result: drivers/g1_arm.py (332 lines) -- G1Arm, the read half of ArmDriver: ChannelSubscriber on config/robot.yaml
+  topics.state (rt/lowstate) after one ChannelFactoryInitialize(domain_id, interface), bound lazily once per process
+  (never at import; dds_binding() reports it); read_state() gives the 7 arm joints + waist yaw in action_order stamped
+  with runtime.clock.now_ns inside the subscriber handler; full_state() gives q/dq/tau_est for all control.motor_count
+  (29) joints plus mode_machine/mode_pr/tick; poll() drains the arrivals (BACKLOG 4096); probe(window_s) reports the
+  measured rate, mode_machine and the interface. NO DDS WRITER OF ANY KIND: send_targets raises NotImplementedError
+  naming T-021, and a test greps the module for ChannelPublisher / rt/arm_sdk / rt/lowcmd (none present).
+  stream_stats.py gained --stream {top,oblique,palm,arm} over the same stats path (--camera still works), with drain()
+  collecting callback-stamped arrivals. config/robot.yaml gained control.motor_count (29) and control.state_timeout_s
+  (3.0); REQUIRED_KEYS untouched. docs/drivers.md gained "The real arm" with the DDS setup and the H-002 nmcli profile;
+  H-002's post-check is now `stream_stats.py --backend real --stream arm --seconds 10`.
+  Acceptance 1 (LAN down) PASS: ruff clean; full suite green at commit through the pre-commit hook (no --no-verify);
+  tests/test_g1_arm.py 23 passed, 3 skipped, the 3 readonly skips reading "no G1 state stream on interface 'UNMEASURED':
+  config/robot.yaml network.dds_interface is UNMEASURED ... (H-002)". Mock check:
+  `stream_stats.py --backend mock --stream arm --seconds 5` -> 502 samples in 5.01 s, 100.00 Hz (expected 100),
+  0 drops, jitter p50 0.00 ms / p99 0.00 ms; `--backend real --stream arm` exits 3 naming dds_interface.
+  Acceptance 2 (LAN up) OPEN as the task anticipated: no LowState_ was ever received, the robot LAN is still down
+  (H-002 OPEN), so no 600 s rate/drop/jitter numbers exist and none are claimed (R5).
+  Deviation 2 (outside the touch list, minimal): a real `arm` backend falsified three existing assertions --
+  tests/test_cameras.py:189 and tests/test_mock_drivers.py:107 (`make("arm", backend="real")` must raise) lost `arm`
+  from their lists with a comment naming T-018, as the cameras lost theirs at T-010, and the R2 check
+  tests/test_mock_drivers.py:514 (no `hardware_checks` string under drivers/) made me reword the ArmUnavailable
+  message to name H-002 and `list_devices.py` without the path. No check was weakened.
+  Deviation 1: the module is 332 lines, not under 250; D-013 item 2's remedy (a sibling module) is outside this task's
+  touch list, so it stayed one file -- BUILD_LOG has the proposed split for T-021.
+  commit: COMMIT_HASH
 
 ## T-019  DexH15 driver, read-only state and palm camera, 10-minute stream stats
 status: todo

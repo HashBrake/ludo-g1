@@ -13,7 +13,8 @@ glove = make("glove")
 pose  = make("pose")
 top   = make("top")                  # cameras are named as in config/cameras.yaml
 make("oblique", backend="real")      # a real V4L2 camera (T-010); read-only, no session
-make("arm", backend="real")          # NotImplementedError until Phase 1
+make("arm", backend="real")          # the real G1 state stream (T-018); read-only, no session
+make("hand", backend="real")         # NotImplementedError until its Phase 1 driver exists
 ```
 
 Three facts hold for every driver, real or mock:
@@ -29,7 +30,7 @@ Three facts hold for every driver, real or mock:
 
 | Protocol | Read | Write | Real driver (Phase 1) |
 |---|---|---|---|
-| `ArmDriver` | `read_state() -> Stamped[RobotState]` | `send_targets(cmd) -> MotionCommand` | `drivers/g1_arm.py`, `rt/arm_sdk` (D-007) |
+| `ArmDriver` | `read_state() -> Stamped[RobotState]` | `send_targets(cmd) -> MotionCommand` | `drivers/g1_arm.py`, `rt/lowstate` **(read half exists, T-018)**; the write path is T-021 (D-007) |
 | `HandDriver` | `read_state() -> Stamped[HandState]`, `palm_frame() -> Stamped[ndarray]` | `send_pinch(scalar) -> ndarray` (15 targets) | `drivers/dexh15.py`, Paxini SDK |
 | `GloveDriver` | `read() -> Stamped[GloveSample]` | — | `drivers/pxcap.py`, PxCap Pro |
 | `PoseDriver` | `read() -> Stamped[WristPose]` | — | `drivers/pico.py`, pico_bridge |
@@ -112,11 +113,12 @@ synergy.
 
 - `name` is one of `drivers.DEVICES`: `arm`, `hand`, `glove`, `pose`, and the three camera streams
   `top`, `oblique`, `palm`. Camera names are checked against `config/cameras.yaml`.
-- `backend="real"` builds a `V4L2Camera` for a camera name (see below) and raises
-  `NotImplementedError` naming the device for `arm`, `hand`, `glove` and `pose`. Those names exist
+- `backend="real"` builds a `V4L2Camera` for a camera name and a `G1Arm` for `arm` (both below), and
+  raises `NotImplementedError` naming the device for `hand`, `glove` and `pose`. Those names exist
   so that callers can be written against them before Phase 1 delivers the real drivers.
 - `kwargs` reach the constructor: the mocks take `now_ns=` (the injectable clock) and `config_root=`
-  (a different `config/` directory, for tests); `V4L2Camera` takes those plus `device=`.
+  (a different `config/` directory, for tests); `V4L2Camera` takes those plus `device=`; `G1Arm`
+  takes those plus `subscriber_factory=` and `timeout_s=`.
 
 ## Real cameras (`drivers/cameras.py`)
 
@@ -156,17 +158,79 @@ config key that would supply one.
 **No depth.** `V4L2Camera(name, depth=True)` raises `NotImplementedError` naming `pyorbbecsdk`
 (D-009, docs/sdks.md 8.2): the Ego is a UVC stereo pair here and `oblique` is its left RGB stream.
 
-**The read-only stream check.** `tools/hardware_checks/stream_stats.py` streams one camera for N
-seconds and reports achieved fps, drops (gaps longer than 1.5 nominal periods) and inter-frame
-jitter p50/p99 — the Phase 1 "stream every device and report drop rates and jitter" check:
+**The read-only stream check.** `tools/hardware_checks/stream_stats.py` streams one device for N
+seconds and reports the achieved rate, drops (gaps longer than 1.5 nominal periods) and inter-sample
+jitter p50/p99 — the Phase 1 "stream every device and report drop rates and jitter" check. `--stream`
+picks the device: a camera name, or `arm` for the G1 state stream (`--camera` still works for a
+camera):
 
 ```
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5
-.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --camera oblique --seconds 10 --warmup 15
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 10 --warmup 15
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 600
 ```
 
-`--backend mock` needs no hardware and exits 0 with nothing plugged in; `--json` emits the same
-report as a dict. Exit 3 means there was no camera to read.
+Cameras are polled with `grab()` and de-duplicated by timestamp; the arm is drained with `poll()`, so
+the timestamps are the ones the subscriber callback stamped and a slow poll loop cannot invent a
+drop. `--backend mock` needs no hardware and exits 0 with nothing plugged in (`--stream arm` streams
+`MockArm`); `--json` emits the same report as a dict. Exit 3 means there was no stream to read.
+
+## The real arm (`drivers/g1_arm.py`)
+
+`G1Arm` is the **read half** of `ArmDriver`: it subscribes to the G1's `rt/lowstate` and gives the
+same `Stamped[RobotState]` as `MockArm`. It creates **no DDS writer of any kind** — no publisher, no
+enable weight, no guard — so nothing in this module can move the robot (T-018, R1/R2). The write
+path, its weight ramp and `runtime.safety.Guard` are T-021 (D-007). A test asserts by grepping the
+module that no publisher class and no command topic appear in it.
+
+```python
+from drivers.g1_arm import G1Arm, ArmUnavailable
+
+with G1Arm() as arm:
+    print(arm.probe())                  # measured state rate, mode_machine, interface
+    state = arm.read_state()            # Stamped(ts_ns, RobotState) - 7 arm joints + waist yaw
+    full  = arm.full_state()            # q/dq/tau_est for all 29 joints, for the dataset (5.6)
+    batch = arm.poll()                  # every sample since the last poll, for a rate check
+```
+
+Reading state is not a motion command: no hardware session is needed (R1, CLAUDE.md 4.6).
+
+- **Stamping.** The subscriber handler stamps with `runtime.clock.now_ns` the moment cyclonedds hands
+  it the message, on the reader thread; `read_state()` returns the newest sample and never blocks
+  once the stream is running. `poll()` drains everything that arrived since the last call (bounded at
+  `BACKLOG` = 4096 samples, 8 s at 500 Hz) and is what a recorder or a stream check consumes.
+- **`RobotState.pinch` is 0.0 here and means nothing**: the DexH15 is a separate device on a separate
+  SDK, and `runtime/controller.py` and `teleop/recorder.py` take the pinch from `HandDriver`.
+- **Unavailability.** An unconfigured interface, no message within `control.state_timeout_s`, a
+  stream that went silent, or a closed driver all raise `ArmUnavailable` naming the interface, so a
+  read-only check skips instead of failing. Tests that need the robot are marked `readonly`.
+
+### DDS setup
+
+Everything the transport needs is in `config/robot.yaml`: `network.dds_interface` (the Linux
+interface name that holds the G1 LAN, `UNMEASURED` until H-002 is done), `network.dds_domain_id`
+(0), `topics.state` (`rt/lowstate`), `control.state_hz` (nominally 500), `control.state_timeout_s`
+and `control.motor_count` (29 of the message's 35 slots). `ChannelFactoryInitialize(domain_id,
+interface)` binds the **whole process** to one domain and one interface, so `G1Arm` does it once, on
+the first subscriber it builds, never at import time; a second driver asking for a different
+interface raises rather than silently sharing the first one. `drivers.g1_arm.dds_binding()` reports
+what the process bound to.
+
+The link itself is the lab's documented addressing (docs/sdks.md 2.5): laptop `192.168.123.2/24`,
+robot `192.168.123.164`, wired Ethernet on the built-in port `enp0s31f6` or the ASIX AX88179 USB
+dongle (`enx000ec6c10aa5`). The one-time NetworkManager profile (H-002):
+
+```
+nmcli con add type ethernet ifname enp0s31f6 con-name robot-lan ipv4.method manual \
+      ipv4.addresses 192.168.123.2/24 connection.autoconnect yes
+nmcli con up robot-lan
+ping -c 2 192.168.123.164
+.venv/bin/python tools/hardware_checks/list_devices.py      # prints the interface with '<-- G1 LAN'
+```
+
+Then put that interface name in `config/robot.yaml` `network.dds_interface` (and flip nothing else:
+it is a Form-1 `UNMEASURED` placeholder today). Until that is done, every real-arm call raises
+`ArmUnavailable` naming the key, and the `readonly` tests skip.
 
 ## Phase 1: writing a real driver
 
