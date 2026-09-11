@@ -950,7 +950,7 @@ result:
     imports runtime.goal / engine.interface / teleop.recorder, which are first-party, not dependencies.
 
 ## T-027  policy/dataset.py: loader, goal rendering, augmentation on the mock dataset
-status: in_progress
+status: review
 priority: P1
 phase: 3
 owner: opus
@@ -969,6 +969,24 @@ notes: torch CPU is on the laptop per D-011. Real training runs on Greennode (Q-
   (config/training.yaml dataset.format: lerobot_v3) and D-016 (requirements.txt opencv-python==4.12.0.88, drop the reinstall
   recipe from docs/setup.md and requirements comments, re-resolve), and add a pyproject filterwarnings entry that silences the
   HuggingFace datasets DeprecationWarning noise reported by T-017 (log the count before and after).
+result: policy/dataset.py (LudoDataset + split_cell_pairs), tests/test_dataset.py (18 tests on a
+  3-episode mock session recorded by tests.test_recorder.Rig), docs/policy.md. D-015 applied
+  (config/training.yaml dataset.format: lerobot_v3), D-016 applied (opencv-python 5.0.0.93 ->
+  4.12.0.88, reinstall recipe removed from requirements.txt and docs/setup.md; re-resolve installs
+  only that one package and a second --dry-run reports "Would make no changes"; uv pip list shows
+  opencv-python 4.12.0.88 and opencv-python-headless 4.12.0.88, cv2.__version__ 4.12.0, GUI: QT5),
+  pyproject filterwarnings added.
+  - acceptance "tests pass": .venv/bin/python -m pytest -q -> 428 passed, 4 skipped, 107.91 s;
+    .venv/bin/ruff check . -> All checks passed.
+  - acceptance "1000-sample iteration benchmark": tests/test_dataset.py::test_iteration_benchmark,
+    1000 samples through a DataLoader (batch 8, augment=True, 64x48/48x32 mock frames, one torch
+    thread): num_workers=0 81 samples/s, num_workers=2 145 samples/s (repeat run 80 / 144).
+  - sample: top (5,h,w), oblique (3,h,w), palm (3,h,w), state (9,), task_id (3,), action (16,9),
+    action_mask (16,), all float32; goal peaks within 1 px of the stored cell pixels; ROLL channels
+    all zero; episode tail padded with the last action and masked; top RGB bit-identical under
+    augmentation with the jitter at zero strength while oblique, palm and the goal channels change.
+  - DeprecationWarning count before -> after: 2817 -> 0.
+  commit: COMMIT_HASH
 
 ## T-028  Eval protocol and runner on mocks
 status: in_progress

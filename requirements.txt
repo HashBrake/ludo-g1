@@ -1,6 +1,5 @@
 # Pinned environment for LUDO-G1 (Python 3.10 only; the DexH15 wheel is cp310, see agents/DECISIONS.md D-002 A1).
 # Create with:  uv venv --python 3.10 && uv pip install -r requirements.txt
-#          then: uv pip install --reinstall-package opencv-python -r requirements.txt   (see OpenCV below)
 # mujoco+mink arrived with T-012; torch (CPU) and lerobot with T-017 (D-011).
 
 # --- the PyTorch CPU wheels (T-017, D-011) -------------------------------------------------------
@@ -49,22 +48,21 @@ pico_bridge @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.
 # NOT INSTALLED: pyorbbecsdk. The PyPI 1.3.2 wheel is mis-tagged cp310-manylinux but ships only a macOS
 # .so/.dylib, so `import pyorbbecsdk` fails. The Orbbec Ego enumerates as plain UVC; see docs/sdks.md 8.2.
 
-# --- OpenCV: two distributions now own site-packages/cv2/ ----------------------------------------
+# --- OpenCV: two distributions, one version (agents/DECISIONS.md D-016) --------------------------
 # lerobot 0.4.4 hard-requires opencv-python-headless (>=4.9,<4.13) and unitree_sdk2py requires
-# opencv-python, so a plain `uv pip install -r requirements.txt` installs both and whichever lands
-# last owns cv2/. That is the hazard D-008 removed headless to avoid, and it is back because a
-# requirements file cannot drop a dependency of a package it installs. Fix, after every install:
-#     uv pip install --reinstall-package opencv-python -r requirements.txt
-# then check:  .venv/bin/python -c "import cv2; print(cv2.__version__)"   -> 5.0.0, not 4.12.0
-# Flagged for Fable in agents/BUILD_LOG.md (T-017): the alternative is to drop to the headless build
-# everywhere and give up cv2.imshow in teleop/operator_ui.py.
+# opencv-python, so `uv pip install -r requirements.txt` installs both and they share
+# site-packages/cv2/. A requirements file cannot drop a dependency of a package it installs, so
+# instead BOTH are pinned to the same version, 4.12.0.88: whichever lands last, the cv2 module is
+# that version, so no install order can change what the code runs against. Never uninstall either
+# one on its own -- they write into the same cv2/ directory and removing one deletes files the other
+# still needs. `opencv-python` is pinned with the transitive packages below, at the same version.
 opencv-python-headless==4.12.0.88
 
 # transitive, pinned for reproducibility
 # lerobot 0.4.4 pins these three below what T-012 resolved: av < 16 (it was 17.1.0), packaging < 26
 # (26.3) and rerun-sdk < 0.27 (0.37.2). All three are transitive for us; the suite is green on them.
-# opencv-python is pulled in by unitree_sdk2py and is the GUI build D-008 kept; since T-017 it shares
-# site-packages/cv2/ with lerobot's headless build, so reinstall it last (see the OpenCV block above).
+# opencv-python is pulled in by unitree_sdk2py and is the GUI build teleop/operator_ui.py needs for
+# cv2.imshow; it is held at the same version as lerobot's headless build (see the OpenCV block above).
 absl-py==2.5.0
 accelerate==1.15.0
 aiohappyeyeballs==2.7.1
@@ -130,7 +128,7 @@ multidict==6.8.0
 multiprocess==0.70.19
 mypy-extensions==1.1.0
 networkx==3.4.2
-opencv-python==5.0.0.93
+opencv-python==4.12.0.88
 orderly-set==5.5.0
 packaging==25.0
 pandas==2.3.3

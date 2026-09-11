@@ -23,3 +23,12 @@ markers = [
   "motion: test sends motion commands to real hardware; requires a valid hardware session (R1)",
   "readonly: test reads from real hardware (cameras, state) but sends no motion command",
 ]
+# `datasets` 4.8.5 converts every scalar feature it decodes with `int(value)` on a 0-d numpy array
+# (datasets/features/features.py:561), which numpy 2.2 deprecates. Every test that reads a lerobot
+# dataset back raised it: 2817 DeprecationWarnings in one suite run (T-017 reported the noise), which
+# buries any warning that is ours. Neither package can be moved -- lerobot 0.4.4 pins `datasets` and
+# is itself the last release on Python 3.10 (D-015) -- so exactly that message, of exactly that
+# category, from exactly that module is ignored, and nothing else is.
+filterwarnings = [
+  "ignore:Conversion of an array with ndim > 0 to a scalar is deprecated:DeprecationWarning:datasets.features.features",
+]

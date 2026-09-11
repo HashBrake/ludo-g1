@@ -2155,3 +2155,116 @@ The full-resolution strip was rendered and looked at (scratchpad, not committed:
 and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
 pre-commit gate — no `--no-verify`, per D-013 item 1. Amending could not be used to fold the hash in:
 the amend changes the hash it is trying to record.)
+
+## T-027  policy/dataset.py: loader, goal rendering, augmentation on the mock dataset  (opus, 2026-09-11T22:15+07:00)
+
+Built in the main tree; T-028 (`eval/`) was being built in a separate worktree at the same time and
+nothing here touches `eval/`. The one shared name was agreed in advance: `split_cell_pairs(sessions,
+held_out_fraction, seed) -> (train, held_out)`, two **sorted lists of `(src_id, dst_id)` string
+tuples**. `policy/` imports nothing from `eval/`.
+
+### What I changed
+
+- **`policy/dataset.py` (360 lines, new).** `LudoDataset(sessions, *, chunk=None, augment=False,
+  seed=None, split=None, config_root=None)`, a `torch.utils.data.Dataset` over one or more sessions
+  written by `teleop/recorder.py`. One `LeRobotDataset` per session (`root=<session>`, repo id
+  rebuilt as `ludo-g1/<dir name>` the way `tools/dataset_view.py` does it), opened with
+  `delta_timestamps={"action": [i/fps for i in range(chunk)]}` so lerobot itself assembles the action
+  chunk and reports its padding. A sample is: `top` `(5,h,w)` (RGB in [0,1] + the two goal channels),
+  `oblique` `(3,h,w)`, `palm` `(3,h,w)`, `state` `(9,)`, `task_id` `(3,)` one-hot, `action`
+  `(chunk,9)`, `action_mask` `(chunk,)`, all float32.
+  Goal channels are **rendered, not stored**: `runtime.goal.GoalRenderer` at the sidecar's frame size
+  and sigma, fed the `src_px`/`dst_px` the recorder wrote, once per episode and cached (bilinearly
+  resized if the stored image size differs, which it does in the tests). A ROLL renders two zero
+  channels. Chunking: every frame is a sample and the episode tail is padded with the last recorded
+  action, `action_mask` 0 there — the alternative (dropping the last `chunk-1` frames) discards the
+  end of every primitive, which is what the policy has least of.
+  Augmentation (`augment=True`) draws from a `torch.Generator` seeded `seed + index`, so a sample is
+  reproducible per index, per worker and across runs; `seed=None` draws one base seed and records it
+  in `.seed`. Colour jitter on all three RGB images (written out rather than
+  `torchvision.transforms.ColorJitter`, which draws from the global RNG), crop-and-resize on
+  `augmentation.random_crop_cameras` only, gaussian blur on the goal channels only. `top` geometry is
+  never touched, and that is **enforced**: `geometric_on_top: true` or `top` inside
+  `random_crop_cameras` raises `ConfigError` at construction.
+  `split_cell_pairs(...)` splits the pairs found in the sidecars, reproducibly from `seed`, both lists
+  sorted; only episodes with both cells contribute a pair (a ROLL has none, a RECOVER may have one),
+  and a positive fraction always holds out at least one pair so an eval set is never silently empty.
+  `LudoDataset(split=pairs)` keeps exactly the episodes whose `(src_cell, dst_cell)` is listed;
+  `[*train_pairs, (None, None)]` keeps the ROLL episodes too. `episode_metadata()` reads the sidecar.
+  Nothing here can move anything: no driver import, no motion command (R1, R2).
+- **`tests/test_dataset.py` (361 lines, new).** 18 tests on a 3-episode session (two MOVEs on
+  different cell pairs, one ROLL) recorded by `tests.test_recorder.Rig` (mock drivers + `FakeClock`)
+  under `tmp_path`, plus a second session for the cross-session chunking test. Shapes and dtypes;
+  chunk from the caller and from the config; task one-hot against the sidecar; chunk alignment against
+  `LeRobotDataset.hf_dataset["action"]`; tail padding and mask; no chunk crossing an episode or a
+  session boundary; goal peaks on the stored cell pixels and zero channels for a ROLL; goal rendered
+  once per episode; `top` RGB bit-identical under augmentation with the jitter at zero strength while
+  `oblique`, `palm` and the goal channels all change; colour jitter reaching all three cameras;
+  reproducibility from the seed; the two `ConfigError` guards; split reproducibility, disjointness,
+  bounds and episode selection; and the benchmark.
+- **`config/training.yaml`** (D-015): `dataset.format: lerobot_v2` -> `lerobot_v3`, with the reason
+  and the D-015 reference in a comment; the `split_by` comment now names `split_cell_pairs`.
+  `REQUIRED_KEYS` untouched, `unmeasured("training")` still `[]` (its test passes).
+- **`requirements.txt`, `docs/setup.md`** (D-016): `opencv-python` 5.0.0.93 -> **4.12.0.88**, the same
+  version as the `opencv-python-headless` pin lerobot forces; the `--reinstall-package` recipe is gone
+  from the header comment, the OpenCV block and the setup page, and both now say why one version is
+  the fix and that neither distribution may ever be uninstalled alone.
+- **`pyproject.toml`**: one `filterwarnings` entry ignoring exactly the
+  `datasets/features/features.py:561` `DeprecationWarning` (message, category and module all pinned).
+- **`docs/policy.md` (109 lines, new).**
+
+### Commands run, and what they measured
+
+```
+uv pip install --python .venv/bin/python -r requirements.txt   -> - opencv-python==5.0.0.93 / + opencv-python==4.12.0.88
+uv pip install --python .venv/bin/python -r requirements.txt --dry-run  -> Resolved 134 packages, "Would make no changes"
+uv pip list --python .venv/bin/python | grep -i opencv         -> opencv-python 4.12.0.88 / opencv-python-headless 4.12.0.88
+.venv/bin/python -c "import cv2; print(cv2.__version__)"       -> 4.12.0
+.venv/bin/ruff check .                                         -> All checks passed!
+.venv/bin/python -m pytest -q                                  -> 428 passed, 4 skipped, 107.91 s, no warnings
+.venv/bin/python -m pytest tests/test_dataset.py -q -s         -> 18 passed, 31.5 s
+```
+
+| | |
+|---|---|
+| acceptance: tests pass | 18 new tests green; whole suite 428 passed, 4 skipped |
+| acceptance: 1000-sample benchmark | `num_workers=0`: **81 samples/s**; `num_workers=2`: **145 samples/s** (repeat run: 80 / 144) (batch 8, augmentation on, 64x48/48x32 mock frames, 1 torch thread) |
+| benchmark with the default torch thread pool | ~3x slower: the same test took 43.3 s (`--durations`) instead of 19.7 s; `cProfile` put it in `adjust_hue` -> `_rgb2hsv` -> `torch.min` on 3x48x64 tensors. A DataLoader worker sets `torch.set_num_threads(1)` itself, so the test sets it for both legs and restores it |
+| sample shapes | `top` (5,48,64), `oblique` (3,48,64), `palm` (3,32,48), `state` (9,), `task_id` (3,), `action` (16,9), `action_mask` (16,), all float32 |
+| goal channels | peak 1.00 within 1 px of the stored `src_px`/`dst_px`; ROLL channels max \|v\| = 0.0 |
+| tail padding | last frame of a 60-frame episode: mask `[1] + [0]*15`, actions 1..15 equal to action 0 |
+| `top` RGB under augmentation (jitter at 0) | bit-identical on all 9 sampled items; `oblique`, `palm` and the goal channels changed on all 9 |
+| DeprecationWarnings, before -> after | **2817 -> 0** (before: 2079 from `tests/test_recorder.py`, 648 from `tests/test_operator_ui.py`, 90 from `tests/test_dataset_view.py`, all the same `datasets` message) |
+| suite before -> after | 407 passed / 7 skipped / 70.0 s -> 428 passed / 4 skipped / 107.9 s. +18 is this task; the other +3 and -3 skips are `tests/test_cameras.py` oblique tests, which skipped earlier only because the Orbbec was held by another process and ran this time |
+| opencv after re-resolve | `opencv-python==4.12.0.88`, `opencv-python-headless==4.12.0.88`, `cv2.__version__ 4.12.0`, `cv2.getBuildInformation()` -> `GUI: QT5` (the GUI binary is the one in place) |
+
+### Notes / deviations
+
+- **D-016 is right about the version and not quite right about the files.** The two wheels ship
+  *different* `cv2/cv2.abi3.so` binaries at the same version — `opencv-python`'s is built with a
+  highgui backend (`GUI: QT5`), the headless one is not — so pinning both to 4.12.0.88 removes the
+  version ambiguity (which is what bit T-017) but not the GUI one: whichever wheel lands last still
+  decides whether `cv2.imshow` works. Here `opencv-python` landed last and `getBuildInformation()`
+  reports QT5, so `teleop/operator_ui.py` is fine. I applied D-016 as written and recorded the
+  remaining hazard in `docs/setup.md` as a repair step (one `--reinstall-package opencv-python`),
+  explicitly not part of the normal install. If Fable wants that hazard closed rather than documented,
+  the options are a post-install check in CI or dropping to headless everywhere (which costs
+  `cv2.imshow` in the operator UI).
+- `chunk` defaults to `None` = `config/training.yaml` `diffusion.chunk` (16) rather than to a literal
+  16 in the signature, so the 16 lives in yaml (section 7) and ACT can pass 32. Fable's guidance wrote
+  `chunk=16`; the behaviour is identical for every caller that does not pass one.
+- `split` is strict membership on `(src_cell, dst_cell)`: an episode with no cell pair (ROLL, and
+  RECOVER when the engine names one cell) is kept only if its pair is listed. The alternative —
+  always keeping unpaired episodes — would silently put every ROLL into an eval set built from
+  held-out pairs. Documented in `docs/policy.md`, with `[*train_pairs, (None, None)]` as the recipe
+  for multi-task training sets.
+- The benchmark draws its 1000 samples **with replacement** from the 120-frame mock session
+  (`RandomSampler(replacement=True, num_samples=1000)`): 1000 real sample fetches (3 PNG decodes, a
+  goal lookup and an augmentation each), not 1000 distinct frames, because recording 1000 mock frames
+  would add ~10 s of PNG writing to every suite run for no extra information.
+- `docs/README.md` has a one-line index row per module page and needs one for `docs/policy.md`; the
+  task's file list does not include it, so I did not touch it. Fable: one row, or tell me to add it.
+- R1-R6 intact: no motion command anywhere (no driver import in `policy/`), no scripted motion,
+  `config/safety.yaml` untouched, nothing under `third_party/` touched, `hardware/session.enable`
+  never created or read for writing. Committed through the full pre-commit gate, no `--no-verify`
+  (D-013).

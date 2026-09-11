@@ -24,8 +24,8 @@ as long as the version is 3.10.x.
 
 `requirements.txt` is fully pinned (direct and transitive). MuJoCo, mink and `pico_bridge` arrived
 with T-012 for the arm IK path (agents/DECISIONS.md D-006); torch (CPU) and LeRobot with T-017
-(D-011). **Run the OpenCV reinstall line after every install** — see "Two OpenCV distributions" below;
-it is not optional any more.
+(D-011). One `uv pip install -r requirements.txt` is the whole install: there is no follow-up step
+any more (see "Two OpenCV distributions" below, agents/DECISIONS.md D-016).
 
 ### Versions resolved for the arm IK path (T-012, 2026-09-11)
 
@@ -74,22 +74,29 @@ resolving from PyPI.
 `rerun-sdk` 0.37.2 -> 0.26.2. All three are transitive for this project and the suite is green on
 them.
 
-### Two OpenCV distributions, and the order that fixes it
+### Two OpenCV distributions, pinned to one version (D-016)
 
 D-008 removed `opencv-python-headless` in T-012 so that one distribution owned `site-packages/cv2/`.
 `lerobot` 0.4.4 hard-requires `opencv-python-headless (>=4.9,<4.13)` and `unitree_sdk2py` requires
 `opencv-python`, so **both** are installed again, and a requirements file cannot drop a dependency of
-a package it installs. Whichever lands last owns `cv2/`, so finish every install with:
+a package it installs. Whichever lands last owns `cv2/`. D-016's answer is to make that harmless:
+both are pinned to **the same version**, `4.12.0.88`, so the `cv2` module is that version whatever
+the order, and the reinstall step T-017 needed is gone. After an install:
 
 ```bash
-uv pip install --reinstall-package opencv-python -r requirements.txt
-.venv/bin/python -c "import cv2; print(cv2.__version__)"   # -> 5.0.0, not 4.12.0
+.venv/bin/python -c "import cv2; print(cv2.__version__)"   # -> 4.12.0
 ```
 
-The GUI build is the one to keep: `teleop/operator_ui.py` needs `cv2.imshow`, and `cv2` 5.0.0 serves
-`lerobot` perfectly well (the constraint it violates is on the *distribution* name, not the module).
 Never uninstall either one on its own: both write into the same `cv2/` directory, so removing one
 deletes files the other still needs.
+
+One thing the shared version does **not** pin is the GUI: the two wheels ship different
+`cv2/cv2.abi3.so` binaries at the same version, and only `opencv-python`'s is built with a highgui
+backend (`cv2.getBuildInformation()` -> `GUI: QT5`), which is what `teleop/operator_ui.py` needs for
+`cv2.imshow`. On this laptop `opencv-python` landed last and the check reports QT5. If a future
+install leaves the headless binary in place, `imshow` raises *"The function is not implemented"* and
+one `uv pip install --reinstall-package opencv-python -r requirements.txt` puts it back — that is a
+repair, not a step of the normal install.
 
 ## Vendored G1 model
 

@@ -156,11 +156,14 @@ augmentation:
 
 # --- dataset (5.6) -------------------------------------------------------------------------------
 dataset:
-  format: lerobot_v2
+  # LeRobot v3.0, the CODEBASE_VERSION lerobot 0.4.4 writes and reads; CLAUDE.md 5.6 says "v2",
+  # which no release installable on Python 3.10 produces any more (agents/DECISIONS.md D-015). The
+  # observation, action and metadata content of 5.3 and 5.6 is unchanged by the version.
+  format: lerobot_v3
   root: data/raw
   val_fraction: 0.1
-  # Held-out cell pairs are chosen by eval/protocol.py, not by a random split: the split has to be
-  # over cell pairs, not over frames.
+  # Held-out cell pairs are chosen by eval/protocol.py from policy/dataset.py `split_cell_pairs`, not
+  # by a random split: the split has to be over cell pairs, not over frames.
   split_by: cell_pair
 
 # --- compute (5.8) -------------------------------------------------------------------------------
