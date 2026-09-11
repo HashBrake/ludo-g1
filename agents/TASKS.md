@@ -110,7 +110,7 @@ acceptance:
 notes: Placeholder envelope must be conservative: workspace box no larger than the table region in front of the robot, velocity limit low. Fable will review the numbers. Section 7: config in yaml, never constants in code.
 
 ## T-004  runtime/clock.py: monotonic clock, stream alignment, latency compensation
-status: todo
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -126,6 +126,19 @@ acceptance:
   - `shift` by a known delta then `align` recovers the original pairing (test)
   - `now_ns` is monotonic across 10000 calls (test)
 notes: Keep it small; no threads here. Latency values come from config/robot.yaml later (T-003); clock only provides the mechanism.
+result: (opus, 2026-09-11T19:20+07:00, commit 956147a; branch wt/t004)
+  - acceptance 1, `.venv/bin/python -m pytest -q tests/test_clock.py -s`:
+    "skew over 1800 aligned frames (60 s @ 30 Hz, seed 20260911): p50 = 2.982 ms, p99 = 6.701 ms, max = 7.799 ms".
+    30 Hz + 100 Hz streams, 2 ms gaussian jitter, 60 s, aligned on the nominal 30 Hz grid with a 10 ms
+    tolerance (every frame also passed `align`). p99 6.701 ms < 10 ms. PASS
+  - acceptance 2, `shift` then `align`: a 100 Hz stream delayed by 37 ms mis-pairs >90% of the 151 camera
+    frames; after `shift(-37 ms)` all 151 frames re-pair to the original sample and timestamps match. PASS
+  - acceptance 3, `now_ns` monotonic across 10000 consecutive calls, strictly advancing overall. PASS
+  - gate: `.venv/bin/ruff check .` exit 0; `.venv/bin/python -m pytest -q` -> 24 passed, 1 skipped
+    (pre-existing motion autoskip), exit 0.
+  - skew definition (max over streams of |sample_ts - target_ts| per instant) implemented and documented in
+    docs/clock.md. `skew_stats` takes optional `instants`/`tolerance_ns` beyond the deliverable signature;
+    noted in BUILD_LOG.
 
 ## T-005  runtime/safety.py: envelope, session gate, rate limit; enable_session.py
 status: todo
