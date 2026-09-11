@@ -2781,13 +2781,18 @@ the ordering held in every repetition.
 - `data/raw/mock_smoke` was **copied** from the main working tree into this worktree rather than read
   in place, so nothing in the main tree was opened for writing by lerobot; the manifest hash proves
   it is the same data.
-- The full suite ran 747 s here against the 179 s recorded at worktree setup, and `tests/test_act.py`
-  390 s against 55 s for `tests/test_diffusion.py` at its own creation. Both are contention, not this
-  task: the ACT fixtures are 30 training steps of a `dim_model` 64 transformer, and the same suite's
-  `test_diffusion.py` fixture took 295 s in the same run (it took 55 s when the machine was quiet).
-  Standalone and quiet, `tests/test_act.py` runs in about 60 s.
+- The suite timings above were taken under load: 747 s against the 179 s recorded at worktree setup,
+  and `tests/test_act.py` 390 s against the 55 s `tests/test_diffusion.py` cost when it was written.
+  That was contention, not this task, and the pre-commit run settled it: **490 passed, 4 skipped in
+  188.84 s** on the quieter machine, against 475 passed in 178.78 s at worktree setup -- 15 new tests
+  for about 10 s.
 - R1-R6 intact: nothing in `policy/` imports a driver or `tools/hardware_checks/` (a test asserts it
   for `policy/act.py`), no scripted motion, no literal joint target, `config/safety.yaml` untouched,
   `hardware/session.enable` neither created nor read, nothing under `third_party/` or in the
   installed lerobot package modified (wrapped only). Committed through the full pre-commit gate, no
   `--no-verify` (D-013 item 1).
+
+(T-030 commit: 5b4fa78, which holds all of the code, tests, config keys and docs of this task; its
+pre-commit run was ruff clean and `490 passed, 4 skipped in 188.84s`. This line and the TASKS.md
+`result:` hash are the only content of the follow-up commit, which ran the full pre-commit gate --
+no `--no-verify`, per D-013 item 1.)

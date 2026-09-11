@@ -1121,7 +1121,7 @@ acceptance:
 notes: CLAUDE.md 5.7: ACT is trained on every dataset the diffusion model is trained on. train.py must make that a one-flag
   change.
 result:
-  commit: pending (recorded in the follow-up commit)
+  commit: 5b4fa78
   policy/act.py (new, ~400 lines: ACTSpec, TemporalEnsemble, GoalACTPolicy, ACTAdapter, latency CLI) + policy/
     train.py `--policy {diffusion,act}` (POLICIES map; train() dispatches on the spec type; run.json and
     checkpoint.pt record "policy"; every default from the chosen block) + policy/export.py (one export path for
@@ -1141,9 +1141,9 @@ result:
     round(action_hz/policy_hz)=3. Pinned against ACTTemporalEnsembler at stride 1: 2.87e-08 as lerobot ships
     (float32 weight table) and 2.22e-16 with the same weights in float64. act() returns 16, chunk 32 is internal,
     so the controller contract of 5.2 is unchanged.
-  tests: 15 passed in 390 s; full suite 490 passed, 4 skipped in 747 s; ruff clean. (Both times are under load
-    13-28 from another builder's suite in the main tree; test_diffusion.py's own fixture took 295 s in the same
-    run against 55 s when it was written.)
+  tests: full suite at the pre-commit gate 490 passed, 4 skipped in 188.84 s, ruff clean (475 passed in 178.78 s
+    at worktree setup: 15 new tests for about 10 s). Earlier readings of 390 s for tests/test_act.py and 747 s for
+    the suite were taken under load 13-28 from another builder's suite in the main tree.)
   smoke train (test scale, 48x64 encoder, dim_model 64): loss step 1 23.4603 -> step 30 0.9738 (mean of last 10
     0.8906); fixed probe (same batch, same seeded VAE draw) 22.7715 -> 0.7060, a 96.9% reduction.
   smoke train (CLI, full model, data/raw/mock_smoke at 640x480 -- T-029's session, same dataset manifest
