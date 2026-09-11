@@ -671,7 +671,7 @@ acceptance:
     data/logs/ and a printed summary of commands executed and outcomes (command and output in BUILD_LOG.md)
 notes: No learned policy exists yet; HoldPolicy exists only so the orchestration can be tested. No scripted trajectories anywhere.
 result:
-  commit: COMMIT_HASH
+  commit: 5fbb479  (placeholder left by the builder; filled in by Fable at T-025 review)
   tests: 352 passed, 1 skipped (`.venv/bin/python -m pytest -q`; was 327+1). 25 new in tests/test_controller.py.
   ruff: `.venv/bin/ruff check .` clean.
   loop rate (fake clock, the criterion): policy_hz 9.98 Hz over a full 20.03 s MOVE (201 calls), action_hz 29.9;
@@ -873,7 +873,7 @@ acceptance:
 notes: After this passes, Fable proposes the measured envelope values for config/safety.yaml and Alois commits them (R3).
 
 ## T-025  Teleop operator UI on mocks
-status: review
+status: accepted
 priority: P1
 phase: 2
 owner: opus
@@ -929,7 +929,7 @@ acceptance:
 notes: Section 8 audit tool; keep it dependency-free beyond opencv and numpy.
 
 ## T-027  policy/dataset.py: loader, goal rendering, augmentation on the mock dataset
-status: todo
+status: in_progress
 priority: P1
 phase: 3
 owner: opus

@@ -137,3 +137,9 @@ worst error 0.0, reload with the configured shapes; lerobot 0.4.4, torch 2.9.1+c
 faster than writing and phase-locking the grid to the board camera are the right calls and the reasons are logged.
 Goal heatmaps not stored per frame (cell ids in the sidecar, re-rendered at train time) accepted: same GoalRenderer both
 sides. Format v3 and the OpenCV collision are decisions, taken as D-015 and D-016. recorder.py at 421 lines: style note.
+
+## T-025  ACCEPTED  (fable, 2026-09-11T21:51+07:00, commits 2678a17, 2d5b48c)
+Re-ran: ruff clean; 11 UI tests pass with two episodes recorded, marked and one discarded on the fake clock; the UI imports
+only drivers.interfaces.CameraDriver and never calls send_targets, send_pinch or a Guard (grep). Deviations accepted: a
+mark-failure key (5.6 wants labelled failures), two operator-side failure_mode strings, 261 lines. Fable fix in this commit:
+TASKS.md line 674 (T-016 result block) still read COMMIT_HASH; set to 5fbb479.
