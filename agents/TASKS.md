@@ -1406,7 +1406,7 @@ notes: No hardware. Disk: keep checkpoints under tmp_path in tests and delete sm
   add config/training.yaml `compute.torch_threads` (placeholder 4, UNMEASURED), applied at start by policy/train.py, both
   adapters and eval/run_eval.py; re-measure ACT and diffusion (DDIM 10 and 5) act() at 1/2/4/8 threads with no other builder
   running (check `uptime` load < 2 before measuring, record it) and put the table in BUILD_LOG.md and docs/policy.md.
-result: (opus, 2026-09-12T04:35+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-12T04:35+07:00, commit 860916c)
   - policy/train.py: EMA of the parameters (`ema_decay`, ramped decay `min(d, (1+n)/(10+n))`) stored as
     `ema_state_dict`; linear warmup then cosine (`warmup_steps` clamped to a tenth of the run, `lr_min_ratio`),
     applied factor written to a new `lr` column; a validation split by cell pair (`--val-fraction`, ROLL kept in
@@ -1418,7 +1418,7 @@ result: (opus, 2026-09-12T04:35+07:00, commit COMMIT_HASH)
   - `.venv/bin/python -m pytest tests/test_train.py -q -s` -> 15 passed in 59 s. tests/test_diffusion.py +
     tests/test_act.py -> 27 passed in 64 s. tests/test_greennode_train.py -> 6 passed. tests/test_eval.py +
     tests/test_config.py -> 93 passed. `ruff check .` -> All checks passed. Full suite through the pre-commit
-    hook -> SUITE_RESULT. PASS
+    hook -> 556 passed, 7 skipped in 795 s (533 passed before this task). PASS
   - printed numbers: lr multiplier 0.2000 / 1.0000 / 0.0000 at steps 0 / warmup 5 / 106; EMA vs last-step weights
     after 10 steps 6.375e-05 over 341 tensors and a different `weights_sha256`; validation loss on 12 held-out
     frames 0.9179 -> 0.8816 with the held-out pair absent from training and the ROLL episode present; resume

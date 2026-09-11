@@ -3405,3 +3405,7 @@ only new I/O is reading sessions and writing checkpoints. R2: no scripted motion
 target. R3: `config/safety.yaml` untouched; `hardware/session.enable` neither created, edited nor read.
 Nothing under `third_party/` touched and `requirements.txt` unchanged (lerobot is wrapped, never
 patched). Committed through the full pre-commit gate, no `--no-verify` (D-013 item 1).
+
+(T-035 commit: 860916c, which holds all of the code, tests, config keys and docs of this task; the full
+pre-commit suite on it was 556 passed, 7 skipped in 795 s. This hash record is the follow-up commit, as
+T-029, T-030 and T-033 did, and it runs the same gate -- no `--no-verify`, per D-013 item 1.)
