@@ -1767,3 +1767,215 @@ untouched, `hardware/session.enable` never created, nothing under `third_party/`
 under `tmp_path`; `data/raw/` is still empty. No hardware needed, no blockers.
 
 (T-017 commit: 6beb49d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+## T-015  Phase 0 report  (opus, 2026-09-11T21:00+07:00)
+
+Every number below was produced by the command printed next to it, run by me in the worktree
+`/home/alois/Desktop/ludo-g1-wt-t015` (branch `wt/t015`, `git rev-parse --short HEAD` -> `3c5df60`) on
+2026-09-11. Nothing is copied from an earlier log. Timestamp note: `TZ=Asia/Bangkok date -Iminutes`
+prints `2026-09-11T21:00+07:00`, which is earlier than the stamps on the T-014/T-016 entries above; the
+laptop clock is what it is and I am not inventing a later one.
+
+No device was connected and no motion command was sent by any command in this report (R1).
+
+### 1. Per-device SDK status  (source: docs/sdks.md section 0 and sections 2-8)
+
+Coverage command: `.venv/bin/python -m pytest tests/test_docs_sdks.py -s`
+-> `9 passed in 0.09s`, printing `docs/sdks.md: checked 157 path:line references (129 unique)`.
+
+Header/keyword grep behind the last two columns:
+`grep -niE 'state read|target write|no target' docs/sdks.md` -> 17 hits (lines 20, 68, 81, 153, 154,
+194, 205, 272, 276, 314, 327, 371, 379, 443, 449, 463, 466).
+
+| # | Device | Package / route | State read (docs/sdks.md) | Target write | Status |
+|---|---|---|---|---|---|
+| 1 | G1 left arm (7 joints, 15..21) | `unitree_sdk2py` 1.0.1 installed; `g1_bridge_sdk` C++ bridge as fallback | yes, 2.2 `rt/lowstate` `LowState_.motor_state[15..21].q` (:68) | yes, 2.3 `rt/arm_sdk` `LowCmd_.motor_cmd[15..21].q` (:81) | code-verified, DDS link needs H-002 |
+| 2 | G1 waist yaw (12) | same SDK, same message | yes, section 3 `LowState_.motor_state[12].q` (:153) | yes, section 3 `LowCmd_.motor_cmd[12].q` on `rt/arm_sdk` (:154) | same; waist may be locked in robot config, check before diagnosing |
+| 3 | Paxini DexH15 (15 joints) | `pxdex` 3.2.1 wheel installed in `.venv` | yes, 4.3 `DexH15Control.getJointPositionsAngle` (:194) | yes, 4.4 `DexH15Control.setJointPositionsAngle` (:205) | import + `getSDKVersion()` verified, no hand attached |
+| 4 | DexH15 palm camera | `pxdex.dh15.DexH15Camera`, or plain V4L2 (recommended) | yes, 5.1 `getFrame() -> ndarray` (:272) | n/a, sensor (:276) | API verified; node + native resolution UNMEASURED (H-003) |
+| 5 | PxCap Pro glove | `pxhandsdk.pxcappro` — only inside the PyInstaller bundle, no system deb | yes, 6.2 `get_encoder_angles()`, 17 channels, degrees (:314) | n/a, input device (:327) | delivery route unresolved, Q-005 |
+| 6 | Pico 4 controller pose | `pico_bridge` 0.2.1 | yes, 7.1 `PicoBridge.wait_frame() -> PicoFrame`, `.controllers.left.pose` (:371) | n/a, input device (:379) | pose exists; Teleopit discards it, hence D-006 |
+| 7 | Logitech Brio (`top`) | OpenCV V4L2 | yes, 8.1 `cv2.VideoCapture.read()` (:443) | n/a, sensor (:449) | never connected during Phase 0, H-001/H-003 |
+| 8 | Orbbec Ego (`oblique`) | UVC V4L2 (`/dev/video4` left, `/dev/video6` right); `pyorbbecsdk` PyPI wheel broken | yes, 8.2 `cv2.VideoCapture('/dev/video4').read()` (:463) | n/a, sensor (:466) | enumerated and streamed in T-010; RGB only, D-009 |
+
+All eight devices have a state-read reference; the three actuated paths (1, 2, 3) have a target-write
+reference and the five sensors/inputs (4..8) correctly have none. This satisfies the Phase 0 "Verify"
+item "docs/sdks.md exists with at least the state read and target write call for each of G1 arm, waist,
+DexH15, PxCap, Pico, Brio, Orbbec, palm camera".
+
+Installed versions, re-checked now:
+`.venv/bin/python -c "import importlib.metadata as md; ..."` ->
+`pico_bridge==0.2.1`, `pxdex==3.2.1`, `unitree_sdk2py==1.0.1`, `mujoco==3.13.0`, `mink==1.3.0`,
+`opencv-python==5.0.0.93`, `numpy==2.2.6`; `.venv/bin/python -c "import pico_bridge, pxdex.dh15, cv2"`
+-> `imports ok, cv2 5.0.0`.
+
+### 2. Verdicts on the D-002 assumptions and unknowns
+
+Corrections applied: D-006 (A5), D-009 (Orbbec route), D-010 (envelope facts behind U3).
+
+| Id | Claim (D-002) | Verdict | Evidence / command |
+|---|---|---|---|
+| A1 | Python >= 3.10 | CONFIRMED, narrowed to exactly 3.10 | `.venv/bin/python -V` -> `Python 3.10.20`; `pyproject.toml` pins `requires-python = "==3.10.*"` because the DexH15 wheel is cp310-only (docs/sdks.md 9) |
+| A2 | Unitree SDK2 over DDS on wired Ethernet | CONFIRMED IN CODE, LINK UNVERIFIED | docs/sdks.md 2.5/9; no interface holds 192.168.123.x, `ls ~/.config/...` n/a — open as H-002 |
+| A3 | Paxini SDK: DexH15 position control >= 30 Hz + palm camera | PARTIALLY CONFIRMED | API present (docs/sdks.md 4.4, 5.1); `pxdex==3.2.1` imports here; the rate claim is a Phase 1 bench measurement |
+| A4 | PxCap Pro: finger joint angles >= 30 Hz, no wrist pose | CONFIRMED on both halves | docs/sdks.md 6.2/6.3: 17 angles in degrees, default 50 Hz, capability table has no wrist pose; delivery route still Q-005 |
+| A5 | Pico pipeline already gives G1 arm joint targets through IK | **REFUTED** -> D-006 | docs/sdks.md 7; replacement measured in T-013 and re-measured by my full-suite run below: cold IK pass rate 100% (50/50) within 5 mm / 3 deg, position error median 0.301 mm / p90 0.910 mm, orientation median 0.092 deg / p90 0.223 deg; warm solve mean 0.616 ms, p99 9.142 ms |
+| A6 | Greennode Linux GPU VM over SSH with rsync | NOT VERIFIED, NEEDS A HUMAN | `ls -l ~/.config/ludo-g1/env` -> `No such file or directory`; Q-001 |
+| A7 | Engine exposes an interface later, `engine/stub.py` stands in | ADOPTED, nothing to verify | `engine/interface.py` + `engine/stub.py` exist and pass their tests inside the suite below |
+| U1 | Glove->DexH15 and controller->G1 wrist latency | OPEN, Phase 1 | `.venv/bin/python -c "from runtime import config; print(config.unmeasured('robot'))"` still lists all seven `latency.*` keys (section 4) |
+| U2 | DexH15 partial joint commands | CONFIRMED AT API LEVEL, firmware needs hardware | docs/sdks.md 4.5 and 9: single-finger and single-motor overloads exist in `pxdex/dh15.pyi` |
+| U3 | Reachable cells with hip mount + waist yaw | OPEN, Phase 1 | mechanism now exists (`runtime/fk.py` T-011, `teleop/retarget.py` T-013); D-010 records that the zero pose puts the wrist at [0.20, 0.15, 0.10] m in the pelvis frame and that wrist roll/yaw do not move the wrist point, so the box constrains 6 of 8 joints |
+| U4 | Horse arrow orientation matters to the engine | STILL ASSUMED NO | `config/board.yaml` `horse.arrow_orientation_matters` is UNMEASURED (section 4); Q-006 open with the engine team |
+| U5 | >= 500 GB disk for datasets | CONFIRMED SHORT | `df -h /home` -> `/dev/nvme0n1p8 76G 59G 14G 82% /home`; 14 GB available against a 500 GB target; Q-002 |
+| U6 | Greennode instance type, GPU, access method | OPEN | same as A6: `ls -l ~/.config/ludo-g1/env` -> `No such file or directory`; Q-001 |
+
+D-009 note: CLAUDE.md 3.1 lists the Orbbec Ego for "depth cues". Phase 0 found no usable Python SDK, the
+Ego enumerates as a UVC stereo pair, and the decision is RGB-only for `oblique`; nothing downstream
+changes because CLAUDE.md 5.3 already specifies `oblique` as RGB 640x480. Q-008 stays open for a later
+depth route.
+
+### 3. Full test suite
+
+Command: `time .venv/bin/python -m pytest -q` (run in this worktree, mocks only, no device attached)
+
+```
+378 passed, 4 skipped in 57.19s
+real  0m57,511s   user  0m32,279s   sys  0m4,859s
+```
+
+Collection: `.venv/bin/python -m pytest -q --collect-only | tail -3` -> `382 tests collected in 0.15s`
+(378 executed + 4 skipped).
+
+The 4 skips are exactly the hardware-gated ones, printed by the same run:
+- 3 x `tests/test_cameras.py:63` — no real top camera (`config/cameras.yaml top.device` is UNMEASURED);
+- 1 x `tests/test_scaffold.py:60` — `@pytest.mark.motion` skipped, "no valid hardware session: cannot read
+  session file .../hardware/session.enable: No such file or directory" (CLAUDE.md 4.6).
+
+Lint: `.venv/bin/python -m ruff check .` -> `All checks passed!`.
+
+### 4. UNMEASURED keys per config file
+
+Command:
+`.venv/bin/python -c "from runtime import config; [print(n, config.config_hash(n)[:12], config.unmeasured(n)) for n in ['robot','safety','cameras','board','hand','training']]"`
+(printed one key per line below; the hash is the first 12 hex of `config.config_hash`).
+
+| File | Hash (12) | UNMEASURED count |
+|---|---|---|
+| robot.yaml | 7c4a5143b618 | 17 |
+| safety.yaml | 6dc24062a636 | 10 |
+| cameras.yaml | aec8508475eb | 17 |
+| board.yaml | 9045ec1702ba | 13 |
+| hand.yaml | 6f1507d5116c | 14 |
+| training.yaml | 20e458a9b03f | 0 |
+
+Total 71 placeholder keys. Every one of them is a Phase 1 measurement or a human answer; none is a
+code defect.
+
+- **robot.yaml (17):** `waist.locked`, `network.dds_interface`, `control.state_hz`, `control.kp`,
+  `control.kd`, `control.weight_ramp_s`, `latency.arm_ms`, `latency.hand_ms`, `latency.glove_ms`,
+  `latency.pico_ms`, `latency.camera_top_ms`, `latency.camera_oblique_ms`, `latency.camera_palm_ms`,
+  `mock.arm_tau_s`, `mock.pose_hz`, `teleop.pico_to_pelvis`, `teleop.rest_pose_rad` (the last one is
+  Q-010).
+- **safety.yaml (10):** `workspace_box_m.min`, `workspace_box_m.max`, `workspace_box_m.margin_m`,
+  `joint_limits_rad`, `waist_yaw_clamp_rad`, `joint_velocity_limit_rad_s`, `command_rate_limit_hz`,
+  `command_gap_reset_s`, `watchdog_timeout_s`, `hand.pinch_rate_limit_per_s`. These are the envelope;
+  R3 says only a human commit may loosen them.
+- **cameras.yaml (17):** `top.device`, `top.usb_id`, `top.resolution`, `top.fps`, `top.fourcc`,
+  `top.autofocus`, `top.crop`, `oblique.device`, `oblique.device_right`, `oblique.resolution`,
+  `oblique.fps`, `oblique.fourcc`, `palm.device`, `palm.usb_id`, `palm.resolution`, `palm.fps`,
+  `palm.fourcc`. (`oblique.*` stays UNMEASURED although the Ego streamed in T-010, because the device
+  ignored the requested resolution.)
+- **board.yaml (13):** `board_origin_in_base`, `horse.footprint_mm`, `horse.height_mm`,
+  `horse.arrow_orientation_matters`, `die.size_mm`, `die.bowl_centre_mm`, `die.bowl_diameter_mm`,
+  `apriltags.family`, `apriltags.size_mm`, `apriltags.ids`, `apriltags.centres_mm`,
+  `apriltags.tag_inset_mm`, `layout`.
+- **hand.yaml (14):** `device.port`, `device.command_hz`, `joint_order`, `joint_limits_rad`,
+  `pinch.open_pose`, `pinch.closed_pose`, `pinch.idle_curl_pose`, `pinch.idle_fingers`,
+  `pinch.grasp_threshold`, `glove.open_distance_mm`, `glove.closed_distance_mm`, `glove.input_hz`,
+  `mock.open_pose`, `mock.closed_pose`.
+- **training.yaml (0):** nothing unmeasured; it holds only choices, not measurements.
+
+### 5. The four Phase 0 exit checks (CLAUDE.md section 6, "Verify")
+
+| # | Check | Command | Result | Status |
+|---|---|---|---|---|
+| 1 | all tests pass on mocks | `.venv/bin/python -m pytest -q` | `378 passed, 4 skipped in 57.19s`; the only skips are the 3 real-camera and 1 motion-marked tests | **PASS** |
+| 2 | `safety.py` rejects a motion command without a session file | `.venv/bin/python -m pytest tests/test_safety.py -v -k "test_guard_on_hardware_refuses_without_a_valid_session or test_simulated_is_keyword_only_and_defaults_to_false"` | `5 passed, 53 deselected in 0.19s` | **PASS** |
+| 3 | Greennode dummy job round-trips a file | `bash tests/test_greennode_local.sh` | `all checks passed`, 22 `ok` lines, 0 `FAIL`; `data/checkpoints/dummy/result.txt` exists after `up -> train -> down` and names the host that ran the job | **PASS on the local transport only; the real round trip is blocked on Q-001** |
+| 4 | `docs/sdks.md` covers state read + target write for all eight devices | `.venv/bin/python -m pytest tests/test_docs_sdks.py -s` | `9 passed in 0.09s`, `checked 157 path:line references (129 unique)`; per-device coverage in section 1 above | **PASS** |
+
+Check 2 in full (the four parametrised cases are the four ways a session can be invalid):
+
+```
+tests/test_safety.py::test_guard_on_hardware_refuses_without_a_valid_session[absent] PASSED
+tests/test_safety.py::test_guard_on_hardware_refuses_without_a_valid_session[expired] PASSED
+tests/test_safety.py::test_guard_on_hardware_refuses_without_a_valid_session[unconfirmed] PASSED
+tests/test_safety.py::test_guard_on_hardware_refuses_without_a_valid_session[unparsable] PASSED
+tests/test_safety.py::test_simulated_is_keyword_only_and_defaults_to_false PASSED
+======================= 5 passed, 53 deselected in 0.19s =======================
+```
+
+Each of the first four builds `Guard(SessionGate(path), envelope(), simulated=False)` and asserts that
+`guard.admit(...)` raises `SafetyViolation` with `rule == "session_gate"` and that `guard.admitted == 0`
+(tests/test_safety.py:532-540). The fifth asserts `simulated` is keyword-only and that both `Guard(...)`
+and `Guard.from_config(...)` default it to `False`, i.e. hardware is the default and the simulator is the
+explicit opt-out.
+
+Check 3, stated plainly: **the local-transport round trip passed** — `cloud/greennode.sh up`, `train`,
+`down` and `status` all work against a temporary fake remote (`/tmp/ludo-t009-*/remote`), the produced
+`result.txt` names `hostname: aloisThinkpad` and `python: 3.10.20`, and `status` correctly reports the
+credentials file as absent. **The real Greennode round trip has never run** and cannot until Q-001 gives
+`~/.config/ludo-g1/env`; `ls -l ~/.config/ludo-g1/env` -> `No such file or directory`.
+
+Board calibration (the fifth Phase 0 item in section 6, "Board calibration from a Brio still image of the
+real board") is built and tested on synthetic images only; the real still is H-001.
+
+Gate hygiene, re-checked now: `ls -l hardware/` -> only `README.md`;
+`git check-ignore -v hardware/session.enable` -> `.gitignore:2:hardware/session.enable`;
+`git log --all --oneline -- hardware/session.enable | wc -l` -> `0` (never in history).
+
+### 6. Open human items
+
+| Id | What | Raised | Who unblocks it | Assumption we are running on | Blocks |
+|---|---|---|---|---|---|
+| H-001 | Brio still of the empty board (and of the start position) for real calibration | fable 09-11 | Alois, read-only, no session | synthetic homography tests stand in; `config/board_calib.yaml` not yet written from real pixels | Phase 0 board-calibration item; Phase 2 goal display |
+| H-002 | Bring the robot LAN up so the DDS link can be verified (192.168.123.x) | opus 09-11 | Alois, read-only, no session | A2 confirmed in code only | all of Phase 1 |
+| H-003 | Plug in Brio, DexH15 and PxCap Pro once for enumeration (no motor enable) | opus 09-11 | Alois, read-only, no session | the device/resolution rows of `config/cameras.yaml` and `config/hand.yaml` stay UNMEASURED | 17 cameras.yaml + 2 hand.yaml keys |
+| Q-001 | Greennode credentials at `~/.config/ludo-g1/env` (host, user, key, remote root, instance type, GPU) | fable 09-11 | Alois | local fake transport; real job untested | Phase 0 exit check 3, all of Phase 3 training |
+| Q-002 | Dataset disk: 14 GB free vs 500 GB target | fable 09-11 | Alois | Phase 0 and mock work fit; Phase 2 real recording does not | Phase 2 collection |
+| Q-003 | May we keep `unitree_sdk2py` pip-installed from upstream GitHub? | fable 09-11 | Alois | yes, pinned at `f7a5526`, recorded in docs/sdks.md; `g1_bridge_sdk` is the fallback | nothing today |
+| Q-004 | Name the physical e-stop for a rig-mounted G1 with legs locked | fable 09-11 | Alois | checklist says "e-stop within reach" without naming it | first motion session in Phase 1 |
+| Q-005 | Standalone `pxhandsdk` deb for the glove, or import the bundle's cp310 `.so` | fable 09-11 | Alois / Paxini | nothing imported from the bundle yet; `drivers/pxcap.py` is mock-only | real glove driver (Phase 2) |
+| Q-006 | Does the engine care about the horse arrow orientation? | fable 09-11 | engine team | assumed NO (U4) | policy target definition if the answer is yes |
+| Q-007 | Folder is `~/Desktop/ludo-g1`, the brief says `~/ludo-g1` | fable 09-11 | Alois | agents use the real path; one absolute `file://` path for the pxdex wheel sits in requirements.txt | nothing today |
+| Q-008 | Orbbec depth route: RGB-only / build pyorbbecsdk / OpenCV stereo | opus 09-11 | Alois | (a) RGB-only, per D-009 | nothing downstream |
+| Q-009 | Which cv2 wheel to keep | opus 09-11 | **DECIDED by D-008** | keep `opencv-python`; headless pin removed in T-012 | closed |
+| Q-010 | Teleop rest pose and elbow configuration | fable 09-12 | Phase 1 on the rig | `teleop.rest_pose_rad` all zeros | IK posture in Phase 2 |
+
+Blockers: `agents/BLOCKERS.md` -> `(none)`. No Phase 0 item reached the section 4.7 bar.
+
+### 7. What Phase 0 leaves behind
+
+- 14 tasks marked accepted:
+  `awk '/^## T-/{t=$2} /^status:/{print t, $2}' agents/TASKS.md` -> T-002..T-014 and T-016 `accepted`,
+  T-015 and T-017 `in_progress`, and **T-001 still reads `review`** although `agents/REVIEW.md` records
+  "T-001 ACCEPTED (fable, 2026-09-11T18:52+07:00, commits 4255484, 3cd3738)". That is a bookkeeping slip
+  in TASKS.md, not an open task; I did not fix it because this task may only touch the T-015 lines.
+- 382 collected tests, 378 of which run with no device attached, in 57 s.
+- Three of the four exit checks pass outright; the fourth (Greennode) passes on the local transport and
+  waits on Q-001. The board-calibration item waits on H-001. Neither can be advanced by an agent.
+- One refuted assumption (A5) with a measured replacement already built (T-013), one narrowed assumption
+  (A1: exactly 3.10), one confirmed-short unknown (U5: 14 GB of disk), and three unknowns (U1, U3, U6)
+  that are Phase 1 or human work by construction.
+
+### Notes / deviations
+
+- No code changed in this task: the only files touched are `agents/BUILD_LOG.md`, `docs/README.md` and
+  the T-015 status/result lines in `agents/TASKS.md`.
+- The `378 passed` figure will change the moment T-017 merges; it is the count on `wt/t015` at `3c5df60`
+  and the acceptance criterion is that Fable's fresh run on this branch reproduces it.
+- R1-R6 intact: no motion command, no scripted motion, `config/safety.yaml` untouched, nothing under
+  `third_party/` read-modified, `hardware/session.enable` never created (still absent, still git-ignored,
+  still absent from history — commands in section 5).
+
+(T-015 commit: 381b9d7; this line and the TASKS.md result hash are the only content of the follow-up
+commit, which ran the full pre-commit gate — no `--no-verify`, per D-013.)
