@@ -512,7 +512,7 @@ acceptance:
   - mean solve time < 5 ms per call (measured, command logged)
 notes: No hardware, no drivers touched. This is the IK that D-006 replaces Teleopit with; keep it under 200 lines. Also fix the
   future-tense sentence about T-012 in docs/config.md.
-result: (commit COMMITHASH)
+result: (commit 6628571)
   - `.venv/bin/ruff check .` -> All checks passed!; `.venv/bin/python -m pytest -q` -> 327 passed, 1 skipped
     (297 before + 30 new in tests/test_retarget.py; the skip is the motion autoskip)
   - acceptance 1, printed pass rate: `.venv/bin/python -m pytest tests/test_retarget.py -q` ->

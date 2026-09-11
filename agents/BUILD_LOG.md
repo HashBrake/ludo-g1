@@ -1246,3 +1246,4 @@ task fixed; this way only a number the task did not fix moved.
   configuration the IK settles into, and changing it later changes solutions. Worth deciding before
   the first collection session rather than after.
 - No blockers.
+(T-013 commit: 6628571; this line and the TASKS.md result hash are the only content of the follow-up commit.)
