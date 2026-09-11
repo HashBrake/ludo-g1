@@ -99,15 +99,61 @@ The envelope may only ever be tighter than the hardware.
 6. **Workspace box.** `fk(joints)` gives the position of `workspace_box_m.point`
    (`left_wrist_yaw_link`) in `workspace_box_m.frame` (`g1_pelvis`); it must lie inside
    `[min + margin_m, max - margin_m]`, or the command is *rejected*. The box is checked on the
-   **clamped** targets, so what is checked is exactly what would be sent.
+   **clamped** targets, so what is checked is exactly what would be sent. The frame, the point and
+   the fk are the next section.
 
 Only then is the command recorded as the new reference and returned. A rejected command never becomes
 the reference.
 
-`fk` is injected (`Callable[[np.ndarray (8,)], np.ndarray (3,)]`, radians in, metres out). The real
-one arrives with T-011; tests inject a mock. An envelope built **without** one fails closed: every
-`check()` raises `workspace_box`, because an unverifiable box is not a passed box. An `fk` that
-raises, or that returns anything but three finite numbers, is treated the same way.
+`fk` is injected (`Callable[[np.ndarray (8,)], np.ndarray (3,)]`, radians in, metres out).
+`Envelope.from_config()` injects the real one, `runtime.fk.left_arm_fk`, when no `fk` is passed;
+passing one explicitly overrides it, which is what the envelope's own tests do. An envelope built
+**without** one — the `Envelope(...)` constructor's default — fails closed: every `check()` raises
+`workspace_box`, because an unverifiable box is not a passed box. An `fk` that raises, or that
+returns anything but three finite numbers, is treated the same way.
+
+### The box: frame, point, and the kinematics behind it
+
+**Frame (`g1_pelvis`).** The origin is the G1's pelvis body origin, the frame the robot's own state is
+naturally expressed in: **+x forward out of the chest, +y to the robot's left, +z up**. It is attached
+to the pelvis, so it turns with the robot but *not* with the waist: a waist yaw moves the arm **within**
+this frame, which is exactly why the waist is one of the 8 joints the fk takes. On the rig the pelvis
+is bolted down, so this frame is also fixed relative to the table; the transform from it to the board
+frame is a Phase 1 measurement and is not needed here.
+
+**Point (`left_wrist_yaw_link`).** The box is checked on **one** point: the origin of the left wrist
+yaw link, which is where the DexH15 bolts on. The offset from there to the fingertip pinch point is
+`UNMEASURED` until Phase 1 (`config/hand.yaml`), so **the hand, the fingers and a held horse stick out
+past the box and are not themselves checked**. `config/safety.yaml` says the box is drawn with that
+slack already removed from the reachable volume, and `margin_m` (20 mm) is taken off every face on top
+of it. When Phase 1 measures the tool offset, the right fix is a second checked point, not a wider box.
+
+**The box itself, in words** (all values in `config/safety.yaml`, all `UNMEASURED` placeholders):
+an axis-aligned box, 500 mm deep × 700 mm wide × 700 mm tall before the margin, spanning x
+`0.15 … 0.65` m (from just in front of the chest to arm's length forward), y `-0.10 … 0.60` m (from
+100 mm across the body's centreline to 600 mm out on the robot's left), and z `-0.40 … 0.30` m (from
+400 mm below the pelvis to 300 mm above it). The margin shrinks it to `0.17 … 0.63`, `-0.08 … 0.58`,
+`-0.38 … 0.28`. It is meant to cover the table region in front of and to the left of the robot and
+nothing else: not the robot's own torso, not the operator's side of the table, not above head height.
+The z span is a guess until the rig height is measured.
+
+**The kinematics (`runtime/fk.py`, T-011).** `left_arm_fk(q7, waist_yaw)` — also callable as
+`left_arm_fk(joints8)` in `action_order` — evaluates the vendored MJCF
+`third_party/unitree_g1_mjcf/g1_29dof.xml` (T-012, checksums in its `MANIFEST.txt`) with mujoco:
+the 8 commanded joints are written to the `mjcf_qpos_index` addresses `config/robot.yaml` records,
+every other joint is held at the model's `qpos0` (zero for all of them), the floating base is pinned
+to the origin with an identity quaternion so the result is already pelvis-relative, and
+`mj_kinematics` is called — kinematics only, no dynamics, contacts or gravity. The model is compiled
+once and cached; a call costs **8.4 µs** (mean of 1000, T-011), against a 16.7 ms budget at the 60 Hz
+command rate limit. It is the same model the arm IK solves on (D-006), so the box and the IK cannot
+disagree about geometry.
+
+**Where the all-zero pose sits.** At all 8 joints zero the wrist is at
+**(0.1998, 0.1487, 0.0952) m**, which is **inside** the current placeholder box (`tests/test_fk.py`
+prints and asserts this). The G1's zero pose is not the arm hanging down — shoulder pitch zero points
+the upper arm forward — so a zeroed arm reaching into the box is expected, not a sign the box is
+wrong. It does mean the box does **not** by itself stop a command that parks the arm at zero; that is
+a fact for the envelope review, and the numbers stay as committed until a human changes them (R3).
 
 `Envelope.reset()` drops the rate and velocity reference; a driver calls it when it releases and
 re-takes the arm. `Envelope.watchdog_timeout_s` is exposed here for the driver that implements the

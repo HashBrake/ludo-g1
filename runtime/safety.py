@@ -52,8 +52,9 @@ REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 _log = get_logger("runtime.safety")
 
 #: Forward kinematics of the 8 commanded joints to the workspace-box point (``workspace_box_m.point``
-#: in the ``workspace_box_m.frame`` frame), in metres. The real implementation is T-011; tests inject
-#: a mock. An envelope built without one fails closed: every check raises.
+#: in the ``workspace_box_m.frame`` frame), in metres. :func:`runtime.fk.left_arm_fk` is the real one
+#: and is what :meth:`Envelope.from_config` uses when none is passed; tests inject a mock. An envelope
+#: built without one fails closed: every check raises.
 FkFn = Callable[[np.ndarray], np.ndarray]
 
 
@@ -353,10 +354,18 @@ class Envelope:
     def from_config(cls, fk: FkFn | None = None, *, root: Path | str | None = None) -> Envelope:
         """Build the envelope from ``config/safety.yaml``, cross-checked against ``config/robot.yaml``.
 
+        ``fk=None`` means the real forward kinematics, :func:`runtime.fk.left_arm_fk` (T-011); pass
+        one explicitly to override it, which is what the tests do. Constructing an :class:`Envelope`
+        directly still defaults to no fk at all, and such an envelope fails closed.
+
         Refuses to build (``ConfigError``) when the two files disagree on the commanded joints or
         their order, or when a safety limit is wider than the mechanical range of its joint: the
         envelope may only ever be tighter than the hardware.
         """
+        if fk is None:
+            from runtime.fk import left_arm_fk  # imported here so mujoco is not pulled in to read a state
+
+            fk = left_arm_fk
         safety = config.load("safety", root=root)
         robot = config.load("robot", root=root)
         names = _joint_names(robot)
@@ -526,7 +535,7 @@ class Envelope:
             raise self._reject(
                 "workspace_box",
                 "no forward kinematics injected, so the workspace box cannot be checked "
-                "(Envelope.from_config(fk=...); the real fk is T-011)",
+                "(Envelope.from_config() injects runtime.fk.left_arm_fk by default)",
             )
         try:
             point = np.asarray(self.fk(joints), dtype=np.float64).reshape(-1)

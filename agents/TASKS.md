@@ -336,7 +336,7 @@ acceptance:
 notes: Read-only; no session needed. Do not touch the palm camera here (it comes with the DexH15 driver in Phase 1).
 
 ## T-011  Left-arm forward kinematics for the workspace box
-status: in_progress
+status: review
 priority: P1
 phase: 0
 owner: opus
@@ -351,6 +351,30 @@ deliverables:
 acceptance:
   - tests pass; `Guard.admit` with the real fk rejects a target whose wrist would be outside config/safety.yaml's box (test)
 notes: Use the MJCF vendored by T-012 (third_party/unitree_g1_mjcf/), loaded with mujoco; joint order from config/robot.yaml. The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
+result: (opus, 2026-09-11T19:47+07:00, commit COMMIT_HASH)
+  - Implementation: mujoco on third_party/unitree_g1_mjcf/g1_29dof.xml (the T-012 vendored MJCF), joint
+    order and qpos addresses from config/robot.yaml, base pinned to identity so positions are in the
+    g1_pelvis frame, mj_kinematics only. runtime/fk.py, 119 lines.
+  - `.venv/bin/python -m pytest tests/test_fk.py -q -s` -> 22 passed. PASS
+  - Zero pose vs the body chain parsed out of the XML by the test (ElementTree + quaternion arithmetic,
+    no mujoco): wrist at [0.19977428, 0.14866142, 0.09523278] m, max |diff| = 3.098e-09 m, criterion
+    1e-3 m. PASS
+  - 20 random configurations inside config/safety.yaml's joint limits (seed 20260911) vs an independent
+    evaluation with a fresh MjModel/MjData and reverse-order qpos writes: worst disagreement 0.000e+00 m,
+    criterion 1e-6 m. PASS
+  - Guard.admit with the real fk and a valid tmp_path session: shoulder pitch -2.5 rad puts the wrist at
+    [-0.0390, 0.0153, 0.5604] m and is rejected with rule="workspace_box" naming left_wrist_yaw_link,
+    admitted stays 0; the all-zero target is inside the box and is admitted. PASS
+  - Envelope.from_config() injects runtime.fk.left_arm_fk; an explicit fk still overrides it; an
+    Envelope built directly with fk omitted still fails closed (tests/test_safety.py, rewritten to build
+    that envelope through the constructor since from_config now has a default). PASS
+  - left_arm_fk mean call time 8.4 us over 1000 calls (16.7 ms budget at command_rate_limit_hz = 60).
+  - `.venv/bin/ruff check .` -> All checks passed. `.venv/bin/python -m pytest -q` -> 195 passed,
+    1 skipped (motion test, no session). Was 173 before this task.
+  - Fact for the envelope review, recorded in docs/safety.md and BUILD_LOG: the all-zero pose is INSIDE
+    the current placeholder box, not outside as the notes predicted (the G1's zero pose points the upper
+    arm forward, it does not hang down). config/safety.yaml untouched.
+  - No hardware touched, no motion command sent, hardware/session.enable never created or read.
 
 ## T-012  Dependencies and assets for the arm IK path (D-006, D-008)
 status: accepted

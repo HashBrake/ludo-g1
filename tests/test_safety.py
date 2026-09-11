@@ -88,6 +88,26 @@ def envelope(fk=fk_center, root: Path | None = None) -> Envelope:
     return Envelope.from_config(fk, root=root)
 
 
+def bare_envelope() -> Envelope:
+    """The same envelope with no fk at all: the constructor's default, which fails closed."""
+    env = envelope()
+    return Envelope(
+        names=env.names,
+        lower=env.lower,
+        upper=env.upper,
+        box_min=env.box_min,
+        box_max=env.box_max,
+        box_frame=env.box_frame,
+        box_point=env.box_point,
+        velocity_limit_rad_s=env.velocity_limit_rad_s,
+        command_rate_limit_hz=env.command_rate_limit_hz,
+        command_gap_reset_s=env.command_gap_reset_s,
+        watchdog_timeout_s=env.watchdog_timeout_s,
+        pinch_range=env.pinch_range,
+        pinch_rate_limit_per_s=env.pinch_rate_limit_per_s,
+    )
+
+
 def command(joints=0.0, pinch: float = 0.0) -> MotionCommand:
     q = np.full(JOINT_DIM, joints, dtype=np.float64) if np.isscalar(joints) else np.asarray(joints, float)
     return MotionCommand(arm=q[:ARM_DOF], waist_yaw=float(q[ARM_DOF]), pinch=pinch)
@@ -414,7 +434,10 @@ def test_the_box_is_checked_on_the_clamped_target_not_the_raw_one() -> None:
 
 
 def test_an_envelope_without_fk_fails_closed() -> None:
-    env = Envelope.from_config()
+    # T-011 gave Envelope.from_config() a default fk (runtime.fk.left_arm_fk, exercised in
+    # tests/test_fk.py), so the no-fk envelope this asserts about is now built directly.
+    env = bare_envelope()
+    assert env.fk is None
     with pytest.raises(SafetyViolation) as excinfo:
         env.check(command(0.0), state(0.0), now_ns=0)
     assert excinfo.value.rule == "workspace_box"

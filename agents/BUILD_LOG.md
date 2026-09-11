@@ -692,3 +692,118 @@ T-002 limit extraction.
   load time in code, never by editing the asset.
 - No disagreement with the task as written; no blockers.
 (T-012 commit: aa8f9cc; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-011  runtime/fk.py: left-arm forward kinematics for the workspace box  (opus, 2026-09-11T19:47+07:00)
+
+### What changed
+- **`runtime/fk.py`** (new, 119 lines). `left_arm_fk(q7, waist_yaw) -> np.ndarray (3,) float64`, the
+  position of `config/safety.yaml` `workspace_box_m.point` (`left_wrist_yaw_link`) in the pelvis frame.
+  It is also callable as `left_arm_fk(joints8)` over `config/robot.yaml` `action_order`, which is the
+  `runtime.safety.FkFn` signature the envelope calls; one implementation, two call shapes, so nothing
+  has to wrap it. Model: **`third_party/unitree_g1_mjcf/g1_29dof.xml`**, the T-012 vendored MJCF, via
+  mujoco 3.13.0. The 8 commanded joints are written to the `mjcf_qpos_index` addresses from
+  `config/robot.yaml` (re-measured against the model at build time, not trusted); every other joint is
+  held at the model's `qpos0`, which is zero for all of them; the floating base is pinned to
+  `(0,0,0, 1,0,0,0)` so positions come out pelvis-relative; `mj_kinematics` only (no dynamics, no
+  contacts, no gravity). Model and `MjData` are compiled once and cached behind an `RLock`. The
+  constructor also refuses a `workspace_box_m.frame` that is not `g1_pelvis` and a `point` that is
+  neither a body nor a site of the model.
+- **`runtime/safety.py`** (wiring only). `Envelope.from_config(fk=None)` now imports and injects
+  `runtime.fk.left_arm_fk`; an explicit `fk` still overrides it. The import is inside the method so
+  that reading robot state does not pull mujoco in. `Envelope(...)` built directly still defaults to
+  `fk=None` and still fails closed. No check was weakened, added or reordered; the other two edits are
+  the `FkFn` comment and one stale "the real fk is T-011" string in the failure message.
+- **`tests/test_fk.py`** (new, 22 tests).
+- **`tests/test_safety.py`**: one test had to change. `test_an_envelope_without_fk_fails_closed` built
+  its no-fk envelope with `Envelope.from_config()`, which now has a default fk, so it would have been
+  asserting nothing. It now builds the envelope through a new `bare_envelope()` helper that calls the
+  constructor directly with `fk` omitted, and additionally asserts `env.fk is None` before checking
+  that `check()` raises `workspace_box`. Nothing else in that file was touched.
+- **`docs/safety.md`**: new subsection "The box: frame, point, and the kinematics behind it" — the
+  pelvis frame and its axes, what the box covers in words and millimetres, the fact that the checked
+  point is the wrist and that the hand and a held horse stick out past it until the Phase 1 tool
+  offset exists, how the fk is computed, its cost, and where the all-zero pose sits.
+
+### How the acceptance criteria were verified
+Commands and measured results (all on `.venv/bin/python`, mujoco 3.13.0, no hardware):
+
+1. `.venv/bin/python -m pytest tests/test_fk.py -q -s` -> **22 passed** in 5.1 s.
+2. **Zero pose within 1 mm of the model's published wrist offset.** The expected value is computed in
+   the test from the XML alone: ElementTree parses the `pos`/`quat` attributes of the bodies on the
+   path `pelvis -> waist_yaw -> waist_roll -> torso -> left_shoulder_pitch -> ... ->
+   left_wrist_yaw_link` and chains them with quaternion arithmetic written in the test file (at zero
+   angles every joint contributes the identity rotation). mujoco is not in that path.
+   - XML chain: `[0.19977428, 0.14866142, 0.09523278]` m
+   - `left_arm_fk(zeros(7), 0.0)`: `[0.19977428, 0.14866142, 0.09523278]` m
+   - **max |difference| = 3.098e-09 m**, criterion 1e-3 m. PASS
+3. **20 random configurations agree with an independent evaluation within 1e-6 m.** mujoco is the only
+   implementation, so per Fable's guidance the cross-check is a second mujoco evaluation built from
+   scratch in the test — its own `MjModel` and `MjData` (no shared scratch state), the same 8 values
+   written in **reverse** address order, base pinned afterwards rather than before. 20 configurations
+   drawn uniformly inside `config/safety.yaml`'s joint limits, seed 20260911.
+   - **worst disagreement = 0.000e+00 m** (bit-identical), criterion 1e-6 m, guidance 1e-9 m. PASS
+4. **Waist yaw moves the wrist**, and moves it as a yaw: `|fk(0, waist=0.5) - fk(0, waist=0)| = 0.0745 m`
+   (> 0.01 m required), with the z coordinate and the xy radius unchanged to 1e-9 m. PASS
+5. **Deterministic and leak-free**: `fk(a)` is bit-identical after 5 interleaved `fk(b)` calls; the
+   returned array is a fresh copy (mutating it does not change the next result); the model object is
+   the same instance after a call (compiled once). PASS
+6. **`Guard.admit` with the real fk rejects an out-of-box target** (the acceptance criterion): with a
+   valid session file written into `tmp_path`, `q = zeros(8)` except shoulder pitch `-2.5` puts the
+   wrist at `[-0.0390, 0.0153, 0.5604]` m; `admit` raises `SafetyViolation(rule="workspace_box")`
+   naming `left_wrist_yaw_link` and the box, and `guard.admitted` stays 0. The companion test admits
+   the all-zero target (inside the box) and `admitted` becomes 1, so the rejection is not vacuous. PASS
+7. **Input validation**: wrong sizes (6, 8 with an explicit waist; 7, 9 without) raise `ValueError`;
+   a NaN or inf joint raises `ValueError` before mujoco sees it. PASS
+8. **Call time**: `left_arm_fk` mean over 1000 calls = **8.4 us** (one warm-up call first). The
+   envelope calls it once per command; at the 60 Hz `command_rate_limit_hz` the budget is 16.7 ms, so
+   the fk is 0.05% of it. Compiling the MJCF once costs ~0.2 s at first use.
+9. `.venv/bin/ruff check .` -> "All checks passed!". `.venv/bin/python -m pytest -q` -> **195 passed,
+   1 skipped** (the skip is `test_scaffold.py`'s motion test, no session file). Before this task: 173
+   passed. +22 from `tests/test_fk.py`.
+
+### Findings worth Fable's attention
+- **The all-zero pose is INSIDE the current placeholder box, not outside.** The wrist at all-zero
+  joints is at `(0.199774, 0.148661, 0.095233)` m; the box after the 20 mm margin is
+  `[0.17, -0.08, -0.38] .. [0.63, 0.58, 0.28]`. The task notes predicted it would be outside because
+  "the arm hangs down at zero" — on the G1 it does not: shoulder pitch zero points the upper arm
+  forward, and the wrist ends up ~200 mm in front of and ~150 mm to the left of the pelvis, 95 mm
+  above it. This is a fact for the envelope review, not something to fix; `config/safety.yaml` was not
+  touched (R3). One consequence worth stating: the box alone does not reject a command that parks the
+  arm at zero. `tests/test_fk.py::test_where_the_all_zero_pose_sits_relative_to_the_placeholder_box`
+  prints the numbers and asserts the "inside" verdict, so if a human changes the box the test fails
+  and both it and `docs/safety.md` get re-checked rather than drifting.
+- **Two of the 8 joints cannot move the checked point at all.** `left_wrist_yaw_joint` rotates the
+  wrist frame about its own origin, and `left_wrist_roll_joint` turns about the x axis that the
+  remaining 0.038 + 0.046 m of the chain lies along; both move the wrist origin by < 1e-9 m for a
+  0.3 rad step (measured, `test_every_commanded_joint_reaches_the_point`). So the box constrains 6 of
+  the 8 commanded joints, and the two wrist rotations are unconstrained by it. They are constrained by
+  the joint limits, and they will matter to the box only once the tool offset to the fingertip exists
+  (Phase 1) and the checked point moves off the wrist axis. Recorded in `docs/safety.md`.
+- **The box is checked at one point and the hand is not in the model's commanded chain.** The MJCF's
+  `left_rubber_hand` is the stock G1 hand, not the DexH15, and no DexH15 geometry exists here. When
+  Phase 1 measures the tool offset, the cheap correct fix is to check a *second* point (the fingertip
+  pinch point) against the same box, not to shrink the box by a guess. Proposing, not applying.
+- `left_arm_fk` deliberately accepts both `(q7, waist_yaw)` (the T-011 deliverable signature) and
+  `(joints8)` (the `FkFn` signature `Envelope` calls). The alternative was a second wrapper function
+  in `runtime/fk.py` or a lambda in `safety.py`; one function with an optional second argument is less
+  code and gives the envelope a named callable it can be compared against in a test
+  (`env.fk is fk.left_arm_fk`). Disagreement: none with the task; recording the choice.
+- `reset_cache()` existed in a draft and was removed: nothing but a test wanted it, and section 7 says
+  no configurability that no task asked for. Caching is verified through `kinematics()` identity.
+- The fk import in `Envelope.from_config` is function-local on purpose. Importing `runtime.safety` at
+  module scope is done by `tests/conftest.py` and by every read-only path; pulling mujoco (~0.2 s and
+  ~100 MB) into a state read for a check that only motion needs is not worth it. It is imported on the
+  first `from_config()` call, which is before any command can be sent.
+
+### Not done / limits
+- No hardware was touched and no motion command was sent. `hardware/session.enable` was never created,
+  edited or read; the session files in these tests are written into pytest's `tmp_path` and are handed
+  to `SessionGate(path)` explicitly, exactly as `tests/test_safety.py` already does.
+- `config/safety.yaml` and everything under `third_party/` are unchanged (`git status` clean for both).
+- `runtime/fk.py` imports nothing from `tools/hardware_checks/` and contains no joint target, waypoint
+  or pose literal: the only constant is the identity base pose, which is a frame definition (R2).
+- The 1e-6 m criterion is met with 0 m of disagreement, but that is a *consistency* check between two
+  mujoco evaluations of the same asset, not a check of the asset against the real robot. The MJCF's
+  link offsets are Unitree's published numbers; whether this robot matches them is a Phase 1
+  measurement and is not claimed here.
+- No blockers.
