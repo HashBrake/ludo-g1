@@ -803,7 +803,7 @@ acceptance:
   - without: suite green, tests skipped with the device path in the reason
 notes: The motors stay disabled. A `grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py` must show only the
   NotImplementedError stub for send_pinch.
-result: commit COMMIT_HASH (branch wt/t019). The hand was NEVER reached: it has never been plugged in
+result: (opus, 2026-09-12, branch wt/t019, commit 4503254; hash recorded by the follow-up commit). The hand was NEVER reached: it has never been plugged in
   (H-003 open) and no /dev/ttyUSB* or /dev/ttyACM* node existed during the task.
   - suite: 573 passed, 10 skipped, 774.07 s (`.venv/bin/python -m pytest -q`); tests/test_dexh15.py alone
     33 passed, 3 skipped. ruff check and ruff format --check clean on every file touched.

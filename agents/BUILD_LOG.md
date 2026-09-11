@@ -3247,7 +3247,7 @@ under `third_party/` touched. Committed through the full pre-commit gate, no `--
 
 ---
 
-## T-019  DexH15 driver, read-only state and palm camera  (2026-09-12, branch wt/t019)
+## T-019  DexH15 driver, read-only state and palm camera  (2026-09-12, branch wt/t019, commit 4503254)
 
 Built in the worktree `/home/alois/Desktop/ludo-g1-wt-t019` (branch `wt/t019`, created with
 `tools/worktree_setup.sh`). **The hand was never reached: it has never been plugged in (H-003 open),
@@ -3298,6 +3298,7 @@ below that is a number about the hand is therefore a number about a fake, and is
 ### Commands run and what they measured
 ```
 .venv/bin/python -m pytest -q                      -> 573 passed, 10 skipped, 774.07 s
+  (again inside the pre-commit hook of commit 4503254 -> 573 passed, 10 skipped, 964.31 s)
 .venv/bin/python -m pytest tests/test_dexh15.py -q -> 33 passed, 3 skipped, 5.52 s
 .venv/bin/ruff check / format --check              -> clean on every file touched
 grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py
