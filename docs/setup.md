@@ -123,6 +123,62 @@ needed to create it.
 
 Hooks are not tracked by git, so every fresh clone must run `tools/install_hooks.sh` once.
 
+## Parallel builders (git worktrees)
+
+Fable may run two builders at once when their tasks touch disjoint files (CLAUDE.md 4.2). The second
+builder works in a *git worktree*: a second checkout of the same repository on its own branch, sharing
+one `.git` directory.
+
+```bash
+bash tools/worktree_setup.sh wt/t042 /home/alois/Desktop/ludo-g1-wt-t042
+# ... build, commit on wt/t042, get it merged into main ...
+bash tools/worktree_teardown.sh /home/alois/Desktop/ludo-g1-wt-t042
+```
+
+`tools/worktree_setup.sh BRANCH PATH` refuses if `PATH` already exists or `BRANCH` already exists, then:
+
+1. `git worktree add -b BRANCH PATH main` (the base branch is `main`; override with `WORKTREE_BASE_BRANCH`),
+2. creates `PATH/.venv` with `uv venv --python 3.10` and installs `requirements.txt` into it
+   (`.venv/` is git-ignored, so a new worktree never has one),
+3. links in every path listed in `tools/worktree_payloads.txt` (below),
+4. runs `.venv/bin/python -m pytest -q` inside the worktree and exits with pytest's status, printing a
+   final `worktree_setup: OK ... suite=green` line.
+
+Both scripts find the main working tree through `git rev-parse --git-common-dir`, so they can be run
+from any checkout of the repo. Nothing is written into the main working tree.
+
+### The git-ignored payloads
+
+Some vendored files are on disk but too large for git (agents/DECISIONS.md D-003), so a fresh worktree
+does not have them and `tests/test_docs_sdks.py` fails there. `tools/worktree_payloads.txt` lists them,
+one repo-relative path per line:
+
+| Entry | What the setup script creates in the worktree |
+|---|---|
+| a directory in the main tree | a **real** directory holding one symlink per entry of the main tree's directory |
+| a file in the main tree | a single symlink |
+
+The directory case is a real directory on purpose: the matching `.gitignore` rule ends in a slash, which
+does not match a symlink, and the worktree's `git status` has to stay clean. Nothing under
+`third_party/` is copied or modified; the worktree only points at the main tree's copy. Add a line to
+`tools/worktree_payloads.txt` whenever a new git-ignored on-disk payload becomes a test dependency.
+
+### Teardown
+
+`tools/worktree_teardown.sh PATH` refuses if that worktree has uncommitted changes (tracked *or*
+untracked; git-ignored files such as `.venv/` and the payload symlinks do not count), refuses if `PATH`
+is the main working tree or is not a registered worktree of this repo, then removes the worktree. It
+deletes the branch **only** if `git branch --merged main` lists it; otherwise it leaves the branch in
+place, prints the merge and delete commands, and still exits 0.
+
+### Notes
+
+- Git hooks live in the shared `.git/hooks` (`git rev-parse --git-path hooks` in a worktree resolves to
+  the main repo's), so the pre-commit hook installed once in the main tree also guards commits made in
+  every worktree. It runs `.venv/bin/ruff check .` and `.venv/bin/python -m pytest -q` **in the
+  worktree**, which is why step 2 above is not optional.
+- Never work in another builder's worktree. `git worktree list` shows who is where.
+
 ## Repo layout
 
 Per CLAUDE.md 5.1. `data/` (datasets, checkpoints, logs), `.venv/` and `hardware/session.enable` are

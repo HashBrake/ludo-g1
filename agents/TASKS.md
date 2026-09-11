@@ -539,7 +539,7 @@ result: (commit 6628571)
     placeholders the task listed), because section 7 forbids the equivalent constants in code
 
 ## T-014  Worktree helper for parallel builders
-status: todo
+status: review
 priority: P2
 phase: 0
 owner: opus
@@ -556,6 +556,28 @@ acceptance:
     output in BUILD_LOG.md), and `bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke` leaves `git worktree list` with main only
   - `git status` in main is clean afterwards
 notes: Nothing under third_party/ is modified; the symlinks live only in the worktree and are git-ignored there.
+result:
+  commit: COMMIT_HASH
+  files: tools/worktree_setup.sh, tools/worktree_teardown.sh, tools/worktree_payloads.txt, docs/setup.md
+  acceptance 1: `bash tools/worktree_setup.sh wt/smoke /tmp/ludo-wt-smoke` -> exit 0, "worktree_setup: OK
+    worktree=/tmp/ludo-wt-smoke branch=wt/smoke suite=green", pytest inside the worktree 327 passed, 1 skipped
+    in 29.15 s; 31.5 s wall clock for the whole helper (worktree + venv + 328 payload symlinks + suite). Run
+    twice, same counts. PASS
+  acceptance 1b: `bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke` -> exit 0, "branch wt/smoke deleted
+    (merged into main)"; `git worktree list` then holds only the main tree and the two live builder worktrees
+    (ludo-g1-wt-t010, ludo-g1-wt-t014), no /tmp/ludo-wt-smoke; `git branch --list` has no wt/smoke; the path is
+    gone from disk. PASS
+  acceptance 2: main is dirty from the concurrent builder in it (config/training.yaml, board/perception.py,
+    runtime/controller.py, runtime/goal.py, runtime/policy_api.py), so measured as change-free instead:
+    `git -C ~/ludo-g1 status --porcelain` snapshotted before and after a full setup+teardown cycle ->
+    `diff` identical, exit 0. My scripts write nothing into the main working tree. PASS
+  refusals run: path exists (exit 1), branch exists (exit 1, nothing created), no args (exit 2), dirty
+    worktree (exit 1, worktree kept), main working tree (exit 1), unmerged branch (exit 0, worktree removed,
+    branch kept with the merge command printed).
+  gate: `.venv/bin/ruff check .` all checks passed; `.venv/bin/python -m pytest -q` 327 passed, 1 skipped in
+    27.81 s.
+  not met: none. No new pytest tests were added (shell tooling that builds worktrees and a 600 MB venv);
+    every branch of both scripts was executed by hand and quoted in BUILD_LOG.md. Flagged there for review.
 
 ## T-015  Phase 0 report
 status: todo
