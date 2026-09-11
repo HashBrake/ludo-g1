@@ -238,3 +238,11 @@ NotImplementedError message, initMotorPosition absent; 33 tests pass, 3 readonly
 Hand-present acceptance stays open under H-003. dexh15.py at 485 lines: the PalmCamera and the serial discovery split
 into drivers/serial_discovery.py when T-022 touches the file. The calculateRealAngle-needs-a-device finding is recorded
 for the H-003 session.
+
+## T-037  ACCEPTED  (fable, 2026-09-12T05:06+07:00, commits 54be930, ea93f0f)
+Re-ran: ruff clean; test_controller + test_eval 56 passed; `eval.run_eval --backend mock --kind move --n 5 --policy hold`
+halts every trial by the watchdog at 20.07 s with policy_stalled and the controller log agrees. The hold on halt is
+read_state() of arm and hand concatenated and sent through the drivers (controller.py:276-277): a measurement, not a pose
+(R2). POLICY_STALLED and TIMEOUT_NO_PROGRESS kept distinct as asked. The one-slot hold before the next command is the
+correct interaction with the 60 Hz rate limit. controller.py at 406 lines with build/main still inside: style note; the
+import cycle the builder describes is real, leave it.

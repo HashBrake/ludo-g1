@@ -1456,7 +1456,7 @@ result: (opus, 2026-09-12T04:35+07:00, commit 860916c)
     docs/cloud.md, both false after the loss.csv columns and the checkpoint contents changed.
 
 ## T-036  Periodic checkpoints, crash resume, checkpoint pruning and a disk guard
-status: todo
+status: in_progress
 priority: P1
 phase: 3
 owner: opus
@@ -1474,7 +1474,7 @@ acceptance:
 notes: Disk is 12 GB free; every test writes under tmp_path and deletes weights.
 
 ## T-037  Progress watchdog and per-trial failure logging in the controller (CLAUDE.md Phase 5 hardening, on mocks)
-status: review
+status: accepted
 priority: P1
 phase: 5
 owner: opus
