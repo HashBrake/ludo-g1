@@ -2262,3 +2262,7 @@ written /home/alois/Desktop/ludo-g1-wt-t028/eval/results/20260911T221321_move-ho
   motion and no literal joint target in `eval/`, `config/safety.yaml` untouched, nothing under
   `third_party/` touched, `hardware/session.enable` never created or read for writing. Committed
   through the full pre-commit gate, no `--no-verify` (D-013 item 1).
+
+(T-028 commit: 6628491, which holds all of the code, tests and docs of this task. This line and the
+TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full pre-commit
+gate — no `--no-verify`, per D-013 item 1; an amend cannot fold in the hash it is recording.)

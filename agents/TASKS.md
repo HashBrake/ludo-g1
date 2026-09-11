@@ -995,7 +995,7 @@ acceptance:
     "0/20" (command and output in BUILD_LOG.md)
 notes: R5: every success rate the project ever reports comes from this JSON. Keep the JSON schema in docs/eval.md.
 result:
-  commit: COMMIT_HASH
+  commit: 6628491
   eval/protocol.py (428 lines) + eval/run_eval.py (245) + tests/test_eval.py (23 tests) + docs/eval.md (177)
     + eval/results/.gitkeep; board/perception.py gained the 6.5 Enum `FailureMode` (defined there, imported by
     eval/protocol.py, so the deployed runtime path does not depend on eval/; behaviour identical, NO_PROGRESS
