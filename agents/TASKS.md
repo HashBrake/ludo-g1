@@ -1224,8 +1224,9 @@ result: (opus, 2026-09-12T00:35+07:00, commit 275abc0)
   - the T-032 engage, handed straight to the arm: the IK target is 0.443 rad from the measured state; the guard
     refuses it with rule `first_command_step` naming left_shoulder_pitch_joint, guard.admitted == 0 and the arm
     is still exactly at the zero rest pose. Printed by the test. PASS
-  - first admitted command after engaging the clutch: 0.000000 rad on every joint (alpha starts at 0), against
-    the 0.05 rad cap; the worst single tick of the whole 1 s ramp is 0.004801 rad. Printed. PASS
+  - first admitted command after engaging the clutch: worst joint 0.000709 rad against the 0.05 rad cap (the key
+    lands between two ticks, so alpha is one 30 Hz period into the 1 s ramp); the worst single tick of the whole
+    ramp is 0.004801 rad. Printed. PASS
   - the clutch engages only from a pose the arm is in: on the mock circle drawn through the rest wrist pose the
     IK target is 0.0188 rad away and `e` engages; on the T-032 circle it is 0.434 rad away and `e` is refused,
     47 holds sent, 0 refused, the arm never leaves 0.0 rad. Printed. PASS

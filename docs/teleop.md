@@ -470,7 +470,7 @@ summary. Engaging is a windowed-mode (`OperatorUI.run_window`) action.
 | 0.5 s holding + 30 s engaged on mocks, fake clock | 917 ticks in 30.567 s = **30.000 Hz**, 917 admitted, **0 refused** |
 | arm tracking (mock lag `tau` 0.08 s) | \|state - last admitted target\| = **0.00283 rad**, worst of 8 joints |
 | `ArmIK.solve` per tick | mean **0.344 ms**, p99 **0.513 ms** (budget: one 30 Hz period, 33.3 ms) |
-| engaging | IK target **0.0188 rad** from the state; first admitted command after `e` is the state itself (**0.000000 rad**); worst single tick of the 1 s ramp **0.004801 rad** (cap 0.05) |
+| engaging | IK target **0.0188 rad** from the state; the first admitted command after `e` moves the worst joint **0.000709 rad**; the worst single tick of the 1 s ramp is **0.004801 rad** (cap 0.05) |
 | tracking steps, whole session | first admitted command 0.0 rad from the state; worst commanded step **0.164 rad/s**, p99 0.161 rad/s (limit 1.5) |
 | the T-032 engage, raw | the IK target is **0.443 rad** from the state; the guard refuses it as **`first_command_step`** and the arm does not move |
 | the same circle through the clutch | worst joint 0.434 rad away, so `e` is **refused**; 47 holds sent, 0 refused, arm at 0.0 rad |

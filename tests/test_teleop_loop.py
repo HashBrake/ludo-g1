@@ -251,10 +251,12 @@ def test_no_admitted_command_ever_steps_more_than_one_tick_allows(long_run: Rig,
 def test_the_first_admitted_command_after_engaging_is_under_the_step_cap(tmp_path, capsys) -> None:
     """Acceptance: engaging the clutch costs less than ``first_command_max_step_rad`` per joint."""
     rig = Rig(tmp_path, center=engage_center(), radius_m=ENGAGE_RADIUS_M)
-    held = len(rig.loop.admitted)
-    assert rig.engage() is True
+    rig.loop.run(HOLD_S)                     # the operator lines up while the arm holds ...
+    held = len(rig.loop.admitted)            # ... so everything from here on is post-engage
+    assert rig.loop.clutch.request_engage() is True
     distance_before = rig.loop.clutch.worst_distance_rad
-    state_before = rig.arm.read_state().payload.joints.copy()
+    rig.clk.ns += rig.loop.period_ns         # the key is pressed between two ticks, so the next
+    state_before = rig.arm.read_state().payload.joints.copy()   # tick already has alpha > 0
     rig.loop.run(2.0 * float(config.load("robot", root=rig.cfg)["teleop"]["clutch_ramp_s"]))
 
     first = rig.loop.admitted[held].joints - state_before

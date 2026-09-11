@@ -2686,7 +2686,7 @@ already is.
 | the T-032 engage, handed straight to the arm | IK target **0.443 rad** from the measured state; refused, rule **`first_command_step`**, `guard.admitted == 0`, arm still at 0.0 rad |
 | fresh-reference cap in the envelope | 0.05 rad admitted, 0.055 rad refused (the velocity rule alone would have allowed 0.75 rad) |
 | clutch engage on the engageable circle | IK target **0.0188 rad** from the state (tolerance 0.05) -> engage accepted |
-| **first admitted command after engaging** | **0.000000 rad** on every joint (alpha starts at 0); worst single tick of the whole 1 s ramp **0.004801 rad**, against the 0.05 cap |
+| **first admitted command after engaging** | worst joint **0.000709 rad** (the key lands between two ticks, so alpha is one 30 Hz period into the 1 s ramp); worst single tick of the whole ramp **0.004801 rad**, against the 0.05 cap |
 | clutch engage on the T-032 circle | worst joint 0.434 rad away -> `request_engage()` returns False, 47 holds sent, 0 refused, arm at 0.0 rad |
 | refusal while engaged | one `command_rate` refusal -> clutch `disengaged`, loop keeps holding, sends resume |
 | 0.5 s holding + 30 s engaged session | 917 ticks in 30.567 s = **30.000 Hz**, 917 admitted, **0 refused**; tracking error 0.00283 rad; IK mean 0.344 ms, p99 0.513 ms |
@@ -2712,7 +2712,7 @@ engageable, which is what the two new refusal tests use.
   and `tests/test_operator_ui.py` (their rigs' operator stand-in now blends in from the arm's measured
   state over one second -- the same thing the clutch does -- in a new `Rig.engaged_target`, four
   lines each plus the docstring; `tests/test_dataset.py` and `tests/test_dataset_view.py` import that
-  rig and needed nothing) and `tests/test_mock_drivers.py` (six tests that sent a 0.1-2.5 rad first
+  rig and needed nothing) and `tests/test_mock_drivers.py` (five tests that sent a 0.1-2.5 rad first
   command now send a hold first and step from it inside the velocity limit, through a new `engage()`
   helper; the rules they assert are unchanged). None of them belongs to the parallel T-030 worktree
   (policy/act.py, policy/train.py). Without these edits the suite cannot be green, so there was no
