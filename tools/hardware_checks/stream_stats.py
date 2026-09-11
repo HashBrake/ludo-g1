@@ -4,7 +4,8 @@
 This is the Phase 1 read-only check of CLAUDE.md section 6 ("stream every device at target rate for
 10 minutes and report drop rates and jitter"). ``--stream`` picks the device: one of the three
 camera streams of ``config/cameras.yaml`` (``top``, ``oblique``, ``palm``), ``arm`` for the G1's
-``rt/lowstate`` state stream, or ``hand`` for the DexH15's joint angles. It takes samples as fast as
+``rt/lowstate`` state stream, ``hand`` for the DexH15's joint angles, ``glove`` for the PxCap Pro's
+17 encoder angles or ``pose`` for the Pico controller's 6-DoF pose. It takes samples as fast as
 the device delivers them and reports what the stream actually did:
 
 * **achieved rate** -- ``(samples - 1) / span``, the rate the timestamps imply, not what the device
@@ -13,21 +14,25 @@ the device delivers them and reports what the stream actually did:
 * **jitter** -- ``|interval - nominal period|`` at p50 and p99, in milliseconds.
 
 Timestamps come from the driver, i.e. from ``runtime.clock.now_ns`` at the instant the frame, the
-``LowState_`` message or the Modbus reply arrived, which is the same clock the recorder aligns
-streams on (docs/clock.md). Cameras are polled with ``grab()`` and the hand with ``read_state()``,
-both de-duplicated by timestamp; the arm is drained with ``poll()``, which hands over every message
-its subscriber callback stamped, so a slow poll loop cannot invent a drop that the stream did not
-have. The hand has no queue to drain: one ``read_state()`` is one synchronous Modbus round trip, so
-what is measured there is the achieved rate of back-to-back reads.
+``LowState_`` message, the Modbus reply or the glove's collection frame arrived, which is the same
+clock the recorder aligns streams on (docs/clock.md). A stream with a queue is **drained** with
+``poll()`` -- the arm and the real glove, both of which stamp in a callback -- so a slow poll loop
+cannot invent a drop that the stream did not have. Everything else is **polled** (``grab()`` on a
+camera, ``read_state()`` on the hand, ``read()`` on the glove and pose mocks and on the real
+controller) and de-duplicated by timestamp. The hand has no queue at all: one ``read_state()`` is one
+synchronous Modbus round trip, so what is measured there is the achieved rate of back-to-back reads.
+The real controller has no queue either, but ``drivers.pico.Pico`` stamps each PicoBridge frame once
+per ``seq``, so re-reads of one frame collapse and the rate measured is the headset's, not the loop's.
 
 ``--backend mock`` needs no hardware at all and exits 0 with nothing plugged in: it streams
-``drivers.mock.MockCamera``, ``drivers.mock.MockArm`` or ``drivers.mock.MockHand``, whose samples are
-a grid on the same clock, so it exercises this tool's statistics end to end and is what the
+``drivers.mock.MockCamera``, ``MockArm``, ``MockHand``, ``MockGlove`` or ``MockPose``, whose samples
+are a grid on the same clock, so it exercises this tool's statistics end to end and is what the
 acceptance tests run. ``--backend real`` opens the device.
 
-This script only reads: a camera is a sensor, the arm driver has no writer at all (T-018) and the
-hand driver has none either (T-019), so no motion command can be produced from here and no hardware
-session is needed (R1, R2).
+This script only reads: a camera is a sensor, the arm driver has no writer at all (T-018), the hand
+driver has none either (T-019), and the glove and the controller are input devices whose protocols
+have no write call (T-020), so no motion command can be produced from here and no hardware session is
+needed (R1, R2).
 
 Usage:
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5
@@ -35,6 +40,8 @@ Usage:
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream top --device /dev/video2 --json
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 600
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream hand --seconds 600
+    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream glove --seconds 600
+    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream pose --seconds 600
 
 Exit codes: 0 statistics were produced, 2 usage error, 3 no usable stream (absent, busy or silent).
 """
@@ -62,11 +69,11 @@ NO_STREAM = 3
 #: The name this exit code had when cameras were the only stream (T-010); kept for callers.
 NO_CAMERA = NO_STREAM
 
-#: Streams this tool can read: the camera names of config/cameras.yaml, the G1 state stream and the
-#: DexH15's joint angles.
+#: Streams this tool can read: the camera names of config/cameras.yaml, the G1 state stream, the
+#: DexH15's joint angles, the PxCap Pro's encoder angles and the Pico controller's pose.
 CAMERAS: tuple[str, ...] = ("top", "oblique", "palm")
 #: Streams that are not cameras, i.e. that carry no frame and no policy resolution.
-NOT_CAMERAS: tuple[str, ...] = ("arm", "hand")
+NOT_CAMERAS: tuple[str, ...] = ("arm", "hand", "glove", "pose")
 STREAMS: tuple[str, ...] = (*CAMERAS, *NOT_CAMERAS)
 
 #: A gap longer than this many nominal periods counts as a drop.
@@ -126,16 +133,16 @@ def stats(ts_ns: list[int], expected_hz: float) -> dict[str, Any]:
 def stream(source: Any, seconds: float, poll_s: float = 0.0, warmup: int = 0) -> list[int]:
     """Take samples from ``source`` for ``seconds`` and return one timestamp per distinct sample.
 
-    One acquisition is one call: ``grab()`` on a camera, ``read_state()`` on the hand -- both return
-    a :class:`runtime.clock.Stamped` and both block until the device has answered, so every call to
-    a real device yields a new sample. A mock reports whatever its grid currently shows, so repeated
-    timestamps are polls of the same sample and are dropped here; ``poll_s`` keeps that loop from
-    spinning.
+    One acquisition is one call: ``grab()`` on a camera, ``read_state()`` on the hand, ``read()`` on
+    a glove or a pose -- each returns a :class:`runtime.clock.Stamped`. A camera and the hand block
+    until the device has answered, so every call yields a new sample; a mock and
+    :class:`drivers.pico.Pico` report whatever the stream currently shows, so repeated timestamps
+    are re-reads of the same sample and are dropped here. ``poll_s`` keeps that loop from spinning.
 
     ``warmup`` samples are taken and discarded first, so that auto-exposure settling and the first
     allocation do not show up as jitter.
     """
-    take = getattr(source, "grab", None) or source.read_state
+    take = getattr(source, "grab", None) or getattr(source, "read_state", None) or source.read
     for _ in range(warmup):
         take()
     out: list[int] = []
@@ -198,6 +205,30 @@ def _build(backend: str, name: str, device: str | None) -> tuple[Any, float, flo
 
         return DexH15(), expected_hz, 0.0
 
+    if name == "glove":
+        # The real glove pushes frames from the SDK's collection thread, so it is drained like the
+        # arm; the mock has no queue and is polled (module docstring).
+        expected_hz = float(config.load("hand")["glove"]["input_hz"])
+        if backend == "mock":
+            from drivers.mock import MockGlove
+
+            return MockGlove(), expected_hz, MOCK_POLL_FRACTION / expected_hz
+        from drivers.pxcap import PxCap
+
+        return PxCap(), expected_hz, DRAIN_POLL_FRACTION / expected_hz
+
+    if name == "pose":
+        robot = config.load("robot")
+        if backend == "mock":
+            from drivers.mock import MockPose
+
+            expected_hz = float(robot["mock"]["pose_hz"])
+            return MockPose(), expected_hz, MOCK_POLL_FRACTION / expected_hz
+        from drivers.pico import Pico
+
+        expected_hz = float(robot["teleop"]["pico"]["input_hz"])
+        return Pico(), expected_hz, MOCK_POLL_FRACTION / expected_hz
+
     expected_hz = float(config.load("cameras")[name]["fps"])
     if backend == "mock":
         from drivers.mock import MockCamera
@@ -234,6 +265,18 @@ def _print_human(report: dict[str, Any]) -> None:
         )
         measurable = "measurable" if probe["pinch_measurable"] else "nan (config/hand.yaml pinch.* UNMEASURED)"
         print(f"pinch        {measurable}")
+    if "route" in probe:
+        print(f"glove        {probe['channels']} channels, sn {probe['serial_number'] or '?'}, "
+              f"controller {probe['controller_version'] or '?'}, sdk {probe['sdk_version'] or '?'}")
+        print(f"probe rate   {probe['input_hz']:.1f} Hz over {probe['samples']} samples in {probe['window_s']:g} s")
+        unmeasured = "nan (config/hand.yaml glove.pinch_distance UNMEASURED)"
+        measurable = "measurable" if probe["pinch_measurable"] else unmeasured
+        print(f"pinch        {measurable}")
+    if "device_sn" in probe:
+        print(f"headset      connected {probe['connected']}, sn {probe['device_sn'] or '?'}, "
+              f"{probe['frames']} frames, latest seq {probe['latest_seq']}")
+        print(f"probe rate   {probe['pose_hz']:.1f} Hz over {probe['samples']} samples in {probe['window_s']:g} s "
+              f"(bridge reports {probe['bridge_fps']:.1f} Hz)")
     if report.get("policy_resolution"):
         print(f"policy size  {report['policy_resolution'][0]}x{report['policy_resolution'][1]}")
     print(f"samples      {s['frames']} in {s['span_s']:.2f} s (warmup {report['warmup']} discarded)")
@@ -273,13 +316,15 @@ def main(argv: list[str] | None = None) -> int:
         print("--device only means anything for a real camera", file=sys.stderr)
         return 2
 
-    # Both live in modules with heavy imports (cv2, the DDS idl), so they are imported lazily; name
-    # them before the try so that every path below can catch them.
+    # These live in modules with heavy imports (cv2, the DDS idl, the vendored glove binding), so they
+    # are imported lazily; name them before the try so that every path below can catch them.
     from drivers.cameras import CameraUnavailable
     from drivers.dexh15 import HandUnavailable
     from drivers.g1_arm import ArmUnavailable
+    from drivers.pico import PoseUnavailable
+    from drivers.pxcap import GloveUnavailable
 
-    unavailable = (CameraUnavailable, ArmUnavailable, HandUnavailable)
+    unavailable = (CameraUnavailable, ArmUnavailable, HandUnavailable, GloveUnavailable, PoseUnavailable)
     try:
         source, expected_hz, poll_s = _build(args.backend, name, args.device)
     except unavailable as exc:
@@ -288,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         probe = source.probe() if hasattr(source, "probe") else None
-        if name == "arm":
+        # A driver that queues its samples in a callback is drained; everything else is polled.
+        if hasattr(source, "poll"):
             ts = drain(source, args.seconds, poll_s=poll_s, warmup=args.warmup)
         else:
             ts = stream(source, args.seconds, poll_s=poll_s, warmup=args.warmup)
@@ -313,6 +359,10 @@ def main(argv: list[str] | None = None) -> int:
         device = f"{source.interface} {source.topic}"
     elif name == "hand":
         device = f"{source.port} slave 0x{source.slave_address:02x}"
+    elif name == "glove":
+        device = f"{source.port} ({source.route} binding)"
+    elif name == "pose":
+        device = f"{source.bind_host}:{source.port} {source.side} controller"
     report: dict[str, Any] = {
         "stream": name,
         "backend": args.backend,

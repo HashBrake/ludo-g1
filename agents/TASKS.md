@@ -822,7 +822,7 @@ result: (opus, 2026-09-12, branch wt/t019, commit 4503254; hash recorded by the 
     make("hand", backend="real") no longer raises NotImplementedError.
 
 ## T-020  Glove and controller pose drivers, read-only, 10-minute stream stats
-status: in_progress
+status: accepted
 priority: P0
 phase: 1
 owner: opus
@@ -841,6 +841,34 @@ acceptance:
   - without: suite green, tests skipped naming the device
 notes: The headset must run the PicoBridge app and reach this laptop; the network path from the lab's prior setup is in
   third_party/g1_pico_teleop/README.md section 3.3 (robot NAT). Record what was needed in docs/drivers.md.
+result: (opus, 2026-09-12, branch wt/t020, commit 264fb9c; hash recorded by the follow-up commit). NEITHER device was reached: the glove has never been
+  plugged into this laptop and the headset is not on the network (H-004, new).
+  - suite: 643 passed, 14 skipped, 321.30 s through the pre-commit gate (ruff check . + pytest -q, no --no-verify).
+    tests/test_pxcap.py alone 34 passed, 2 skipped; tests/test_pico.py alone 22 passed, 2 skipped.
+  - the 4 new skips name the device: "no PxCap Pro glove: config/hand.yaml glove.port is UNMEASURED and glove.usb_id
+    gives nothing to discover /dev/ttyUSB*, /dev/ttyACM* with ... (H-004)" (2) and "no PicoBridge receiver: the
+    PicoBridge receiver could not start on 0.0.0.0:63901 ... (H-004)" (2). --backend real exits 3 with the same reasons.
+  - Q-005 ANSWERED on the host side: the bundle's cp310 pxcappro binding loads IN-PROCESS in our venv with no glove
+    attached -- `load_binding('bundle').PxCapPro().get_sdk_version()` -> (0, '1.0.8 20260806 17:08'), a read with no
+    device -> 106. It needs a ctypes RTLD_GLOBAL preload of libpxcappro_sdk.so.1 because the extension's RPATH is wrong.
+    The pxhandsdk deb is still not installed and is still tried first. Nothing under third_party/ modified.
+  - new finding: TCP 63901 is held on this laptop by the systemd user unit holosim-pcservice (RoboticsService, pid 2448),
+    so PicoBridge cannot bind. H-004 (b1) is `systemctl --user stop holosim-pcservice`.
+  - mock statistics (the tool's own path, not a device): --stream glove 60 s -> 3000 frames, 50.000 Hz, 0 drops, jitter
+    p50/p99/max 0.0 ms; --stream pose 60 s -> 7200 frames, 120.000 Hz, 0 drops, jitter 0.0 ms.
+  - acceptance 1 (devices present) is OPEN and H-004 is OPEN: no 10-minute statistics for either stream, no A4 verdict
+    written (docs/sdks.md untouched, R5), teleop.pico.input_hz still UNMEASURED. H-004's post-check carries the four
+    commands that produce those numbers and the two config keys that must be filled first.
+  - deviations logged in BUILD_LOG.md: (1) Pico.read() does NOT apply pico_to_g1_base, because teleop/loop.py:255
+    already does and applying it twice would be wrong once Phase 1 calibrates it; read_in_pelvis_frame() is the map.
+    (2) drivers/pxcap.py is 483 lines (not under 250). (3) four files outside the touch list: tests/test_cameras.py and
+    tests/test_mock_drivers.py needed the same list edit T-018 and T-019 made, because make("glove"|"pose",
+    backend="real") no longer raises NotImplementedError; and teleop/loop.py + its test needed a real fix, because
+    main() caught only NotImplementedError around build() and would now have crashed on PoseUnavailable instead of
+    exiting 2 (build() is also all-or-nothing now, so a half-built real loop leaves no bound port behind).
+  - one pre-existing flake seen under load: tests/test_train.py::test_small_config_latency_at_ddim_10_and_5 asserts
+    median(DDIM 5) < median(DDIM 10) on wall-clock latency and failed while the other builder's suite ran concurrently;
+    alone it passes (76 ms vs 55 ms, budget 100 ms). Nothing in T-020 touches policy/.
 
 ## T-021  G1 arm write path over rt/arm_sdk with ramped weight; actuation latency measurement
 status: todo
@@ -1456,7 +1484,7 @@ result: (opus, 2026-09-12T04:35+07:00, commit 860916c)
     docs/cloud.md, both false after the loss.csv columns and the checkpoint contents changed.
 
 ## T-036  Periodic checkpoints, crash resume, checkpoint pruning and a disk guard
-status: review
+status: accepted
 priority: P1
 phase: 3
 owner: opus
@@ -1549,7 +1577,7 @@ result: (opus, 2026-09-12T05:10+07:00, commit 54be930)
     the pre-commit hook -> 596 passed, 10 skipped in 311 s (586 passed before this task). PASS
 
 ## T-039  Network engine client for the real game engine (contract of CLAUDE.md 5.5 over a socket)
-status: todo
+status: in_progress
 priority: P2
 phase: 5
 owner: opus
@@ -1566,3 +1594,79 @@ acceptance:
   - tests pass; `runtime.controller --backend mock --engine zmq://127.0.0.1:5555 --seconds 20` works against serve_stub
     (command and output in BUILD_LOG.md)
 notes: This is the integration point the engine team will target; keep the schema in one place and versioned.
+
+## T-038  Board perception from the top camera on synthetic images (placeholder until the engine team delivers)
+status: todo
+priority: P1
+phase: 2
+owner: opus
+depends_on: T-008, T-016
+hardware: none
+deliverables:
+  - board/perception.py `TopCameraPerception`: given a board calibration (board/calibration.py) and a `top` frame, detects
+    horses as coloured square blobs per colour from config/board.yaml (HSV ranges UNMEASURED placeholders), assigns each to
+    the nearest cell centre within a radius, flags a horse "between cells" or "fallen" (aspect ratio / area rule, placeholders),
+    detects the die presence in the bowl region (config); `verify(command, before, after)` produces the Outcome and the
+    section 6.5 failure mode from the before/after cell occupancy; `progress()` for the watchdog from partial motion
+  - a synthetic renderer in tests (reuse tests/test_calibration.py's board image) that draws horses at known cells and the
+    variants (fallen, between cells, missing)
+  - tests: occupancy recovered exactly on 20 random boards; each 6.5 variant yields its failure mode; verify() on a MOVE that
+    happened vs did not happen; runs under 30 ms per frame at 640x480 (print)
+acceptance:
+  - tests pass with the printed timing; docs/board.md updated; the real-still check waits for H-001 and says so
+notes: Placeholder rules only; the engine team's perception replaces this module behind the same Protocol.
+
+## T-040  Policy termination signal: an episode-end head trained from recorded episodes
+status: todo
+priority: P2
+phase: 3
+owner: opus
+depends_on: T-035
+hardware: none
+deliverables:
+  - policy/_shared.py + both wrappers: an auxiliary "done" head on the observation encoding trained with a BCE loss against
+    a per-frame label "within the last `done_window_s` of the episode" (config), weight `done_loss_weight`; adapters' `done()`
+    returns True when the head's probability exceeds `done_threshold` for `done_hold_steps` consecutive calls
+  - dataset: the per-frame done label from episode length
+  - tests: label correctness at episode ends; smoke train shows the done loss falling; adapter.done() flips on a synthetic
+    high-probability sequence and not on a low one; the controller stops on done() before the timeout in a mock run with a
+    stub adapter
+acceptance:
+  - tests pass with printed numbers; docs/policy.md and docs/controller.md updated
+notes: CLAUDE.md 5.5 names "the policy's own termination signal or a 20 s timeout"; until this lands only the timeout exists.
+
+## T-041  Session pre-flight: a read-only go/no-go table before any hardware session
+status: in_progress
+priority: P1
+phase: 1
+owner: opus
+depends_on: T-018, T-019, T-020, T-010
+hardware: none
+deliverables:
+  - tools/hardware_checks/session_preflight.py: prints one table with a row per check and PASS/FAIL/SKIP: session gate status
+    (runtime.safety.SessionGate), every config file's UNMEASURED keys that Phase 1 needs measured before motion (list from
+    config, e.g. safety box, dds interface, hand port, calibration present), each device reachable via the read-only drivers
+    (arm state within timeout, hand connected, glove, pose, top/oblique cameras) with the achieved rate over 3 s, board
+    calibration file present and fresh, disk free vs Q-002, git status clean and HEAD hash, e-stop named in the session
+    checklist (Q-004 answered); exit 0 only if every motion-relevant row passes; `--json` output
+  - tests on mocks/fakes: every row's PASS and FAIL paths; exit code rules
+acceptance:
+  - tests pass; running it on this laptop today prints the table with the expected FAIL/SKIP rows (output in BUILD_LOG.md)
+notes: Read-only, no session needed. T-021's session procedure starts with this tool.
+
+## T-042  Module splits per D-013 (no behaviour change)
+status: todo
+priority: P2
+phase: 1
+owner: opus
+depends_on: T-033, T-018, T-019, T-020
+hardware: none
+deliverables:
+  - drivers/dds.py (the DDS binding from g1_arm.py), drivers/serial_discovery.py (from dexh15.py and pxcap.py),
+    teleop/clutch.py (from loop.py), policy/train_io.py (checkpoint/EMA/atomic save from train.py); each origin file
+    re-exports what tests import; no test changes except import paths where a test imported a private name
+  - line counts before and after per file in BUILD_LOG.md
+acceptance:
+  - full suite passes with the same test count; `git diff --stat` shows moves, and a `grep` proves no logic line changed
+    beyond imports (describe the method)
+notes: Pure refactor; do it in one commit per file so a revert is cheap.

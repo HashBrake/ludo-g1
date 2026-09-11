@@ -246,3 +246,21 @@ read_state() of arm and hand concatenated and sent through the drivers (controll
 (R2). POLICY_STALLED and TIMEOUT_NO_PROGRESS kept distinct as asked. The one-slot hold before the next command is the
 correct interaction with the 60 Hz rate limit. controller.py at 406 lines with build/main still inside: style note; the
 import cycle the builder describes is real, leave it.
+
+## T-020  ACCEPTED  (fable, 2026-09-12T05:53+07:00, commits 264fb9c, 91bd32a, merged)
+Verified in the worktree: 56 glove/pose tests pass with 4 readonly skips naming the devices; the vendored PxCapPro bundle's
+cp310 binding loads in-process in our venv (get_sdk_version -> 1.0.8) with the RTLD_GLOBAL preload, so Q-005's answer on the
+host side is "the bundle route works, the deb would be cleaner"; TCP 63901 is held by the leftover holosim-pcservice
+(RoboticsService pid 2448) on this laptop, which is Alois's to stop and is step b1 of H-004; no actuator call in either
+driver; nothing under third_party/ changed. Not transforming the pose inside Pico.read() is right (teleop/loop.py applies
+pico_to_g1_base once); the deliverable's wording was mine and loop.py is the single place. The teleop/loop.py build fix is a
+regression repair the gate caught; accepted. Devices-present acceptance stays open under H-004 (R5). pxcap.py at 483
+lines: split with the T-019 serial discovery when T-022 lands. Fable fix in this merge: tests/test_train.py's DDIM 5 < DDIM
+10 wall-clock ordering assertion skips when the 1-minute load average is above 4, because it fails whenever two suites share
+the laptop (reported by T-020).
+
+## T-036  ACCEPTED  (fable, 2026-09-12T05:53+07:00, commits 90d73c1, 0b2c483)
+Re-ran tests/test_train.py: the crash run dies at step 5 with --fault-at-step, leaves checkpoint.pt plus one pruned step
+copy, and the resume reproduces the straight run to 0.0; the disk guard refuses 293 M parameters at a mocked 7.74 GB free;
+the estimate is 1.10x a real file. atomic_save via os.replace. The estimate print in main() recomputed from the record is
+fine. Q-002 is now quantified: the full diffusion run needs 10.3 GB free on this laptop; Greennode or diffusion_small first.

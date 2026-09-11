@@ -420,10 +420,15 @@ def test_the_loop_polls_the_streams_when_no_episode_is_open(tmp_path) -> None:
 # --------------------------------------------------------------------------------------------------
 
 
-def test_cli_refuses_the_real_backend(capsys) -> None:
-    """R1/R2: there are no real actuated drivers, and the CLI says so instead of inventing one."""
+def test_cli_refuses_a_real_backend_it_cannot_build(capsys) -> None:
+    """R1/R2: with the devices absent the CLI says which one and why, instead of inventing a loop.
+
+    Every device has a real read-only driver since T-020, so the refusal is now "this device is not
+    there" rather than "this driver does not exist"; either way it is exit 2 and a reason, and
+    `build` leaves nothing open behind it.
+    """
     assert main(["--backend", "real", "--seconds", "0.1"]) == 2
-    assert "does not exist yet" in capsys.readouterr().out
+    assert "cannot run on backend 'real'" in capsys.readouterr().out
 
 
 def test_cli_runs_on_mocks(capsys) -> None:

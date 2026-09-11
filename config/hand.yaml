@@ -128,6 +128,71 @@ glove:
   input_hz: 50
   input_hz_status: UNMEASURED
 
+  # --- transport (drivers/pxcap.py, T-020) -------------------------------------------------------
+  # USB CDC serial node; the SDK's recommended environment names /dev/ttyACM* (pxcap_pro_sdk.md:131)
+  # and the teleop bundle also accepts /dev/ttyUSB* (pxcap_pro_local/README.md:35). drivers/pxcap.py
+  # resolves the node in the same order as the hand: an explicit port= argument, then `port`, then
+  # discovery of `usb_id` among /dev/ttyUSB* and /dev/ttyACM*. The glove has never been plugged into
+  # this laptop (agents/HARDWARE_NEEDED.md H-004), so both are placeholders: unlike the DexH15, whose
+  # usb id the Paxini bundle records, nothing in the delivery names the glove's VID:PID.
+  port: UNMEASURED          # a /dev/serial/by-id/... path, never /dev/ttyACMn: node numbers move
+  usb_id: UNMEASURED        # "vendor:product", lower case hex, from list_devices.py once plugged in
+  # How long drivers/pxcap.py waits for the first collection frame, and how old the newest frame may
+  # be before the stream counts as silent. A design choice pending the Phase 1 jitter measurement.
+  frame_timeout_s: 1.0
+  frame_timeout_s_status: UNMEASURED
+
+  # The 17 magnetic-encoder channels, in the order get_encoder_angles() and the collection callback
+  # return them: 10 tip/pulp channels then 7 palm magnets. Source: the Paxini teleop bundle's own
+  # slot list, third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/_internal/config/
+  # pxcap_pro_left_dexh15.yaml:10, whose header warns that the SDK slot order is NOT the pxcap URDF
+  # order. Like `joint_order` above this is a hypothesis until a human wiggles one finger at a time
+  # and watches which channel moves; drivers/pxcap.py refuses a frame whose length disagrees with
+  # this list rather than reshaping it silently.
+  encoder_channels:
+    - thumb_tip_channel
+    - thumb_pulp_channel
+    - index_tip_channel
+    - index_pulp_channel
+    - middle_tip_channel
+    - middle_pulp_channel
+    - ring_tip_channel
+    - ring_pulp_channel
+    - pinky_tip_channel
+    - pinky_pulp_channel
+    - palm_pinky_near_mag
+    - palm_ring_near_mag
+    - palm_middle_near_mag
+    - palm_index_near_mag
+    - palm_thumb_near_mag
+    - palm_thumb_mid_mag1
+    - palm_thumb_mid_mag2
+  encoder_channels_status: UNMEASURED
+
+  # --- thumb-to-index tip distance (the input of teleop.retarget.pinch_from_glove) ----------------
+  # `source` above says the pinch scalar comes from a tip-to-tip DISTANCE, and the glove reports
+  # ANGLES. Converting one to the other properly needs the pxcap hand model: the Paxini bundle does
+  # it by running the glove URDF's forward kinematics in a compiled module
+  # (_internal/compute_finger_poses.cpython-310-x86_64-linux-gnu.so) that this project does not link
+  # against. What a Phase 1 bench calibration can actually measure instead is the simplest model that
+  # fits: an affine function of the two tip encoders, fitted by holding the operator's thumb and
+  # index at known gaps (feeler gauges or printed spacers) and recording the two channels.
+  #
+  #     distance_mm = offset_mm + thumb_mm_per_deg * thumb_deg + index_mm_per_deg * index_deg
+  #
+  # All three coefficients are the literal UNMEASURED, and while they are, drivers/pxcap.py reports
+  # GloveSample.pinch as nan -- not 0.0, which would read as "the hand is open" -- exactly as
+  # drivers/dexh15.py does for HandState.pinch. The raw 17 angles are recorded either way (5.4, 5.6).
+  pinch_distance:
+    model: affine_tip_channels
+    thumb_channel: thumb_tip_channel
+    thumb_channel_status: UNMEASURED
+    index_channel: index_tip_channel
+    index_channel_status: UNMEASURED
+    offset_mm: UNMEASURED
+    thumb_mm_per_deg: UNMEASURED
+    index_mm_per_deg: UNMEASURED
+
 # --- mock driver parameters (drivers/mock/dexh15.py, drivers/mock/pxcap.py; T-006) ---------------
 # Read ONLY by drivers/mock/*.py. drivers/dexh15.py (Phase 1, real hand) reads `pinch.open_pose` /
 # `pinch.closed_pose` above and must refuse to run while they are UNMEASURED; it never reads this

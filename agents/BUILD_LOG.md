@@ -3773,3 +3773,164 @@ nothing here produces a target of any kind; `policy/` still imports nothing from
 `tools/hardware_checks/`. R3: untouched -- the disk guard is explicitly *not* a safety mechanism and
 says so in the code, the config and the docs; `config/safety.yaml` unchanged, `third_party/`
 unchanged, no `--no-verify` (D-013).
+---
+
+## T-020  Glove and controller pose drivers, read-only  (opus, 2026-09-12T05:40+07:00, branch wt/t020)
+
+Built `drivers/pxcap.py` (`PxCap`, GloveDriver) and `drivers/pico.py` (`Pico`, PoseDriver), both
+read-only, the `real` branch of `drivers/__init__.py` for `glove` and `pose`, `stream_stats.py
+--stream glove|pose`, `tests/test_pxcap.py` (36 tests) and `tests/test_pico.py` (24 tests), the glove
+and pico config blocks, the docs, and H-004. **Neither device was ever reached**: the glove has never
+been plugged into this laptop and the headset is not on the network, so the first acceptance line
+stays open, exactly as the task said to expect.
+
+### Q-005 is answered on the host side: the vendored binding works in-process
+The one thing this task could settle without hardware. `pxhandsdk` (the deb) is still not installed,
+but the PyInstaller bundle's own binding loads **in our venv, in this process**, with no glove and no
+subprocess:
+
+```
+.venv/bin/python -c "from drivers.pxcap import load_binding; g = load_binding('bundle').PxCapPro(); \
+    print(g.get_sdk_version()); print(g.get_encoder_angles()[0])"
+-> (0, '1.0.8 20260806 17:08')
+-> 106        # "pxcappro_get_encoder_angles device is not connected"
+```
+
+Why it needed finding out: the extension is `cpython-310-x86_64-linux-gnu` (our ABI), but its RPATH
+is `$ORIGIN/../../../pxhandsdk`, a directory the bundle does not contain, so a plain
+`sys.path.insert` + import fails with `libpxcappro_sdk.so.1: cannot open shared object file`, and
+`LD_LIBRARY_PATH` cannot be set after the process has started. `load_binding` preloads
+`_internal/sdk_bridge/_internal/libpxcappro_sdk.so.1` with `ctypes.CDLL(..., RTLD_GLOBAL)` first;
+the loader then resolves the NEEDED entry from the global namespace. Also verified read-only:
+`PxCapProCollectionData()` carries `joint_angles.values` and `encoder_raw.values` (17 each) plus
+`timestamp_monotonic_ns` / `timestamp_unix_ns`, and `PxCapPro` exposes every method the driver calls.
+Nothing under `third_party/` was modified or written to.
+
+**Recommendation: keep the two-route order as built** -- `pxhandsdk` first, bundle second. The
+bundled route is what works today and needs nothing from Alois; the deb is still worth supplying,
+because it removes a dependency on a vendored binary tree and a hand-rolled `ctypes` preload, and
+switching to it costs no code change. Route (c), shelling out to `pxcap_pro_local --diagnose`, is
+rejected in `docs/drivers.md`: unstructured stdout, one frame per process with `--once`, and it
+cannot carry the SDK's host timestamps through.
+
+### A finding that will cost lab time if it is not written down
+`PicoBridge.start()` fails on this laptop **right now** with `[Errno 98] address already in use`:
+`ss -ltnp | grep 63901` shows `RoboticsService` (pid 2448, `/opt/apps/roboticsservice/
+RoboticsServiceProcess`), i.e. the systemd *user* unit `holosim-pcservice` -- "XRoboToolkit PC
+Service (headset receiver, port 63901)" -- left over from the previous stack, which
+`third_party/g1_pico_teleop/README.md:81` warns about. `systemctl --user stop holosim-pcservice`
+frees it. H-004 step (b1) is that command; the driver's error message names the squatter.
+
+### Design decisions worth a review
+- **The glove is a stream, not a poll.** `start_collection(frequency_hz, callback)` is the only call
+  that carries the host timestamps the task asks for; `get_encoder_angles()` has none, and during a
+  collection the SDK refuses its other calls with `4000`. So the driver reads identity once at
+  connect time, then starts the collection, stamps in the callback with `runtime.clock.now_ns` and
+  queues -- the same `poll()`/backlog shape as `G1Arm`. `stream_stats` therefore drains the glove
+  rather than polling it; the branch is now `hasattr(source, "poll")` instead of `name == "arm"`,
+  which is the same set plus the real glove.
+- **`GloveSample.pinch` is `nan`,** by the rule the task set and `T-019` set before it. The scalar is
+  a *distance* and the glove reports *angles*; converting properly needs the pxcap hand model, which
+  the Paxini bundle does in a compiled `compute_finger_poses` module we do not link against. So
+  `config/hand.yaml` `glove.pinch_distance` holds the simplest model a bench calibration can actually
+  fit -- `distance_mm = offset + a*thumb_tip_deg + b*index_tip_deg` -- with all three coefficients
+  `UNMEASURED`; until they are filled, `tip_distance_m` and the scalar are `nan` and
+  `PxCap.pinch_measurable` is False. A test proves the wiring end to end by filling the model in a
+  temp config and checking the scalar equals `teleop.retarget.pinch_from_glove`'s.
+
+### Disagreement with the task, logged per the protocol
+The `drivers/pico.py` deliverable says the pose is "transformed by teleop.retarget.pico_to_g1_base".
+**I did not transform it in `read()`**, because `teleop/loop.py:255` already calls
+`pico_to_g1_base` on what the pose driver returns; transforming inside the driver would apply the
+calibration **twice**. That is invisible today (the transform is an UNMEASURED identity) and becomes
+a wrong arm target the moment Phase 1 calibrates it, which is why I read it as unsafe-as-written
+rather than as a preference. It would also break protocol parity: `drivers/interfaces.py` documents
+`WristPose` as "pico_bridge's own conventions ... carried through unchanged so that no frame or
+ordering convention is invented between the transport and teleop/retarget.py", and `MockPose` does
+not transform. My alternative, which is what is built: `read()` returns the untransformed pose and
+`read_in_pelvis_frame()` is the same map for a diagnostic that wants pelvis-frame numbers; a test
+asserts the two agree through `pico_to_g1_base`. If Fable wants the transform in the driver, the
+matching change is to delete the call at `teleop/loop.py:255` and re-document `WristPose`; that is a
+one-commit follow-up and I did not make it unasked.
+
+### Commands run and what they measured
+```
+.venv/bin/python -m pytest tests/test_pxcap.py -q        -> 34 passed, 2 skipped, 4.34 s
+.venv/bin/python -m pytest tests/test_pico.py  -q        -> 22 passed, 2 skipped, 4.82 s
+.venv/bin/python -m pytest tests/test_config.py tests/test_scaffold.py tests/test_mock_drivers.py \
+    tests/test_docs_sdks.py tests/test_retarget.py tests/test_cameras.py tests/test_g1_arm.py \
+    tests/test_dexh15.py -q                              -> 252 passed, 10 skipped, 48 s (after the
+                                                            two list edits below)
+.venv/bin/ruff check .                                   -> clean
+.venv/bin/python -m pytest -q  (the pre-commit gate, commit 264fb9c)
+                                                         -> 643 passed, 14 skipped, 321.30 s
+tools/hardware_checks/stream_stats.py --backend mock --stream glove --seconds 60 --json
+    -> 3000 frames in 59.98 s, 50.000 Hz, 0 drops, interval p50/p99 20.0/20.0 ms, jitter 0.0 ms
+tools/hardware_checks/stream_stats.py --backend mock --stream pose --seconds 60 --json
+    -> 7200 frames in 59.99 s, 120.000 Hz, 0 drops, interval p50/p99 8.33/8.33 ms, jitter 0.0 ms
+```
+Those two are the tool's own statistics path on a synthetic grid, **not** a device measurement.
+With `--backend real` both exit 3 today: the glove naming `config/hand.yaml glove.port ... H-004`,
+the pose naming the PicoBridge socket. The four `readonly` tests skip with the same two reasons.
+
+The first full-suite run under the pre-commit gate (687 s, 641 passed, 14 skipped) failed twice and
+both are recorded rather than papered over: `tests/test_teleop_loop.py::test_cli_refuses_the_real_
+backend`, which was a genuine regression and is fixed below, and
+`tests/test_train.py::test_small_config_latency_at_ddim_10_and_5`, which is
+`assert medians[5] < medians[10]` on wall-clock DDIM latency and lost to CPU contention: the other
+builder's full suite was running in the main tree at the same time (two `pytest -q` processes, one
+of them training). Alone it passes with room to spare -- DDIM 10 median 76 ms, DDIM 5 median 55 ms,
+budget 100 ms, `.venv/bin/python -m pytest tests/test_train.py::test_small_config_latency_at_ddim_10_
+and_5 -q` -> 1 passed in 7.68 s. Nothing in this task touches `policy/`. Worth a note for Fable: that
+assertion is a timing race whenever two suites share the laptop.
+
+### Files changed outside the task's touch list, and why
+Four, all of them things this task's deliverable made false. The first two are the same files and the
+same reason as T-018 and T-019 (their own entries say so); the last two are a regression the first
+full-suite run caught, which is what the gate is for.
+
+1. `tests/test_mock_drivers.py` and `tests/test_cameras.py` asserted that `make("glove"|"pose",
+   backend="real")` raises `NotImplementedError`, the exact negation of this task's deliverable.
+   `glove` and `pose` were the last two names on those lists, so rather than leave an empty
+   `parametrize`, `test_factory_refuses_the_real_backend_for_every_actuated_device` became
+   `test_the_factory_has_a_real_backend_for_every_device` (it walks `DEVICES`, fails on any
+   `NotImplementedError`, and skips over an absent device), and the camera file's twin now asserts
+   that an absent glove or controller raises its own `Unavailable` and never `NotImplementedError`.
+2. `teleop/loop.py` **had a real regression**: `main()` caught only `NotImplementedError` around
+   `build()`, so `python -m teleop.loop --backend real` used to exit 2 with a message and would now
+   have crashed with a `PoseUnavailable` traceback (`pose` is the first device `build` makes).
+   `main()` now catches `RuntimeError`, which is the base of all five `*Unavailable` classes **and**
+   of `NotImplementedError`, and prints the same "cannot run on backend 'real': <reason>". While
+   there, `build()` became all-or-nothing: it closes the drivers it already made before letting a
+   failure propagate. Without that, on a laptop where TCP 63901 happens to be free, `build` would
+   bind a PicoBridge, fail on the next device, and leak a daemon thread holding the port for the
+   rest of the process -- which in a pytest run is every later test. `tests/test_teleop_loop.py`'s
+   `test_cli_refuses_the_real_backend` asserted the old message and was renamed and re-pointed.
+
+### Not met, and why
+- **Acceptance 1 (devices present) is OPEN, as the task said to expect.** No 10-minute glove or
+  controller-pose statistics exist, so **no A4 verdict is written** (`docs/sdks.md` untouched:
+  claiming a rate without measuring it is what R5 forbids) and `teleop.pico.input_hz` keeps the lab's
+  120 with `_status: UNMEASURED`. H-004 carries the exact commands and the two config keys that must
+  be filled first. Still unknown after this task: whether `connect_device` succeeds on a real node,
+  the glove's USB id, the achieved frame rate and jitter of either stream, the channel order, the
+  collection callback's exact argument type, and which of the two network paths the headset will use.
+- **`drivers/pxcap.py` is 483 lines, not under 250** (307 code, 96 docstring, 27 comment, 53 blank);
+  `drivers/pico.py` is 269 (163 code). Same disagreement as T-018 and T-019: D-013 item 2's remedy is
+  a sibling module, and this task's touch-list does not include one. The glove module is genuinely
+  three things -- loading a binding that two different deliveries can provide, serial-node discovery,
+  and the collection stream -- and I judged the binding-route documentation (the one thing this task
+  actually settled) worth keeping next to the code that does it. If Fable prefers the split,
+  `load_binding`/`default_session`/`BUNDLE_*` move to `drivers/pxcap_binding.py` (about 60 lines) and
+  the sysfs serial walk shared with `drivers/dexh15.py` moves to a common module (about 70); that
+  takes `pxcap.py` to roughly 350 and is a one-commit follow-up.
+
+### Safety
+R1: neither driver can produce a motion command -- both protocols have no write call, neither module
+builds a `Guard`, and `PxCap` never names one of the seven PxCapPro calls that change the device
+(calibration, SN write, static-magnet check, firmware upgrade); a test greps for all seven and
+requires zero hits. R2: no scripted motion, no literal joint target; `drivers/` still imports nothing
+from `tools/hardware_checks/`. R3: no guard is built because there is no command path to guard;
+`config/safety.yaml` untouched. `hardware/session.enable` neither created, edited nor read. Nothing
+under `third_party/` modified or written to (the bundle is only read, and one `.so` of it is loaded
+into memory). Committed through the full pre-commit gate, no `--no-verify` (D-013).

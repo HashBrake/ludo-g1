@@ -102,17 +102,35 @@ def test_factory_builds_every_device_on_the_mock_backend(name: str) -> None:
     assert driver is not None
 
 
-#: The cameras got their real backend in T-010 (drivers/cameras.py), the arm its read-only one in
-#: T-018 (drivers/g1_arm.py) and the hand its read-only one in T-019 (drivers/dexh15.py), all without
-#: a session; the rest have not got one yet. tests/test_cameras.py, tests/test_g1_arm.py and
-#: tests/test_dexh15.py cover those three sides.
-ACTUATED = tuple(name for name in DEVICES if name not in ("top", "oblique", "palm", "arm", "hand"))
+#: Devices with no real backend yet. The cameras got theirs in T-010 (drivers/cameras.py), the arm
+#: its read-only one in T-018 (drivers/g1_arm.py), the hand its read-only one in T-019
+#: (drivers/dexh15.py), and the glove and the controller pose theirs in T-020 (drivers/pxcap.py,
+#: drivers/pico.py) -- all without a session, which empties this list. tests/test_cameras.py,
+#: test_g1_arm.py, test_dexh15.py, test_pxcap.py and test_pico.py cover those five sides.
+ACTUATED = tuple(
+    name for name in DEVICES if name not in ("top", "oblique", "palm", "arm", "hand", "glove", "pose")
+)
 
 
-@pytest.mark.parametrize("name", ACTUATED)
-def test_factory_refuses_the_real_backend_for_every_actuated_device(name: str) -> None:
-    with pytest.raises(NotImplementedError, match="does not exist yet"):
-        make(name, backend="real")
+def test_the_factory_has_a_real_backend_for_every_device() -> None:
+    """Nothing is left on the ``NotImplementedError`` branch of ``make`` after T-020.
+
+    What each real driver *does* is its own test file's business; all this asserts is that the
+    factory no longer turns a device away for not existing. An absent device is the normal answer
+    here and is skipped over: its own file covers the reason it gives.
+    """
+    assert ACTUATED == ()
+    for name in DEVICES:
+        driver = None
+        try:
+            driver = make(name, backend="real")
+        except NotImplementedError as exc:  # pragma: no cover - a regression, not a normal path
+            pytest.fail(f"make({name!r}, backend='real') is still unimplemented: {exc}")
+        except Exception:
+            continue  # the device is not attached
+        finally:
+            if driver is not None and hasattr(driver, "close"):
+                driver.close()
 
 
 def test_factory_rejects_unknown_names_and_backends() -> None:

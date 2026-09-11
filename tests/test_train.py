@@ -357,6 +357,8 @@ def test_small_config_latency_at_ddim_10_and_5(tmp_path, capsys) -> None:
 
     Five calls here; the recorded numbers are the 20-call thread sweep in `agents/BUILD_LOG.md`.
     """
+    if os.getloadavg()[0] > 4.0:  # Fable, T-020 review: wall-clock ordering is meaningless when suites share the CPU
+        pytest.skip(f"1-minute load {os.getloadavg()[0]:.1f} > 4: DDIM ordering is not measurable under load")
     spec = PolicySpec.from_config(block="diffusion_small")
     model = GoalDiffusionPolicy(spec)
     checkpoint = tmp_path / "checkpoint.pt"

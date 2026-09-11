@@ -186,6 +186,32 @@ teleop:
     - [0.0, 0.0, 1.0, 0.0]
     - [0.0, 0.0, 0.0, 1.0]
   pico_to_pelvis_status: UNMEASURED
+  # --- the PicoBridge receiver (drivers/pico.py, T-020) ------------------------------------------
+  # The headset runs the PicoBridge app and dials THIS laptop over TCP; pico_bridge.PicoBridge is the
+  # receiving end and runs in our process (docs/sdks.md 7.1). `bind_host` and `port` are the
+  # pico_bridge defaults (.venv/lib/python3.10/site-packages/pico_bridge/bridge.py:44), and the port
+  # is the one the lab's prior setup advertises (third_party/g1_pico_teleop/README.md:67).
+  # `advertise_ip` is the laptop address the headset must reach, which pico_bridge's own UDP
+  # discovery broadcast cannot supply across the robot's NAT: in the lab path it is 192.168.123.2 and
+  # a relay on the Orin rebroadcasts it (README.md section 3.3). It stays UNMEASURED until a human
+  # decides which of the two network paths of agents/HARDWARE_NEEDED.md H-004 LUDO-G1 uses; None (the
+  # placeholder) means "let pico_bridge advertise whatever it picks".
+  pico:
+    bind_host: "0.0.0.0"
+    port: 63901
+    discovery: true
+    advertise_ip: UNMEASURED
+    # Rate the headset streams at. 120 is the lab's `pico_input_hz`
+    # (third_party/g1_pico_teleop/teleopit/configs/sim2real.yaml:53); the rate this laptop actually
+    # receives is a Phase 1 measurement (stream_stats.py --stream pose).
+    input_hz: 120
+    input_hz_status: UNMEASURED
+    # How long drivers/pico.py waits for the first frame, and how old the newest frame may be before
+    # the stream counts as silent. A design choice pending the Phase 1 jitter measurement.
+    frame_timeout_s: 1.0
+    frame_timeout_s_status: UNMEASURED
+    # Seconds PicoBridge.start() may take to bind its TCP server before it is called a failure.
+    start_timeout_s: 10.0
   # Rest pose of the 8 commanded joints, in `action_order` (7 arm joints then waist yaw), radians.
   # It is the IK's posture target and its default seed. Zero is the MJCF `qpos0`, which is where
   # runtime/fk.py holds every uncommanded joint, and D-010 measured the wrist there at
