@@ -77,7 +77,8 @@ load_config() {
     SSH_OPTS=()
   fi
 
-  DOCKER_IMAGE="${GREENNODE_IMAGE:-ludo-g1-train:0.1.0}"
+  DOCKER_IMAGE="${GREENNODE_IMAGE:-ludo-g1-train:0.2.0}"
+  SHM_SIZE="${GREENNODE_SHM_SIZE:-8g}"
   LOCAL_PYTHON="${GREENNODE_LOCAL_PYTHON:-$REPO/.venv/bin/python}"
   HEARTBEAT_SECONDS="${GREENNODE_HEARTBEAT_SECONDS:-5}"
 }
@@ -204,21 +205,27 @@ cmd_train() {
   remote_mkdir "$JOB_SUBDIR" data/checkpoints
 
   # The command the wrapper supervises. Remote: the pinned image. Local: this repo's venv python.
+  # Either way the job must import the *pushed* tree (policy/, runtime/, config/), not the laptop's:
+  # `python policy/train.py` puts policy/ on sys.path, not the root above it, so PYTHONPATH says so.
   local job_cmd
+  local job_env=""
   if [ "$TRANSPORT" = "local" ]; then
     [ -x "$LOCAL_PYTHON" ] || die "local transport needs a python at $LOCAL_PYTHON (see docs/setup.md)"
+    job_env="PYTHONPATH=$(printf '%q' "$REMOTE_ROOT") "
     job_cmd="$(printf '%q ' "$LOCAL_PYTHON" "$script" "$@")"
   else
     job_cmd="docker run --rm --gpus all"
+    # torch's DataLoader workers share tensors through /dev/shm, which docker caps at 64 MB by default.
+    job_cmd+=" --shm-size=$(printf '%q' "$SHM_SIZE")"
     job_cmd+=" -v $(printf '%q' "$REMOTE_ROOT"):/work -w /work"
-    job_cmd+=" -e LUDO_G1_ROOT=/work -e LUDO_G1_CHECKPOINT_DIR=/work/data/checkpoints"
+    job_cmd+=" -e LUDO_G1_ROOT=/work -e LUDO_G1_CHECKPOINT_DIR=/work/data/checkpoints -e PYTHONPATH=/work"
     job_cmd+=" $(printf '%q' "$DOCKER_IMAGE") python $(printf '%q ' "$script" "$@")"
   fi
 
   info "job $job_id: $script ${*:-}"
   # nohup + setsid so the job outlives the ssh session (or this shell, in local mode).
   local launch
-  launch="LUDO_G1_ROOT=$(printf '%q' "$REMOTE_ROOT")"
+  launch="${job_env}LUDO_G1_ROOT=$(printf '%q' "$REMOTE_ROOT")"
   launch+=" LUDO_G1_CHECKPOINT_DIR=$(printf '%q' "$REMOTE_ROOT/data/checkpoints")"
   launch+=" GREENNODE_HEARTBEAT_SECONDS=$(printf '%q' "$HEARTBEAT_SECONDS")"
   launch+=" nohup setsid bash cloud/job_wrapper.sh $(printf '%q' "$job_id") $(printf '%q' "$REMOTE_ROOT")"
@@ -227,9 +234,22 @@ cmd_train() {
 
   if [ "$wait_for_job" -eq 1 ]; then
     wait_for_exit "$job_id" "$timeout"
+    report_hashes "$job_id"
   else
     info "launched detached; follow it with: cloud/greennode.sh status $job_id, then cloud/greennode.sh down"
   fi
+}
+
+# report_hashes JOB_ID : repeat the run's identity lines from the mirrored job log (CLAUDE.md 5.8).
+# policy/train.py prints the dataset manifest sha256 and the six config hashes; a training run is only
+# comparable to another when those agree (R5), so they are surfaced here instead of only in the log.
+report_hashes() {
+  local log="$REPO/$JOB_SUBDIR/$1.log"
+  [ -f "$log" ] || return 0
+  local line
+  while IFS= read -r line; do
+    info "$line"
+  done < <(grep -E '^(training config hash|dataset manifest sha256|run |written )' "$log" || true)
 }
 
 # wait_for_exit JOB_ID TIMEOUT_S : poll the job's exit file, mirroring its logs into data/logs/.

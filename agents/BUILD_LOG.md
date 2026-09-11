@@ -2741,3 +2741,118 @@ engageable, which is what the two new refusal tests use.
   neither created nor named, nothing under `third_party/` touched, `config/safety.yaml` changed only
   by the one added key and only in the tightening direction. Committed through the full pre-commit
   gate, no `--no-verify` (D-013 item 1).
+
+## T-031  Greennode training launch for real: train.py in the pinned image, hashes and checkpoint round trip  (opus, 2026-09-12T03:20+07:00)
+
+### What changed
+
+- **`cloud/Dockerfile` is now a GPU image.** Base `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04`
+  pinned by its index digest `sha256:17e2934e1fa9...`, Ubuntu 22.04's own `python3.10` (no deadsnakes:
+  jammy's system python *is* 3.10, which D-002 A1 and D-015 fix us to), pip/setuptools/wheel pinned,
+  then `cloud/requirements-train.txt`. Adds `ffmpeg` (torchcodec, a lerobot dependency, links the
+  system FFmpeg shared libraries and raises at import without them) and keeps git/rsync/procps. Tag
+  bumped `ludo-g1-train:0.1.0` -> `0.2.0` (default in `greennode.sh`, docs and the env example).
+  **Why cu128:** torch 2.9.1 publishes cp310 linux x86_64 wheels for cu126, cu128, cu129 and cu130
+  (checked against download.pytorch.org today). cu128 runs on any >= 525.60.13 driver through CUDA
+  12.x minor-version compatibility, covers Ampere..Blackwell, and unlike cu130 needs no r580+ driver.
+  If the VM's `nvidia-smi` reports below 12.8, base tag and both pins move to cu126 together.
+- **`cloud/requirements-train.txt` (new)**: the training subset. torch 2.9.1+cu128 /
+  torchvision 0.24.1+cu128 (the same versions requirements.txt pins, CUDA builds instead of `+cpu`,
+  via `--find-links` for the reason requirements.txt already gives), lerobot 0.4.4, numpy, pyyaml,
+  structlog, scipy, opencv-python-headless -- exactly the direct imports of `import policy.train`
+  (measured: `sys.modules` after that import contains no `pxdex`, no `unitree_sdk2py`, no `cv2`,
+  no `mujoco`). The `file://` pxdex wheel and the git `unitree_sdk2py` are absent by design.
+- **`cloud/greennode.sh`**: (1) the job now gets `PYTHONPATH` = the remote root (local) / `/work`
+  (docker), because `python policy/train.py` puts `policy/` on `sys.path` and not the root above it,
+  so without it the job cannot import the pushed tree at all -- and *with* it, `runtime.safety.REPO_ROOT`
+  resolves to the remote root, which is why the checkpoint lands there and not in this repo;
+  (2) `docker run --shm-size` (default 8g, `GREENNODE_SHM_SIZE`), because torch DataLoader workers
+  share tensors through `/dev/shm`, which docker caps at 64 MB; (3) new `report_hashes`: after a
+  waited job, the run name, the training config hash, the dataset manifest sha256 and the run
+  directory are echoed from the job log onto greennode's own stdout (they are in the log either way;
+  `policy/train.py` prints them).
+- **`tests/test_greennode_train.py` (new, 6 tests)**: the end-to-end local-transport run, plus the
+  requirements-agreement and Dockerfile lint checks described below.
+- **`docs/cloud.md`**: rewritten training-image section (the cu128 reasoning, what is excluded and
+  why, what the tests actually check) and a new "Training for real (Phase 3)" section holding the
+  exact remote command.
+
+### Commands run and measured results
+
+```
+$ .venv/bin/python -m pytest tests/test_greennode_train.py -q          -> 6 passed in 31.43 s
+$ .venv/bin/python -m pytest -q                                        -> 496 passed, 4 skipped in 206 s
+$ .venv/bin/ruff check .                                               -> All checks passed!
+$ bash -n cloud/greennode.sh                                           -> ok
+$ command -v docker                                                    -> (nothing: docker is NOT installed here)
+$ .venv/bin/python -c "import policy.train"  + sys.modules diff        -> no pxdex / unitree_sdk2py / cv2 / mujoco
+$ curl -s https://download.pytorch.org/whl/cu{126,128,129,130}/torch/  -> torch-2.9.1+cuXXX-cp310-...-x86_64.whl exists for all four
+$ curl -s hub.docker.com/v2/.../nvidia/cuda/tags?name=12.8.1-cudnn-runtime-ubuntu22.04
+                                                                       -> digest sha256:17e2934e1fa9... (amd64 59e0e4376a0f...)
+```
+
+The local round trip itself (`up` -> `train policy/train.py --smoke` -> `down`), as the test runs it:
+
+```
+greennode: pushed 119 repo files (third_party and git-ignored paths excluded)
+greennode: job t031-train: policy/train.py --sessions data/raw/t031_mock_smoke --smoke --run-name t031-smoke
+greennode: job t031-train finished with exit code 0 after ~27s
+greennode: run t031-smoke: 24 frames, 38.4M parameters
+greennode: training config hash 7efe26f28a4a271d07f16209300bd6a95112a379a651cb9289a175a47968ddf0
+greennode: dataset manifest sha256 776b5083fb904e28218bb9e8709244cc4d897ff9b0e3a13118c919df5ccdb7b5
+greennode: written <remote>/data/checkpoints/t031-smoke
+checkpoint sizes at the test scale (deleted after the run): checkpoint.pt 153.7 MB, loss.csv 0.0 MB, run.json 0.0 MB
+```
+
+Measured numbers: job 27 s wall (30 optimiser steps, batch 4, CPU, two mock episodes = 24 frames);
+38.4 M parameters; `checkpoint.pt` **153.7 MB**, deleted by the fixture, as is the mock session and
+the job's log/heartbeat files -- nothing this test writes survives it (Q-002: 12 GB free). At the
+configured scale the same file is 293 M parameters and ~2.3 GB (T-029), which is why the test shrinks
+the model rather than running it as configured.
+
+### How the test proves the job ran the *pushed* tree
+
+After `up`, the test rewrites the fake remote's `config/` to the small one `tests/test_recorder.py`
+already builds, with `tests/test_diffusion.py`'s TINY U-Net (encoder 48x64, down_dims 64/128/256, 8
+keypoints, 8 stats samples). The run record that comes back through `down` then has
+`config_hashes == {name: config_hash(name, <pushed config>)}` for all six files and
+`config_hashes["training"] != config_hash("training")` on the laptop: had the job imported this
+repo's modules instead of the copy, the hashes would be the laptop's. `dataset_manifest_sha256`
+equals `dataset_manifest_hash([data/raw/t031_mock_smoke])` computed here, so the manifest hash
+travels intact. The mock session is recorded fresh (two episodes, MOVE + ROLL, 24 frames) into
+`data/raw/`, which is the tree `up` pushes.
+
+### Notes / deviations
+
+- **The image is unbuilt and unverified.** `command -v docker` prints nothing on this laptop, so
+  `docker build` has never run against this Dockerfile; the review it gets here is reading plus
+  `test_dockerfile_is_a_cuda_image_for_this_repo` (CUDA base pinned by digest, installs
+  `cloud/requirements-train.txt`, python3.10, `PYTHONPATH=/work`) and
+  `test_training_requirements_match_requirements_txt` (every version pinned in both files agrees
+  modulo the `+cpu` / `+cu128` local version; torch and torchvision are the CUDA builds; pxdex,
+  unitree_sdk2py, mujoco, mink and pico_bridge are absent). The apt pins are wildcarded to jammy's
+  series (`git=1:2.34.*`, `ffmpeg=7:4.4.*`, ...) rather than to exact patch levels, because a
+  patch-level pin that Ubuntu has since superseded makes the image unbuildable and I cannot test the
+  build here.
+- **lerobot's transitive set is not pinned in the image.** requirements.txt's transitive block is the
+  laptop's resolution, and a good part of it belongs to device SDKs that must not be installed on the
+  VM; picking that apart by hand is guesswork. So the image pins the direct set and the first real
+  build must record `pip freeze` from the built image in this log -- that freeze then replaces the
+  loose part of `cloud/requirements-train.txt`. Flagged as a Q-001 follow-up, not done here.
+- **The last acceptance clause is Fable's to close.** "the real run ... is listed in STATE.md as the
+  Phase 3 gate": `agents/STATE.md` is Fable's file (4.3) and outside this task's touch list, so I did
+  not edit it. Proposed line: *"Phase 3 gate: the first real Greennode training run
+  (`cloud/greennode.sh up && train policy/train.py --sessions ... --device cuda && down`, docs/cloud.md
+  'Training for real') is blocked on Q-001 credentials and on a real dataset (Phase 2)."*
+- **`--device cuda` has never executed.** `policy/train.py` already accepts it (T-029) and the local
+  test runs on CPU by construction; whether the model trains on a GPU at the configured size is a
+  Q-001 question, not one this test can answer (R5).
+- The train/inference observation-history mismatch that `policy/diffusion.py`'s docstring asks T-031
+  to close (dataset yields one frame, inference keeps a queue of two) is **not** closed here: Fable
+  moved that into T-034, and this task's deliverables and touch list are the cloud path only. Naming
+  it because the docstring points at T-031.
+- No credential string, host name or key path is in any file added or changed here; `git grep -i -E
+  "password|secret|token" -- cloud/` still finds nothing (`tests/test_greennode_local.py` asserts it,
+  and it passed in the full run above). Nothing under `third_party/` touched, `config/safety.yaml`
+  untouched, no motion command anywhere in this task (R1-R6 intact). Committed through the full
+  pre-commit gate, no `--no-verify` (D-013 item 1).

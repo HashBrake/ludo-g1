@@ -1,0 +1,37 @@
+# The training subset of requirements.txt, for the Greennode image (cloud/Dockerfile) only.
+#
+# Two entries of requirements.txt cannot resolve on the VM and are not training dependencies, so they
+# are deliberately absent here (a test asserts it): `pxdex` (a file:// path to a cp310 wheel on this
+# laptop, for hand hardware the VM does not have) and `unitree_sdk2py` (DDS to a robot the VM cannot
+# see). `python -c "import policy.train"` pulls in neither.
+#
+# Every version below is the one requirements.txt pins, except torch/torchvision, which are the CUDA
+# builds of the same versions instead of the `+cpu` ones (D-011 put the CPU wheels on the laptop
+# because the laptop does not train; the VM does). tests/test_greennode_train.py asserts that
+# agreement, so a bump in requirements.txt that is not mirrored here fails the suite.
+#
+# cu128 (CUDA 12.8) is the chosen build: see cloud/Dockerfile for why, and docs/cloud.md for the
+# build command. --find-links, not --index-url, for the same reason requirements.txt gives: the rest
+# of the file must keep resolving from PyPI (torch's own nvidia-*-cu12 dependencies live there), and
+# a `+cu128` local version exists on no other index, so the pins are unambiguous either way.
+--find-links https://download.pytorch.org/whl/cu128/torch/
+--find-links https://download.pytorch.org/whl/cu128/torchvision/
+
+torch==2.9.1+cu128
+torchvision==0.24.1+cu128
+
+# Dataset format and the Diffusion Policy / ACT implementations (D-011, D-015, CLAUDE.md 5.6, 5.7).
+# 0.4.4 is the last release that installs on Python 3.10. It pulls its own transitive set (datasets,
+# diffusers, av, torchcodec, pyserial, ...); those are NOT pinned here, so the first real build must
+# record `pip freeze` from the built image in agents/BUILD_LOG.md and this file can then be replaced
+# by that freeze (Q-001).
+lerobot==0.4.4
+
+# Direct imports of the training path (`python -c "import policy.train"`).
+numpy==2.2.6
+pyyaml==6.0.3
+structlog==26.1.0
+scipy==1.15.3
+# lerobot requires opencv-python-headless (>=4.9,<4.13); pinned to the same version as the laptop's
+# two OpenCV distributions (D-016). The GUI build (opencv-python) belongs to teleop, not to training.
+opencv-python-headless==4.12.0.88

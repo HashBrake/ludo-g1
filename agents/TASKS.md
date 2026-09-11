@@ -1122,7 +1122,7 @@ notes: CLAUDE.md 5.7: ACT is trained on every dataset the diffusion model is tra
   change.
 
 ## T-031  Greennode training launch for real: train.py inside the pinned image, manifest and checkpoint round trip
-status: in_progress
+status: review
 priority: P2
 phase: 3
 owner: opus
@@ -1137,6 +1137,27 @@ acceptance:
   - local-transport test passes; the exact remote command is in docs/cloud.md; the real run waits for Q-001 and is listed in
     STATE.md as the Phase 3 gate
 notes: No credentials in git.
+
+result: (opus, 2026-09-12T03:20+07:00, commit HASH_PENDING)
+  - local-transport end to end: `up` -> `train policy/train.py --sessions data/raw/<mock> --smoke` -> `down`, in
+    tests/test_greennode_train.py (6 tests, 31.4 s). The job exits 0 after ~27 s, 24 frames, 38.4 M parameters at the
+    test scale; the returned run.json carries dataset_manifest_sha256 776b5083... and all six config hashes, and its
+    training hash is the PUSHED config's, not the laptop's (the test shrinks the pushed config, so a laptop-config hash
+    would mean the job imported the wrong tree). checkpoint.pt measured at 153.7 MB and deleted by the fixture, as are
+    the mock session and the job logs (Q-002); the configured scale would be ~2.3 GB (T-029).
+  - cloud/Dockerfile: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 pinned by digest sha256:17e2934e1fa9..., jammy
+    python3.10, ffmpeg (torchcodec), installing the new cloud/requirements-train.txt: torch 2.9.1+cu128 /
+    torchvision 0.24.1+cu128 (the versions requirements.txt pins, CUDA builds), lerobot 0.4.4, numpy, pyyaml, structlog,
+    scipy, opencv-python-headless; pxdex and unitree_sdk2py deliberately absent. Image tag 0.1.0 -> 0.2.0. UNBUILT:
+    `command -v docker` prints nothing here, so the image is checked by reading plus two tests (pin agreement with
+    requirements.txt; the Dockerfile lint).
+  - cloud/greennode.sh: PYTHONPATH for the job (without it `python policy/train.py` cannot import the pushed tree),
+    `docker run --shm-size` (GREENNODE_SHM_SIZE, default 8g) for DataLoader workers, and the run's config/manifest
+    hashes echoed onto stdout after a waited job.
+  - docs/cloud.md: the exact remote command is under "Training for real (Phase 3)"; the run stays blocked on Q-001.
+  - full suite 496 passed / 4 skipped in 206 s; ruff clean; committed through the pre-commit gate.
+  - NOT DONE (Fable's file, outside the touch list): the STATE.md line naming this as the Phase 3 gate; proposed
+    wording is in agents/BUILD_LOG.md T-031.
 
 ## T-032  Teleop loop on mocks: pose and glove in, IK, Guard, arm and hand out, recorder and UI attached
 status: accepted

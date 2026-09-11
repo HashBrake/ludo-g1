@@ -10,8 +10,8 @@ cloud/greennode.sh down                     pull the remote's data/checkpoints b
 cloud/greennode.sh status [JOB_ID]          transport, roots, and the state of the known jobs
 ```
 
-`SCRIPT` is a repo-relative path: `cloud/dummy_job.py` today, `policy/train.py` from Phase 3 on.
-Everything after it is passed through to the script untouched.
+`SCRIPT` is a repo-relative path — `cloud/dummy_job.py` for the transport check, `policy/train.py` for
+a training run — and everything after it is passed through to the script untouched.
 
 ## Status: untested against the real VM
 
@@ -19,7 +19,9 @@ There are no credentials yet (agents/QUESTIONS.md **Q-001**), so **the remote tr
 run**, and neither has `cloud/Dockerfile` — docker is not installed on the control laptop, so the image
 is delivered unbuilt and reviewed by eye only. What *is* tested is the local transport
 (`tests/test_greennode_local.sh`), which exercises the same subcommands, the same job wrapper and the
-same file layout with `cp` instead of `rsync`/`ssh` and this repo's venv python instead of docker.
+same file layout with `cp` instead of `rsync`/`ssh` and this repo's venv python instead of docker:
+`tests/test_greennode_local.sh` for the dummy job and `tests/test_greennode_train.py` for a real
+`policy/train.py` run (see "Training for real" below).
 
 Treat the first real run as bring-up, not as a regression check.
 
@@ -37,7 +39,7 @@ GREENNODE_SSH_KEY=$HOME/.ssh/<private key file>
 GREENNODE_REMOTE_ROOT=/home/<login>/ludo-g1      # the repo's mirror on the VM
 # optional
 GREENNODE_SSH_PORT=22
-GREENNODE_IMAGE=ludo-g1-train:0.1.0
+GREENNODE_IMAGE=ludo-g1-train:0.2.0
 ```
 
 In remote mode, a missing file or a missing variable makes every subcommand refuse to run and print a
@@ -49,7 +51,8 @@ pointer to Q-001. Nothing is created on the human's behalf.
 | `GREENNODE_ENV_FILE` | `~/.config/ludo-g1/env` | credentials file path |
 | `GREENNODE_LOCAL_ROOT` | `data/cloud_local` | local mode only: the directory standing in for the VM |
 | `GREENNODE_LOCAL_PYTHON` | `.venv/bin/python` | local mode only: the interpreter that runs the job |
-| `GREENNODE_IMAGE` | `ludo-g1-train:0.1.0` | remote mode only: the pinned training image |
+| `GREENNODE_IMAGE` | `ludo-g1-train:0.2.0` | remote mode only: the pinned training image |
+| `GREENNODE_SHM_SIZE` | `8g` | remote mode only: `docker run --shm-size`, for torch DataLoader workers |
 | `GREENNODE_JOB_ID` | UTC timestamp + pid | name for this job's log, heartbeat and exit files |
 | `GREENNODE_HEARTBEAT_SECONDS` | `5` | how often the wrapper rewrites the heartbeat |
 
@@ -59,6 +62,7 @@ pointer to Q-001. Nothing is created on the human's behalf.
 |---|---|---|
 | push | `rsync -az` over ssh | `cp -a --parents` into `GREENNODE_LOCAL_ROOT` |
 | run | `docker run` the pinned image over ssh | `.venv/bin/python` directly |
+| import path | `PYTHONPATH=/work` (the bind mount) | `PYTHONPATH=$GREENNODE_LOCAL_ROOT` |
 | pull | `rsync -az` over ssh | `cp -a` |
 
 Both use the same `cloud/job_wrapper.sh`, the same remote layout and the same completion signal, so the
@@ -109,7 +113,7 @@ hostname, the whole path works.
 cd ~/ludo-g1                                     # this checkout: /home/alois/Desktop/ludo-g1
 docker --version                                 # on the VM, not here
 ssh -i "$GREENNODE_SSH_KEY" "$GREENNODE_USER@$GREENNODE_HOST" \
-    'cd ~/ludo-g1 && docker build -t ludo-g1-train:0.1.0 -f cloud/Dockerfile .'   # once, after the first `up`
+    'cd ~/ludo-g1 && docker build -t ludo-g1-train:0.2.0 -f cloud/Dockerfile .'   # once, after the first `up`
 
 cloud/greennode.sh up
 cloud/greennode.sh train cloud/dummy_job.py --seconds 60 --note "phase 0 exit check"
@@ -136,17 +140,84 @@ remote-mode refusal, the `third_party` exclusion, the heartbeat and `--detach`. 
 
 ## The training image
 
-`cloud/Dockerfile` pins `python:3.10.20-slim-bookworm` (3.10 because the repo is pinned to it) and a CPU
-torch wheel, which is all `cloud/dummy_job.py` needs. It installs the training subset of
-`requirements.txt` explicitly, because two entries there cannot resolve on the VM: the `file://` DexH15
-wheel (a laptop path, and hand hardware the VM does not have) and `unitree_sdk2py` (DDS to a robot the VM
-cannot reach).
+`cloud/Dockerfile` is the GPU image the remote transport runs every job in. It pins
+`nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04` **by digest** and installs `cloud/requirements-train.txt`
+with Ubuntu 22.04's own `python3.10` (3.10 is fixed by the DexH15 cp310 wheel, D-002 A1, and by lerobot
+0.4.4 being the last release that installs on it, D-015).
 
-**TODO (Phase 3):** swap the base for a CUDA image and the torch wheel for the matching GPU build once
-the instance type and driver version are known. The candidate pair is recorded in the Dockerfile header.
+`cloud/requirements-train.txt` is the training subset of `requirements.txt`, with two differences, both
+deliberate:
+
+* `torch==2.9.1+cu128` / `torchvision==0.24.1+cu128` instead of the `+cpu` wheels the laptop installs
+  (D-011): the same versions, the CUDA builds. torch 2.9.1 publishes cp310 linux wheels for cu126,
+  cu128, cu129 and cu130; **cu128** is chosen because CUDA 12.x minor-version compatibility runs it on
+  any driver ≥ 525.60.13, it covers Ampere through Blackwell, and unlike cu130 it does not need an r580+
+  driver. If the VM's `nvidia-smi` reports a CUDA version below 12.8, switch the base tag *and* the two
+  pins to cu126 together.
+* `pxdex` and `unitree_sdk2py` are absent: the first is a `file://` path to a cp310 wheel on this laptop
+  for hand hardware the VM does not have, the second is DDS to a robot the VM cannot reach. Neither is a
+  training dependency — `python -c "import policy.train"` pulls in neither.
+
+`tests/test_greennode_train.py` asserts that every version pinned in both files agrees, that the two
+excluded entries stay excluded, and that the Dockerfile still pins a CUDA base by digest, installs that
+requirements file and sets `PYTHONPATH=/work`. That, plus reading, is the whole review the image gets
+here: **docker is not installed on this laptop** (`command -v docker` prints nothing), so the image has
+never been built. The first build on the VM is bring-up; record `docker build`'s outcome and the built
+image's `pip freeze` in `agents/BUILD_LOG.md` (that freeze then replaces the loose transitive pins).
 
 The repo is bind-mounted at `/work`, so the image carries no project code: what runs is whatever the last
-`up` pushed. Rebuild the image only when the Dockerfile changes, not when the code does.
+`up` pushed, imported through `PYTHONPATH=/work`. Rebuild the image only when the Dockerfile or
+`cloud/requirements-train.txt` changes, not when the code does.
+
+## Training for real (Phase 3)
+
+`policy/train.py` is a normal job: `train` passes everything after the script path through untouched
+(`--sessions`, `--steps`, `--device`, `--batch-size`, `--run-name`, …; `python -m policy.train --help`
+lists them). It writes `data/checkpoints/<run>/` on the *remote* — `run.json`, `loss.csv`,
+`checkpoint.pt` — and `down` brings that directory back. After the job, `train` repeats the run's
+identity lines from the job log: the run name, the **training config hash** and the **dataset manifest
+sha256**, which are what make two runs comparable (CLAUDE.md 5.6, R5). Both are also inside `run.json`,
+together with all six config hashes, the git commit and the per-session frame counts.
+
+### The exact remote command — the Phase 3 gate, blocked on Q-001
+
+```bash
+cd /home/alois/Desktop/ludo-g1                    # the brief's ~/ludo-g1
+
+# once per image change, on the VM (it has the GPU and docker; this laptop has neither)
+ssh -i "$GREENNODE_SSH_KEY" "$GREENNODE_USER@$GREENNODE_HOST" 'nvidia-smi'
+ssh -i "$GREENNODE_SSH_KEY" "$GREENNODE_USER@$GREENNODE_HOST" \
+    'cd ~/ludo-g1 && docker build -t ludo-g1-train:0.2.0 -f cloud/Dockerfile .'
+
+cloud/greennode.sh up
+cloud/greennode.sh train --detach policy/train.py \
+    --sessions data/raw/<session> [data/raw/<session2> ...] \
+    --steps 200000 --device cuda --batch-size 64 --workers 8 --run-name <YYYYmmddTHHMMSS>_diffusion
+cloud/greennode.sh status <JOB_ID>                # while it runs; the heartbeat is mirrored here
+cloud/greennode.sh down
+cat data/checkpoints/<run>/run.json               # the two hashes go into agents/BUILD_LOG.md
+```
+
+`--steps 200000` is `config/training.yaml` `diffusion.train_iterations`; `--device cuda` is the only
+argument that must change from the laptop's smoke runs. `--detach` because a real run is hours long: the
+job is launched under `nohup setsid` and survives the ssh connection dropping either way, and `--detach`
+only stops *this* shell from waiting. The ACT baseline (5.7) is the same command with its own entry
+point, on the same sessions, so that the comparison always exists.
+
+### The same run without credentials (what is actually tested today)
+
+```bash
+GREENNODE_TRANSPORT=local cloud/greennode.sh up
+GREENNODE_TRANSPORT=local cloud/greennode.sh train policy/train.py \
+    --sessions data/raw/<session> --smoke --run-name smoke
+GREENNODE_TRANSPORT=local cloud/greennode.sh down
+```
+
+`tests/test_greennode_train.py` runs exactly that on a freshly recorded mock session, with the pushed
+config shrunk to the test model size, and then deletes what it wrote (Q-002: 12 GB free). Measured at
+that scale: 38.4 M parameters, `checkpoint.pt` 153.7 MB, ~27 s for the job. At the configured scale a
+checkpoint is 293 M parameters and 2.3 GB (T-029, D-019), which is why the test shrinks it and why real
+training belongs on the VM in the first place.
 
 ## Failure modes seen so far
 
