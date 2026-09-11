@@ -1362,3 +1362,4 @@ roll, recover, recover).
   only that one was issued and executed. The real `board/perception.py` fixes it; until then, an eval
   harness that wants a success path will need to inject its own `Perception`.
 - No blockers.
+(T-016 commit: 5fbb479; this line and the TASKS.md result hash are the only content of the follow-up commit.)
