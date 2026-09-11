@@ -1499,3 +1499,151 @@ is a Phase 1 act, not a T-010 one. Fable's call.
 - The 5 s mock acceptance test adds ~5 s of wall clock to `pytest -q`; it is a real-clock rate
   measurement and cannot be shortened without weakening the criterion.
 (T-010 commit: f3e553d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+---
+
+## T-014  Worktree helper for parallel builders  (opus, 2026-09-11T23:40+07:00)
+
+Branch `wt/t014` in the worktree `/home/alois/Desktop/ludo-g1-wt-t014`. Files touched:
+`tools/worktree_setup.sh`, `tools/worktree_teardown.sh`, `tools/worktree_payloads.txt`,
+`docs/setup.md`, `agents/BUILD_LOG.md`, `agents/TASKS.md` (T-014 status + result only).
+No hardware, no motion command, nothing under `third_party/` modified.
+
+### What was built
+1. **`tools/worktree_payloads.txt`** -- the list the previous three tasks kept re-doing by hand
+   (T-007, T-008, T-009 each wrote "a `tools/` helper for this would be a reasonable small task").
+   Two entries today: `third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/_internal/` (1.7 GB, 327
+   entries, the only git-ignored payload `tests/test_docs_sdks.py` actually resolves into) and
+   `third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/pxcap_pro_local` (the 9 MB binary next to it).
+   Comments-and-blank-lines format, one repo-relative path per line.
+2. **`tools/worktree_setup.sh BRANCH PATH`** -- `set -euo pipefail`. Locates the main working tree as
+   `dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"`, so it works from the main tree or
+   from any worktree. Refuses (exit 1, nothing created) if `PATH` exists, if `BRANCH` exists, if the
+   base branch is missing or if `uv` cannot be found; exit 2 on wrong argument count. Then
+   `git worktree add -b BRANCH PATH main`, `uv venv --python 3.10` + `uv pip install -r
+   requirements.txt` into `PATH/.venv`, applies every payload line (directory -> a **real** directory
+   of one symlink per entry, file -> one symlink; kind decided by what the path is on disk in the main
+   tree, not by the trailing slash), warns if `git status` in the new worktree is not clean, runs
+   `.venv/bin/python -m pytest -q` there and exits with pytest's status after a summary line
+   `worktree_setup: OK worktree=... branch=... suite=green`.
+   The payload list is read from **next to the script** (falling back to the main tree), so a helper
+   that has not been merged into `main` yet still sets up worktrees correctly -- which is exactly the
+   situation this task was run in.
+3. **`tools/worktree_teardown.sh PATH`** -- refuses if `PATH` does not exist, is the main working tree,
+   is not a registered worktree of this repo, or has any uncommitted change (`git status --porcelain`,
+   so tracked *and* untracked count and git-ignored `.venv/` and payload symlinks do not). Removes the
+   worktree with `git worktree remove`, then deletes the branch **only** if
+   `git branch --merged main --format='%(refname:short)'` lists it; otherwise it keeps the branch,
+   prints the merge and delete commands, and exits 0. Detached HEAD and the base branch itself are
+   handled as "keep, nothing to delete".
+4. **`docs/setup.md`** -- new "Parallel builders (git worktrees)" section: the two commands, what setup
+   does in four steps, the payload table and why the directory case must be a real directory (the
+   `.gitignore` rule ends in a slash and would not match a symlink), the teardown rules, and the note
+   that `.git/hooks` is shared across worktrees (`git rev-parse --git-path hooks` in this worktree
+   prints `/home/alois/Desktop/ludo-g1/.git/hooks`), which is why the per-worktree `.venv` is not
+   optional -- the shared pre-commit hook runs `.venv/bin/ruff check .` and `pytest` inside whichever
+   worktree is committing.
+
+### Acceptance, each run and measured
+1. *setup ends with the full suite green inside the worktree*
+   ```
+   $ cd /home/alois/Desktop/ludo-g1-wt-t014
+   $ bash tools/worktree_setup.sh wt/smoke /tmp/ludo-wt-smoke
+   ...
+   worktree_setup: payload dir  third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/_internal  (327 symlinks -> main tree)
+   worktree_setup: payload file third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/pxcap_pro_local  (symlink -> main tree)
+   worktree_setup: running the test suite in /tmp/ludo-wt-smoke
+   ...
+   SKIPPED [1] tests/test_scaffold.py:60: no valid hardware session: cannot read session file /tmp/ludo-wt-smoke/hardware/session.enable
+   327 passed, 1 skipped in 29.15s
+   worktree_setup: OK  worktree=/tmp/ludo-wt-smoke  branch=wt/smoke  suite=green
+   ```
+   exit 0, wall clock 31.5 s end to end (`time`), of which the venv install is ~2 s warm-cache and the
+   suite 29 s. **327 passed, 1 skipped** -- identical to this worktree's own run, i.e. the payload
+   links make `tests/test_docs_sdks.py` (157 `path:line` references) resolve. PASS
+   The whole cycle was run twice; the numbers above are the first run and the second was 29.20 s / same
+   counts.
+2. *teardown leaves `git worktree list` with no smoke worktree*
+   ```
+   $ bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke
+   worktree_teardown: removing worktree /tmp/ludo-wt-smoke (branch wt/smoke)
+   Deleted branch wt/smoke (was 5b50670).
+   worktree_teardown: OK  removed=/tmp/ludo-wt-smoke  branch=wt/smoke deleted (merged into main)
+   $ git worktree list
+   /home/alois/Desktop/ludo-g1          5b50670 [main]
+   /home/alois/Desktop/ludo-g1-wt-t010  c6994b8 [wt/t010]
+   /home/alois/Desktop/ludo-g1-wt-t014  5b50670 [wt/t014]
+   $ ls -d /tmp/ludo-wt-smoke        -> No such file or directory
+   $ git branch --list               -> main, wt/t010, wt/t014   (no wt/smoke)
+   ```
+   PASS. The two remaining worktrees are the other live builder's (T-010) and this one; per the task's
+   clarification they are not mine to remove. `git worktree remove` accepted the worktree with its
+   600 MB git-ignored `.venv` and 327 symlinks in place, so no `--force` is needed.
+3. *`git status` in main is clean afterwards*
+   The main tree is **not** clean right now, and none of it is mine: another builder is writing
+   `config/training.yaml`, `board/perception.py`, `runtime/controller.py`, `runtime/goal.py`,
+   `runtime/policy_api.py` there while I ran. I measured the criterion the only way that is meaningful
+   under concurrency -- snapshot, full setup+teardown cycle, snapshot, diff:
+   ```
+   $ git -C /home/alois/Desktop/ludo-g1 status --porcelain > main_before.txt
+   $ bash tools/worktree_setup.sh wt/smoke /tmp/ludo-wt-smoke        # -> suite=green
+   $ bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke              # -> branch deleted
+   $ git -C /home/alois/Desktop/ludo-g1 status --porcelain > main_after.txt
+   $ diff main_before.txt main_after.txt   -> identical (exit 0)
+   ```
+   Both snapshots are exactly the other builder's five files. My scripts add and remove nothing in the
+   main working tree: the worktree registration lives in `.git/worktrees/`, the venv and every symlink
+   live under the new worktree's path. PASS (measured as "changed nothing in main").
+
+### Refusal paths, all run
+```
+$ bash tools/worktree_setup.sh wt/smoke2 /tmp/ludo-wt-smoke      -> exit 1, "already exists"
+$ bash tools/worktree_setup.sh wt/smoke /tmp/ludo-wt-smoke-other -> exit 1, "branch wt/smoke already exists";
+                                                                    /tmp/ludo-wt-smoke-other was NOT created
+$ bash tools/worktree_setup.sh                                   -> exit 2, usage
+$ echo scratch > /tmp/ludo-wt-smoke/dirty_probe.txt
+$ bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke             -> exit 1, "has uncommitted changes", "?? dirty_probe.txt",
+                                                                    worktree still present
+$ bash tools/worktree_teardown.sh /home/alois/Desktop/ludo-g1    -> exit 1, "is the main working tree ... refusing"
+```
+Unmerged-branch path, proven on a throwaway worktree (`wt/unmergedprobe` at `/tmp/ludo-wt-unmergedprobe`,
+one commit made with `--no-verify`, then `git branch -D` by hand afterwards; neither is left behind):
+```
+worktree_teardown: branch wt/unmergedprobe is NOT merged into main; keeping it.
+worktree_teardown: merge it with:
+    git -C /home/alois/Desktop/ludo-g1 merge --no-ff wt/unmergedprobe
+  then delete it with:
+    git -C /home/alois/Desktop/ludo-g1 branch -d wt/unmergedprobe
+worktree_teardown: OK  removed=/tmp/ludo-wt-unmergedprobe  branch=wt/unmergedprobe (kept, unmerged)
+```
+exit 0, worktree gone, branch still listed by `git branch --list`. That is the criterion "deletes its
+branch only if it is fully merged into main", both ways round.
+
+### Gate
+`.venv/bin/ruff check .` -> "All checks passed!", exit 0.
+`.venv/bin/python -m pytest -q` -> **327 passed, 1 skipped** in 27.81 s (the skip is the standing
+motion-marker autoskip, no session file). `bash -n` clean on both scripts; shellcheck is not installed
+on this laptop, so the scripts were not statically linted.
+
+### Notes / deviations
+- No new tests. The two scripts are shell tooling that creates and destroys git worktrees and installs
+  a 600 MB venv; a pytest wrapper around them would take ~30 s per run inside the very suite they run,
+  and would have to invent a second worktree path to avoid colliding with the builder using the helper.
+  The acceptance criteria are the test, and every branch of both scripts (success, both setup refusals,
+  bad args, dirty refusal, main-tree refusal, merged delete, unmerged keep) was executed and is quoted
+  above. Flagging it because "tests before or alongside the code" is the standing instruction: if Fable
+  wants them, the cheap version is a bash script like `tests/test_greennode_local.sh` driving a
+  temporary repo made with `git init` rather than this one.
+- The kind of a payload (directory vs file) is decided by what exists in the main tree, not by the
+  trailing slash in `tools/worktree_payloads.txt`, so a wrong slash cannot produce a broken worktree.
+  A payload listed but absent from the main tree is a warning, not a failure -- the suite that follows
+  is what decides whether the worktree is usable.
+- `WORKTREE_BASE_BRANCH` exists only so the scripts can be exercised against something other than
+  `main`; every documented invocation uses the default.
+- R1-R6 intact: no motion command, no scripted motion, `config/safety.yaml` untouched, nothing under
+  `third_party/` copied or modified (the worktree holds symlinks pointing into the main tree's copy),
+  `hardware/session.enable` never created. `policy/` and `runtime/` import nothing new.
+- The three `_internal/` payload symlink sets made by hand in T-007, T-008 and T-009 are unaffected;
+  future worktrees get them from `tools/worktree_setup.sh` instead.
+- No hardware needed, no blockers.
+
+(T-014 commit: 5c79b4d; this line and the TASKS.md result hash are the only content of the follow-up commit.)

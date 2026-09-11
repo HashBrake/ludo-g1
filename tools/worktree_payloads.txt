@@ -1,0 +1,16 @@
+# On-disk payloads that live in the main working tree but are git-ignored, so a new
+# worktree is created without them (agents/DECISIONS.md D-003: too large for git).
+# tools/worktree_setup.sh makes each one available inside a new worktree by linking
+# back to the main tree. Nothing here is ever copied, staged or modified.
+#
+# One repo-relative path per line. Blank lines and lines starting with # are ignored.
+# A path that is a directory in the main tree becomes a real directory in the worktree
+# holding one symlink per entry (a real directory, so the .gitignore rules that end in
+# a slash still match it and `git status` in the worktree stays clean).
+# A path that is a file becomes a single symlink.
+#
+# The PyInstaller payload of the PxCap Pro -> DexH15 teleop binary (1.7 GB).
+# tests/test_docs_sdks.py resolves docs/sdks.md path:line references into it.
+third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/_internal/
+# The teleop binary itself (9 MB), named in docs/sdks.md next to its payload.
+third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/pxcap_pro_local
