@@ -52,3 +52,31 @@ against; the SDK inventory (T-002) next because it can invalidate A5 and reshape
 before safety (T-005) because safety reads config/safety.yaml and rate-limits on the clock; mocks (T-006) after safety so the
 mock robot path already goes through the envelope; engine stub (T-007) and calibration (T-008) are independent and give the
 loop non-hardware work while questions are open. No task in Phase 0 has hardware: motion.
+
+## D-006  A5 refuted: LUDO-G1 solves its own arm IK; the vendored Teleopit stack is reference only  (2026-09-11T20:25+07:00)
+Evidence: docs/sdks.md section 7 (T-002, verified in REVIEW.md). The vendored pipeline needs a full body skeleton (headset +
+two ankle trackers), drives all 29 joints through an RL balancing policy, and its Pico provider discards the controller pose.
+Decision: teleop/retarget.py reads the left controller 6-DoF pose from pico_bridge (meters, quaternion xyzw) and solves an
+8-DoF IK (left arm joints 15..21 + waist yaw 12) with mink on the G1 MJCF with legs and right arm fixed. Output goes through
+runtime/safety.py to the G1 arm driver. GMR, the RL policy, the ankle trackers and the body-tracking dependency leave the
+critical path. The vendored fork is kept under third_party/ as a reference for the DDS bridge and the Pico transport only.
+Dependencies approved: mujoco, mink, pico_bridge 0.2.1 (pure-Python wheel from the BotRunner64 GitHub release, pinned by URL
+and sha256), plus the G1 MJCF vendored into third_party/ with its license (T-012). Section 3.3 A5 of CLAUDE.md is wrong as
+written; this entry corrects it. Alternative rejected: run Teleopit's arm-only mode (still needs skeleton input and the RL
+policy; balancing policy on a rig-mounted robot with locked legs is unsafe and pointless).
+
+## D-007  G1 write path is rt/arm_sdk only  (2026-09-11T20:25+07:00)
+drivers/g1_arm.py publishes LowCmd_ on rt/arm_sdk with motor_cmd[29].q as the enable weight (1 enable, 0 release), commands
+only left arm 15..21 and waist yaw 12, and leaves every other slot untouched. rt/lowcmd is never used by drivers/, runtime/
+or policy/ (it owns the legs). The driver publishes at the SDK's 50 Hz with zero-order hold of the 30 Hz policy action;
+whether interpolation is needed is a Phase 1 measurement. The weight must ramp 0 -> 1 on enable and 1 -> 0 on release so
+the robot's own controller never sees a step; the ramp is a driver mechanism, not scripted motion (R2).
+
+## D-008  Q-009 decided: keep opencv-python, drop opencv-python-headless  (2026-09-11T20:25+07:00)
+unitree_sdk2py depends on opencv-python; teleop/operator_ui.py (Phase 2) needs a GUI build anyway. Two distributions owning
+cv2/ is a hazard. T-012 removes the headless pin and re-resolves.
+
+## D-009  Orbbec depth deferred; oblique is RGB over UVC  (2026-09-11T20:25+07:00)
+pyorbbecsdk on PyPI is unusable (docs/sdks.md 8.2); the Ego enumerates as a UVC stereo pair. Observation `oblique` is the
+left RGB stream at 640x480 as CLAUDE.md 5.3 already specifies. Depth is not in the policy input; Q-008 stays open for Alois
+to choose an SDK route later without changing anything downstream.

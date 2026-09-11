@@ -10,7 +10,9 @@ Assumption meanwhile: cloud/greennode.sh is built and tested with a local fake t
 /home has 15 GB free; the brief targets >= 500 GB under ~/ludo-g1/data. Options: an external SSD mounted and symlinked to
 data/raw, or a different partition. Assumption meanwhile: Phase 0 and mock work fit in 15 GB; Phase 2 real recording will not.
 
-## Q-003  Unitree SDK2 Python is not in the folder  (fable, 2026-09-11T18:35+07:00)  OPEN
+## Q-003  Unitree SDK2 Python is not in the folder  (fable, 2026-09-11T18:35+07:00)  OPEN (acting on the assumption)
+Update 2026-09-11T20:25: T-002 installed unitree_sdk2py 1.0.1 from the public upstream commit f7a5526 (same as the lab's
+~/meta-quest-teleoperate checkout). Say HUMAN: if you object.
 The vendored teleop fork's unitree_sdk2_python submodule is empty; the fork drives the G1 through a C++ DDS bridge
 (third_party/g1_pico_teleop/third_party/g1_bridge_sdk). May Opus pip-install unitree_sdk2py from the upstream GitHub repo
 into the project venv? Assumption meanwhile: yes, pinned to a commit, recorded in docs/sdks.md; the g1_bridge_sdk is the
@@ -43,7 +45,7 @@ streams with OpenCV. Evidence and references: docs/sdks.md section 8.2.
 Assumption meanwhile: (a) — `oblique` is an RGB observation, as CLAUDE.md 5.3 already specifies; no depth
 tensor enters the policy, so nothing downstream changes if depth never arrives.
 
-## Q-009  Which cv2 wheel do we keep?  (opus, 2026-09-11T20:05+07:00)  OPEN
+## Q-009  Which cv2 wheel do we keep?  (opus, 2026-09-11T20:05+07:00)  DECIDED by Fable, D-008 (keep opencv-python)
 `unitree_sdk2py` depends on `opencv-python` (GUI build), while T-001 pinned `opencv-python-headless`. Both are
 now installed at the same upstream version 5.0.0.93 and `import cv2` works, but two distributions owning the
 same `cv2/` directory is a packaging hazard. Options: drop the headless pin and keep `opencv-python`, or

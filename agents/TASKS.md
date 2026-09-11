@@ -36,7 +36,7 @@ result: (opus, 2026-09-11T18:45+07:00, commit 4255484)
   - deviation logged in BUILD_LOG: venv interpreter is uv-managed 3.10.20, not /usr/bin/python3 3.10.12.
 
 ## T-002  SDK inventory and assumption verification: docs/sdks.md
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -86,7 +86,7 @@ result: (opus, 2026-09-11T20:10+07:00, commit ac4fcc5)
   - New: H-002, H-003 in HARDWARE_NEEDED.md; Q-008, Q-009 in QUESTIONS.md. No blockers.
 
 ## T-003  Config files with UNMEASURED placeholders and a validated loader
-status: todo
+status: in_progress
 priority: P0
 phase: 0
 owner: opus
@@ -107,10 +107,16 @@ acceptance:
   - `config_hash` is deterministic across two loads and changes when any value changes (test)
   - `unmeasured("safety")` is non-empty and `unmeasured("training")` is empty (test)
   - a missing required key raises a clear error naming file and key (test)
-notes: Placeholder envelope must be conservative: workspace box no larger than the table region in front of the robot, velocity limit low. Fable will review the numbers. Section 7: config in yaml, never constants in code.
+notes: Facts from docs/sdks.md (T-002) to encode: G1 joint indices from unitree_sdk2py's G1JointIndex (waist yaw 12; left
+  shoulder pitch/roll/yaw 15/16/17, left elbow 18, left wrist roll/pitch/yaw 19/20/21; verify against the installed package and
+  cite); arm_sdk publish rate 50 Hz; robot LAN laptop 192.168.123.2, robot 192.168.123.164, DDS interface name UNMEASURED
+  (candidates enp0s31f6 or the AX88179 dongle); DexH15: 7 motors driving 15 joints, Modbus serial, baud 4000000, slave
+  address 0x78 (from the SDK example), joint names/order from pxdex.dh15 stubs; Orbbec Ego is UVC stereo (/dev/video4 left,
+  /dev/video6 right), Brio UNMEASURED; G1 joint limits: take them from the G1 MJCF at ~/Teleopit/assets/robots/unitree_g1/
+  g1_29dof.xml (read-only reference, T-012 vendors it) and cite the file. Placeholder envelope must be conservative: workspace box no larger than the table region in front of the robot, velocity limit low. Fable will review the numbers. Section 7: config in yaml, never constants in code.
 
 ## T-004  runtime/clock.py: monotonic clock, stream alignment, latency compensation
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -220,7 +226,7 @@ acceptance:
 notes: `top` observation crop and the goal heatmaps depend on this frame; never apply geometric augmentation to it later (5.7).
 
 ## T-009  cloud/greennode.sh with a local fake transport
-status: todo
+status: in_progress
 priority: P1
 phase: 0
 owner: opus
@@ -262,7 +268,7 @@ status: todo
 priority: P1
 phase: 0
 owner: opus
-depends_on: T-005
+depends_on: T-005, T-012
 hardware: none
 depends_notes: needs T-002's finding on where the G1 model lives
 deliverables:
@@ -272,4 +278,54 @@ deliverables:
   - docs/safety.md updated with the frame definition and a figure-free description of the box
 acceptance:
   - tests pass; `Guard.admit` with the real fk rejects a target whose wrist would be outside config/safety.yaml's box (test)
-notes: The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
+notes: Use the MJCF vendored by T-012 (third_party/unitree_g1_mjcf/), loaded with mujoco; joint order from config/robot.yaml. The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
+
+## T-012  Dependencies and assets for the arm IK path (D-006, D-008)
+status: todo
+priority: P0
+phase: 0
+owner: opus
+depends_on: T-003
+hardware: none
+deliverables:
+  - third_party/unitree_g1_mjcf/: copy of ~/Teleopit/assets/robots/unitree_g1/ (g1_29dof.xml, meshes/, LICENSE, README.md; skip
+    the dex3 and neck variants) with a MANIFEST.txt listing source path, copy date, and sha256 of every file; the copy is tracked
+    in git unless the meshes exceed 50 MB total, in which case say so in BUILD_LOG.md and stop for Fable to decide
+  - requirements.txt: add mujoco (latest 3.x that mink supports), mink, pico_bridge 0.2.1 pinned by the GitHub release URL and
+    `--hash=sha256:...`; remove opencv-python-headless (D-008); re-resolve so `uv pip install -r requirements.txt --dry-run`
+    reports no changes; record the resolved versions in docs/setup.md
+  - tests/test_assets.py: mujoco loads the MJCF; the model has joints named exactly as config/robot.yaml lists for waist yaw
+    and the 7 left-arm joints; their qpos addresses are recorded in config/robot.yaml (key `mjcf_qpos_index`, measured by the
+    test's own load, and the test asserts the yaml matches the model); pico_bridge imports and its ControllerState dataclass
+    has a `pose` field
+  - docs/setup.md updated
+acceptance:
+  - `.venv/bin/python -c "import mujoco, mink, pico_bridge"` exits 0
+  - tests/test_assets.py passes; full suite green; ruff clean
+  - MANIFEST.txt sha256 lines verified by `sha256sum -c` (command and output in BUILD_LOG.md)
+  - `.venv/bin/python -c "import cv2; print(cv2.__file__)"` works and `uv pip list` shows exactly one opencv distribution
+notes: The MJCF originates from Unitree (BSD-3); keep its LICENSE next to it. Never modify the XML; if the IK needs legs
+  pinned, do it at load time in code (T-013), not by editing the asset.
+
+## T-013  Controller-pose to 8-DoF arm IK prototype (pulled forward from Phase 2, non-hardware)
+status: todo
+priority: P1
+phase: 2
+owner: opus
+depends_on: T-012, T-011
+hardware: none
+deliverables:
+  - teleop/retarget.py: `ArmIK` built on mink over the vendored G1 MJCF with every joint except waist yaw and the 7 left-arm
+    joints fixed at their config/robot.yaml rest values; `solve(target_pos_m, target_quat_xyzw, q_current) -> q8` with joint
+    limits and a per-step velocity limit from config/safety.yaml; a `pinch_from_glove(distance_m) -> float in [0,1]` stub that
+    reads calibration bounds from config/hand.yaml; a frame transform `pico_to_g1_base` with the UNMEASURED calibration
+    placeholder in config/robot.yaml
+  - tests/test_retarget.py: 50 reachable wrist targets sampled inside the config/safety.yaml box, solved from the rest pose in
+    at most 30 iterations each; FK of the solution (runtime/fk.py) within 5 mm position and 3 deg orientation for at least 90%
+    of targets (print the pass rate); joint limits never exceeded; velocity limit respected step to step
+  - benchmark line in BUILD_LOG.md: mean solve time per call on this laptop with the command
+  - docs/teleop.md
+acceptance:
+  - tests pass with the printed pass rate >= 90%
+  - mean solve time < 5 ms per call (measured, command logged)
+notes: No hardware, no drivers touched. This is the IK that D-006 replaces Teleopit with; keep it under 200 lines.
