@@ -12,6 +12,7 @@ hand  = make("hand")
 glove = make("glove")
 pose  = make("pose")
 top   = make("top")                  # cameras are named as in config/cameras.yaml
+make("oblique", backend="real")      # a real V4L2 camera (T-010); read-only, no session
 make("arm", backend="real")          # NotImplementedError until Phase 1
 ```
 
@@ -32,7 +33,7 @@ Three facts hold for every driver, real or mock:
 | `HandDriver` | `read_state() -> Stamped[HandState]`, `palm_frame() -> Stamped[ndarray]` | `send_pinch(scalar) -> ndarray` (15 targets) | `drivers/dexh15.py`, Paxini SDK |
 | `GloveDriver` | `read() -> Stamped[GloveSample]` | — | `drivers/pxcap.py`, PxCap Pro |
 | `PoseDriver` | `read() -> Stamped[WristPose]` | — | `drivers/pico.py`, pico_bridge |
-| `CameraDriver` | `grab() -> Stamped[ndarray]` | — | `drivers/cameras.py`, V4L2 |
+| `CameraDriver` | `grab() -> Stamped[ndarray]` | — | `drivers/cameras.py`, V4L2 **(exists, T-010)** |
 
 The sample types are `RobotState` and `MotionCommand` from `runtime/types.py` (the 9 numbers of
 CLAUDE.md 5.3) plus three small frozen dataclasses in `drivers/interfaces.py`:
@@ -111,10 +112,61 @@ synergy.
 
 - `name` is one of `drivers.DEVICES`: `arm`, `hand`, `glove`, `pose`, and the three camera streams
   `top`, `oblique`, `palm`. Camera names are checked against `config/cameras.yaml`.
-- `backend="real"` raises `NotImplementedError` naming the device. The name exists so that callers
-  can be written against it before Phase 1 delivers the real drivers.
+- `backend="real"` builds a `V4L2Camera` for a camera name (see below) and raises
+  `NotImplementedError` naming the device for `arm`, `hand`, `glove` and `pose`. Those names exist
+  so that callers can be written against them before Phase 1 delivers the real drivers.
 - `kwargs` reach the constructor: the mocks take `now_ns=` (the injectable clock) and `config_root=`
-  (a different `config/` directory, for tests).
+  (a different `config/` directory, for tests); `V4L2Camera` takes those plus `device=`.
+
+## Real cameras (`drivers/cameras.py`)
+
+One class, `V4L2Camera(name)`, serves `top`, `oblique` and `palm`, satisfies the same
+`CameraDriver` protocol as `MockCamera`, and emits frames at the same `policy_resolution` — the
+capture size never leaves the module, so a recorder cannot tell the two backends apart. Frames are
+BGR, OpenCV's order, the same order `cv2.imread` gives `board/calibration.py`.
+
+```python
+from drivers.cameras import V4L2Camera, CameraUnavailable
+
+with V4L2Camera("oblique") as cam:
+    print(cam.probe())            # what the device negotiated, not what we asked for
+    frame = cam.grab()            # Stamped(ts_ns, (480, 640, 3) uint8)
+```
+
+Reading a camera is not a motion command, so R1 does not apply and no session is needed. There is
+no write call on this protocol at all — a test asserts the class has none.
+
+**Device discovery**, in order:
+
+1. an explicit `device=` (a `/dev/...` path or a numeric index);
+2. `config/cameras.yaml` `<name>.device`, when it is not the `UNMEASURED` placeholder. Put a
+   `/dev/v4l/by-id/...` path there, never `/dev/videoN`: node numbers move when devices are
+   replugged, and a policy trained on `top` must never be fed `oblique`;
+3. `<name>.usb_id`: the lowest-numbered `VIDEO_CAPTURE` node whose USB `vendor:product` matches,
+   reported through its by-id link when udev made one. Enumeration is sysfs plus one read-only
+   `VIDIOC_QUERYCAP`; it never streams. Because the id comes from the config, discovery can only
+   match the device the config already declares. For the Ego's stereo pair the first capture node
+   is the **left** stream, which is what `oblique` is (D-009).
+
+Everything that means "there is no camera to read" — unconfigured, absent, busy, silent, closed —
+raises `CameraUnavailable`, never a bare `OSError`, so a read-only check can skip instead of fail.
+Tests that want a real device are marked `readonly` and skip with a reason naming the device or the
+config key that would supply one.
+
+**No depth.** `V4L2Camera(name, depth=True)` raises `NotImplementedError` naming `pyorbbecsdk`
+(D-009, docs/sdks.md 8.2): the Ego is a UVC stereo pair here and `oblique` is its left RGB stream.
+
+**The read-only stream check.** `tools/hardware_checks/stream_stats.py` streams one camera for N
+seconds and reports achieved fps, drops (gaps longer than 1.5 nominal periods) and inter-frame
+jitter p50/p99 — the Phase 1 "stream every device and report drop rates and jitter" check:
+
+```
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --camera oblique --seconds 10 --warmup 15
+```
+
+`--backend mock` needs no hardware and exits 0 with nothing plugged in; `--json` emits the same
+report as a dict. Exit 3 means there was no camera to read.
 
 ## Phase 1: writing a real driver
 
