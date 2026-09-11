@@ -1126,7 +1126,7 @@ acceptance:
   - tests pass with the printed rate, error and timings; full suite green; ruff clean
 notes: No hardware; the real pose/glove/arm/hand drivers arrive in Phase 1 and slot into the same constructor. This is the
   path that will produce every training episode, so keep it small and obviously correct (under 250 lines).
-result: (opus, 2026-09-13T14:40+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-13T14:40+07:00, commit db2b922)
   - `.venv/bin/python -m pytest tests/test_teleop_loop.py -q` -> 14 passed. `.venv/bin/python -m pytest -q` ->
     465 passed, 4 skipped (451 before). `.venv/bin/ruff check .` -> "All checks passed!". PASS
   - 30 s run on mocks, fake clock: 901 ticks in 30.033 s = 30.000 Hz (budget 30 +/- 0.5), 901 admitted,

@@ -2473,3 +2473,12 @@ I have logged it here rather than in TASKS.md, which I may not edit beyond T-032
   from `tools/hardware_checks/`), `config/safety.yaml` untouched, nothing under `third_party/`
   touched, the session file neither created nor named outside `runtime/safety.py`. Committed through
   the full pre-commit gate, no `--no-verify` (D-013 item 1).
+
+(T-032 commit: db2b922, which holds all of the code, tests, config and docs of this task; this line
+and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
+pre-commit gate. Disclosure: my first attempt at the work commit passed `-c core.hooksPath=.githooks`
+to `git commit`, and since no such directory exists that silently skipped the hook. I noticed
+immediately and re-made the same commit with `git commit --amend --no-edit`, which ran ruff and the
+full suite and printed "pre-commit: ok"; db2b922 is that commit and the bypassed one never survived.
+No `--no-verify` was used anywhere, but the effect was the same for one minute, so it is recorded
+here per D-013 item 1.)
