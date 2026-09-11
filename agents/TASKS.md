@@ -291,7 +291,7 @@ result: (opus, 2026-09-11T22:55+07:00, commit 5cab3e6, branch wt/t007)
   - Not mine, reported: tests/test_greennode_local.py::test_greennode_local_round_trip flakes ~1 in 6 full-suite runs on a `state=starting` vs `running` race in T-009's shell test.
 
 ## T-008  Board calibration from AprilTags and a Brio still
-status: in_progress
+status: review
 priority: P1
 phase: 0
 owner: opus
@@ -307,6 +307,32 @@ acceptance:
   - synthetic test with 15 degrees of in-plane rotation and a mild perspective tilt passes the same bound
   - CLI on a real still (data/calib/board_empty.png, H-001) prints four tag ids and the error; if the still is not available yet, say so in BUILD_LOG.md and leave H-001 open; the synthetic tests are the acceptance for this cycle
 notes: `top` observation crop and the goal heatmaps depend on this frame; never apply geometric augmentation to it later (5.7).
+result: (opus, 2026-09-11T20:05+07:00, commit 63d998f)
+  - Detector recorded: OpenCV `cv2.aruco` + `getPredefinedDictionary(DICT_APRILTAG_36h11)` with
+    CORNER_REFINE_SUBPIX. pupil-apriltags NOT used and NOT added: opencv-python 5.0.0 already ships the
+    36h11 dictionary (bytesList.shape == (587, 5, 4)). No dependency added.
+  - Acceptance 1, `test_synthetic_board_recovers_every_cell_centre[translation]`: reprojection rms
+    0.1202 px (bound < 0.5), worst of all 88 cell centres 0.0079 px, mean 0.0046 px (bound < 1.0). PASS
+  - Acceptance 2, `[rot15_tilt]` (15 deg in-plane + projective tilt ~7% across, image 1737x1716):
+    rms 0.2312 px, max corner 0.3206 px, worst cell 0.0541 px, mean 0.0313 px. Same bounds. PASS
+  - Acceptance 3: NOT MET, no hardware. `tools/hardware_checks/list_devices.py` shows no Logitech
+    (046d) device -- four SunplusIT webcam nodes and two Orbbec Ego nodes only -- and
+    data/calib/board_empty.png does not exist. H-001 left OPEN and unedited; its post-check command is
+    exactly the delivered CLI, so nothing in it changed. The CLI was exercised on a synthetic still
+    instead: printed the four tag ids, `rms 0.231 px, max 0.321 px (16 tag corners)`, the board bbox,
+    a WARNING naming the placeholder tag geometry, exit 0. No config/board_calib.yaml is committed
+    (the synthetic ones went to the scratchpad; `ls config/` is unchanged at six files).
+  - `.venv/bin/ruff check .` -> All checks passed!  `.venv/bin/python -m pytest -q` -> 246 passed,
+    1 skipped (225 passed before T-008; +21 in tests/test_calibration.py).
+  - Deviation logged in BUILD_LOG.md: `config/board.yaml` `apriltags` block edited (outside the file
+    list I was given) because the task's design guidance required adding `tag_inset_mm` there and the
+    block held no family/size/ids to detect with. All Form-2 placeholders (value + `_status:
+    UNMEASURED`): tag36h11, 40.0 mm, ids 0..3, tag_inset_mm 10.0. `unmeasured("board")` still reports
+    all five and both the CLI and the written yaml name them. config/safety.yaml untouched.
+  - Found by measurement: the first synthetic run passed at 0.715 px/cell but with a constant
+    sqrt(0.5) = 0.707 px bias from a numpy-index vs OpenCV-pixel-centre half pixel in my ground truth
+    (not in the code). Fixed in the test, which now also guards at 0.25 px so such a bias cannot hide
+    under the 1.0 px bound again.
 
 ## T-009  cloud/greennode.sh with a local fake transport
 status: accepted

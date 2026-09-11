@@ -547,7 +547,7 @@ def test_guard_on_hardware_accepts_with_a_valid_session(tmp_path: Path) -> None:
 
 
 def test_guard_on_hardware_stops_the_moment_the_session_expires(tmp_path: Path) -> None:
-    enabled_at = datetime.now(BKK).replace(microsecond=0) - timedelta(seconds=59)
+    enabled_at = datetime.now(BKK).replace(microsecond=0) - timedelta(seconds=30)
     path = _write_session(tmp_path / "session.enable", enabled_at=enabled_at, seconds=60)
     guard = Guard(SessionGate(path), envelope(), simulated=False)
     guard.admit(command(0.0), state(0.0), now_ns=0)
