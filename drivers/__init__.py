@@ -12,12 +12,14 @@ cam = make("top", backend="mock")
 ```
 
 ``backend="real"`` gives a :class:`drivers.cameras.V4L2Camera` for ``top`` and ``oblique`` (T-010), a
-:class:`drivers.g1_arm.G1Arm` for ``arm`` (T-018), a :class:`drivers.dexh15.DexH15` for ``hand`` and
-a :class:`drivers.dexh15.PalmCamera` for ``palm`` (T-019, the palm camera belongs to the hand's SDK),
+:class:`drivers.g1_arm.G1Arm` for ``arm`` (T-018), a :class:`drivers.dexh15.DexH15` for ``hand``, a
+:class:`drivers.dexh15.PalmCamera` for ``palm`` (T-019, the palm camera belongs to the hand's SDK), a
+:class:`drivers.pxcap.PxCap` for ``glove`` and a :class:`drivers.pico.Pico` for ``pose`` (T-020),
 all read-only and needing no session, and raises :class:`NotImplementedError` for the devices whose
 drivers do not exist yet. Only ``drivers/mock`` builds a guard with ``simulated=True``; the real
 drivers will build theirs with the session gate live (R1) -- neither ``G1Arm`` (until T-021) nor
-``DexH15`` (until T-022) has a writer at all, so they build none.
+``DexH15`` (until T-022) has a writer at all, and the glove and the controller are input devices with
+no write call in their protocols, so none of them builds one.
 """
 
 from __future__ import annotations
@@ -48,11 +50,15 @@ def make(name: str, backend: str = "mock", **kwargs: Any) -> Any:
     nanoseconds) and ``config_root=``; :class:`drivers.cameras.V4L2Camera` takes those plus
     ``device=``; :class:`drivers.g1_arm.G1Arm` takes those plus ``subscriber_factory=`` and
     ``timeout_s=``; :class:`drivers.dexh15.DexH15` takes those plus ``control_factory=``,
-    ``camera_factory=`` and ``port=``. Raises ``ValueError`` for an unknown name or backend,
-    ``NotImplementedError`` for ``backend="real"`` on a device whose driver does not exist yet,
-    :class:`drivers.cameras.CameraUnavailable` for a real camera that is absent,
-    :class:`drivers.g1_arm.ArmUnavailable` for a real arm whose state stream is not there and
-    :class:`drivers.dexh15.HandUnavailable` for a real hand that is not on the bus.
+    ``camera_factory=`` and ``port=``; :class:`drivers.pxcap.PxCap` takes those plus
+    ``session_factory=``, ``port=`` and ``route=``; :class:`drivers.pico.Pico` takes those plus
+    ``bridge_factory=``, ``timeout_s=`` and ``side=``. Raises ``ValueError`` for an unknown name or
+    backend, ``NotImplementedError`` for ``backend="real"`` on a device whose driver does not exist
+    yet, :class:`drivers.cameras.CameraUnavailable` for a real camera that is absent,
+    :class:`drivers.g1_arm.ArmUnavailable` for a real arm whose state stream is not there,
+    :class:`drivers.dexh15.HandUnavailable` for a real hand that is not on the bus,
+    :class:`drivers.pxcap.GloveUnavailable` for a real glove that is not answering and
+    :class:`drivers.pico.PoseUnavailable` for a real controller whose frames are not arriving.
     """
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r}; known backends: {', '.join(BACKENDS)}")
@@ -80,6 +86,16 @@ def make(name: str, backend: str = "mock", **kwargs: Any) -> Any:
             from drivers.dexh15 import DexH15
 
             return DexH15(**kwargs)
+        if name == "glove":
+            # Input device: the glove driver streams encoder angles and has no write call at all.
+            from drivers.pxcap import PxCap
+
+            return PxCap(**kwargs)
+        if name == "pose":
+            # Input device: the pose driver receives PicoBridge frames and has no write call at all.
+            from drivers.pico import Pico
+
+            return Pico(**kwargs)
         raise NotImplementedError(
             f"the real {name!r} driver does not exist yet (Phase 1, CLAUDE.md section 6); use backend='mock'"
         )

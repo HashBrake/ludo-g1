@@ -186,12 +186,19 @@ def test_depth_request_names_the_missing_package() -> None:
     assert "pyorbbecsdk" in str(exc.value)
 
 
-def test_the_factory_still_refuses_the_actuated_devices() -> None:
-    # `arm` left this list in T-018 and `hand` in T-019: both have a real, read-only driver now
-    # (tests/test_g1_arm.py, tests/test_dexh15.py).
+def test_the_factory_refuses_no_device_for_want_of_a_driver() -> None:
+    # `arm` left this list in T-018, `hand` in T-019, and `glove` and `pose` in T-020: all four have
+    # a real, read-only driver now (tests/test_g1_arm.py, test_dexh15.py, test_pxcap.py,
+    # test_pico.py). An absent device raises its own Unavailable, never NotImplementedError.
+    from drivers.pico import PoseUnavailable
+    from drivers.pxcap import GloveUnavailable
+
     for name in ("glove", "pose"):
-        with pytest.raises(NotImplementedError):
-            make(name, backend="real")
+        try:
+            driver = make(name, backend="real")
+        except (GloveUnavailable, PoseUnavailable):
+            continue  # not attached; the device's own test file covers that path
+        driver.close()
 
 
 def test_the_factory_reports_an_absent_camera_as_unavailable() -> None:

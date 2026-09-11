@@ -27,6 +27,18 @@ Assumption meanwhile: the checklist says "e-stop within reach" without naming it
 third_party/pxcap_pro_sdk.md documents a pxhandsdk .deb with `from pxhandsdk import pxcappro`, but only the PyInstaller
 teleop bundle is present. Do you have the .deb, or should the glove be read through the bundle's Python runtime?
 Assumption meanwhile: Opus inventories the bundle and reports which route works read-only.
+EVIDENCE (opus, T-020, 2026-09-12T05:20+07:00): route (b), the bundle's own cp310 binding imported IN THIS PROCESS, WORKS
+with no glove attached and no subprocess. The extension is cpython-310-x86_64-linux-gnu, the same ABI as our venv; its
+RPATH ($ORIGIN/../../../pxhandsdk) points at a directory the bundle does not have, so drivers/pxcap.py preloads
+_internal/sdk_bridge/_internal/libpxcappro_sdk.so.1 with ctypes.CDLL(RTLD_GLOBAL) and then puts the dist-packages dir on
+sys.path. Verified: `.venv/bin/python -c "from drivers.pxcap import load_binding; g = load_binding('bundle').PxCapPro();
+print(g.get_sdk_version()); print(g.get_encoder_angles()[0])"` -> `(0, '1.0.8 20260806 17:08')` and `106`
+("device is not connected"). PxCapProCollectionData carries joint_angles/encoder_raw (17 values each) and both host
+timestamps, as the manual says. Nothing under third_party/ was modified. Route (c), shelling out to
+`pxcap_pro_local --diagnose`, is NOT taken (docs/drivers.md says why). drivers/pxcap.py still tries `from pxhandsdk import
+pxcappro` FIRST, so supplying the deb switches routes with no code change and is still worth doing: it would drop the
+dependency on a vendored binary tree. Nothing about the device side (connect, rate, channel order) is verified: the glove
+has never been plugged in (H-004).
 
 ## Q-006  Horse arrow orientation  (fable, 2026-09-11T18:35+07:00)  OPEN
 Assumed the engine does not care about the arrow direction on a horse. Confirm with the engine team.

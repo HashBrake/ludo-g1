@@ -822,7 +822,7 @@ result: (opus, 2026-09-12, branch wt/t019, commit 4503254; hash recorded by the 
     make("hand", backend="real") no longer raises NotImplementedError.
 
 ## T-020  Glove and controller pose drivers, read-only, 10-minute stream stats
-status: in_progress
+status: review
 priority: P0
 phase: 1
 owner: opus
@@ -841,6 +841,34 @@ acceptance:
   - without: suite green, tests skipped naming the device
 notes: The headset must run the PicoBridge app and reach this laptop; the network path from the lab's prior setup is in
   third_party/g1_pico_teleop/README.md section 3.3 (robot NAT). Record what was needed in docs/drivers.md.
+result: (opus, 2026-09-12, branch wt/t020, commit COMMIT_HASH). NEITHER device was reached: the glove has never been
+  plugged into this laptop and the headset is not on the network (H-004, new).
+  - suite: see the commit's pre-commit run (ruff check . + pytest -q, no --no-verify). tests/test_pxcap.py alone
+    34 passed, 2 skipped; tests/test_pico.py alone 22 passed, 2 skipped. ruff clean on every file touched.
+  - the 4 new skips name the device: "no PxCap Pro glove: config/hand.yaml glove.port is UNMEASURED and glove.usb_id
+    gives nothing to discover /dev/ttyUSB*, /dev/ttyACM* with ... (H-004)" (2) and "no PicoBridge receiver: the
+    PicoBridge receiver could not start on 0.0.0.0:63901 ... (H-004)" (2). --backend real exits 3 with the same reasons.
+  - Q-005 ANSWERED on the host side: the bundle's cp310 pxcappro binding loads IN-PROCESS in our venv with no glove
+    attached -- `load_binding('bundle').PxCapPro().get_sdk_version()` -> (0, '1.0.8 20260806 17:08'), a read with no
+    device -> 106. It needs a ctypes RTLD_GLOBAL preload of libpxcappro_sdk.so.1 because the extension's RPATH is wrong.
+    The pxhandsdk deb is still not installed and is still tried first. Nothing under third_party/ modified.
+  - new finding: TCP 63901 is held on this laptop by the systemd user unit holosim-pcservice (RoboticsService, pid 2448),
+    so PicoBridge cannot bind. H-004 (b1) is `systemctl --user stop holosim-pcservice`.
+  - mock statistics (the tool's own path, not a device): --stream glove 60 s -> 3000 frames, 50.000 Hz, 0 drops, jitter
+    p50/p99/max 0.0 ms; --stream pose 60 s -> 7200 frames, 120.000 Hz, 0 drops, jitter 0.0 ms.
+  - acceptance 1 (devices present) is OPEN and H-004 is OPEN: no 10-minute statistics for either stream, no A4 verdict
+    written (docs/sdks.md untouched, R5), teleop.pico.input_hz still UNMEASURED. H-004's post-check carries the four
+    commands that produce those numbers and the two config keys that must be filled first.
+  - deviations logged in BUILD_LOG.md: (1) Pico.read() does NOT apply pico_to_g1_base, because teleop/loop.py:255
+    already does and applying it twice would be wrong once Phase 1 calibrates it; read_in_pelvis_frame() is the map.
+    (2) drivers/pxcap.py is 483 lines (not under 250). (3) four files outside the touch list: tests/test_cameras.py and
+    tests/test_mock_drivers.py needed the same list edit T-018 and T-019 made, because make("glove"|"pose",
+    backend="real") no longer raises NotImplementedError; and teleop/loop.py + its test needed a real fix, because
+    main() caught only NotImplementedError around build() and would now have crashed on PoseUnavailable instead of
+    exiting 2 (build() is also all-or-nothing now, so a half-built real loop leaves no bound port behind).
+  - one pre-existing flake seen under load: tests/test_train.py::test_small_config_latency_at_ddim_10_and_5 asserts
+    median(DDIM 5) < median(DDIM 10) on wall-clock latency and failed while the other builder's suite ran concurrently;
+    alone it passes (76 ms vs 55 ms, budget 100 ms). Nothing in T-020 touches policy/.
 
 ## T-021  G1 arm write path over rt/arm_sdk with ramped weight; actuation latency measurement
 status: todo

@@ -32,6 +32,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -334,11 +335,25 @@ class TeleopLoop:
 
 
 def build(backend: str = "mock", **kwargs) -> TeleopLoop:
-    """Wire a loop onto one backend. ``backend="real"`` raises from :func:`drivers.make` (Phase 1)."""
+    """Wire a loop onto one backend. It either returns a loop or leaves nothing open.
+
+    On ``backend="real"`` any of the six devices can be absent, and the first one that is raises its
+    own ``*Unavailable`` (or ``NotImplementedError`` for a driver that does not exist yet). The ones
+    already built are closed before that propagates, so a half-built loop never leaves a camera, a
+    DDS participant or a bound TCP port behind.
+    """
     from drivers import make
 
     passthrough = {k: kwargs.pop(k) for k in ("config_root", "now_ns") if kwargs.get(k) is not None}
-    made = {n: make(n, backend, **passthrough) for n in ("pose", "glove", "arm", "hand", "top", "oblique")}
+    made: dict[str, Any] = {}
+    try:
+        for name in ("pose", "glove", "arm", "hand", "top", "oblique"):
+            made[name] = make(name, backend, **passthrough)
+    except Exception:
+        for driver in made.values():
+            if hasattr(driver, "close"):
+                driver.close()
+        raise
     return TeleopLoop(pose_driver=made["pose"], glove_driver=made["glove"], arm=made["arm"], hand=made["hand"],
                       cameras={n: made[n] for n in ("top", "oblique")}, **passthrough, **kwargs)
 
@@ -353,7 +368,11 @@ def main(argv: list[str] | None = None) -> int:
     configure(json=args.json_logs)
     try:
         loop = build(args.backend)
-    except NotImplementedError as exc:
+    except RuntimeError as exc:
+        # A device that is not there is the normal answer on this laptop, not a crash: every driver
+        # reports it as its own RuntimeError subclass (CameraUnavailable, ArmUnavailable,
+        # HandUnavailable, GloveUnavailable, PoseUnavailable), and NotImplementedError -- what
+        # drivers.make raises for a driver that does not exist yet -- is a RuntimeError too.
         print(f"cannot run on backend {args.backend!r}: {exc}")
         return 2
     stats = loop.run(args.seconds)

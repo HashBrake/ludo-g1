@@ -16,7 +16,8 @@ make("oblique", backend="real")      # a real V4L2 camera (T-010); read-only, no
 make("arm", backend="real")          # the real G1 state stream (T-018); read-only, no session
 make("hand", backend="real")         # the real DexH15 (T-019); read-only, no session
 make("palm", backend="real")         # the DexH15's own palm camera (T-019)
-make("glove", backend="real")        # NotImplementedError until its Phase 1 driver exists
+make("glove", backend="real")        # the real PxCap Pro glove (T-020); read-only, no session
+make("pose", backend="real")         # the real Pico controller pose (T-020); read-only, no session
 ```
 
 Three facts hold for every driver, real or mock:
@@ -34,8 +35,8 @@ Three facts hold for every driver, real or mock:
 |---|---|---|---|
 | `ArmDriver` | `read_state() -> Stamped[RobotState]` | `send_targets(cmd) -> MotionCommand` | `drivers/g1_arm.py`, `rt/lowstate` **(read half exists, T-018)**; the write path is T-021 (D-007) |
 | `HandDriver` | `read_state() -> Stamped[HandState]`, `palm_frame() -> Stamped[ndarray]` | `send_pinch(scalar) -> ndarray` (15 targets) | `drivers/dexh15.py`, Paxini SDK **(read half exists, T-019)**; the write path is T-022 |
-| `GloveDriver` | `read() -> Stamped[GloveSample]` | — | `drivers/pxcap.py`, PxCap Pro |
-| `PoseDriver` | `read() -> Stamped[WristPose]` | — | `drivers/pico.py`, pico_bridge |
+| `GloveDriver` | `read() -> Stamped[GloveSample]` | — (input device) | `drivers/pxcap.py`, PxCap Pro **(exists, T-020)** |
+| `PoseDriver` | `read() -> Stamped[WristPose]` | — (input device) | `drivers/pico.py`, pico_bridge **(exists, T-020)** |
 | `CameraDriver` | `grab() -> Stamped[ndarray]` | — | `drivers/cameras.py`, V4L2 **(exists, T-010)**; `palm` is `drivers/dexh15.py`'s `PalmCamera` **(T-019)** |
 
 The sample types are `RobotState` and `MotionCommand` from `runtime/types.py` (the 9 numbers of
@@ -297,6 +298,134 @@ the same `drivers.cameras.resolve_device` as the other streams, so an absent or 
 raises `CameraUnavailable` naming `palm.device`. `DexH15.palm_frame()` builds one **lazily**, on the
 first call, and closes it with the hand. `make("palm", backend="real")` and `stream_stats --camera
 palm --backend real` both go through it.
+
+
+## The real glove (`drivers/pxcap.py`)
+
+`PxCap` is a `GloveDriver`: it streams the PxCap Pro's 17 magnetic-encoder angles, in degrees, in
+`config/hand.yaml` `glove.encoder_channels` order. The glove is an **input device** — the protocol
+has no write call — and this module goes further than the hand's: it never names one of the SDK's
+writing verbs at all (`set_encoder_calibration`, `set_sensor_calibration`, `set_sn`,
+`set_static_magnet_check`, `set_upgrade_*`, `upgrade_firmware`), each of which changes the device's
+persistent state. A test greps for all seven and requires zero hits. Reading needs no session
+(R1, CLAUDE.md 4.6).
+
+```python
+from drivers.pxcap import PxCap, GloveUnavailable
+
+with PxCap() as glove:
+    print(glove.probe())              # SN, firmware, SDK version, the measured frame rate
+    sample = glove.read()             # Stamped(ts_ns, GloveSample) - 17 degrees + the pinch scalar
+    frame  = glove.full_state()       # + the raw encoder counts and the SDK's own host stamps
+    batch  = glove.poll()             # every frame since the last poll, oldest first
+```
+
+- **It is a stream, not a poll.** `start_collection(frequency_hz, callback)` pushes complete frames
+  from the SDK's own thread at `config/hand.yaml` `glove.input_hz` (50); the callback stamps with
+  `runtime.clock.now_ns` and queues, so `poll()` reports arrival times and a slow consumer cannot
+  invent a drop. `stream_stats.py --stream glove` therefore *drains*, like the arm.
+- **Two timestamps.** The SDK's `timestamp_monotonic_ns` is kept in `GloveFrame` beside our stamp,
+  never instead of it: the manual says it is host frame-availability time, not device sample time
+  (`third_party/pxcap_pro_sdk.md:62`), so the difference between the two is glove path latency, a
+  Phase 1 measurement. Frames are copied inside the callback, as the SDK requires.
+- **Identity before the stream.** While a collection runs, the SDK refuses its other calls with
+  `4000`, so SDK version, SN and firmware are read once at connect time.
+- **`GloveSample.pinch` is `nan` until the glove is calibrated.** The scalar is the thumb-to-index
+  tip *distance* through `teleop.retarget.pinch_from_glove`, and the glove reports *angles*; the
+  conversion needs a hand model. `config/hand.yaml` `glove.pinch_distance` holds the simplest model
+  a bench calibration can actually fit (affine in the two tip channels) and all three coefficients
+  are `UNMEASURED`, so `PxCap.pinch_measurable` is False and both `tip_distance_m` and the scalar
+  are `nan` — not `0.0`, which would read as "the hand is open". The 17 raw angles are recorded
+  either way (CLAUDE.md 5.4, 5.6).
+- **The channel count is checked, not assumed.** `glove.encoder_channels` is a hypothesis taken from
+  the Paxini teleop bundle's slot list (`encoder_channels_status: UNMEASURED`), so a frame whose
+  length disagrees raises rather than being reshaped.
+- **Device discovery** is the hand's, on serial nodes: an explicit `port=`, then `glove.port` (a
+  `/dev/serial/by-id/...` path), then the lowest-numbered `/dev/ttyUSB*` or `/dev/ttyACM*` node whose
+  USB `vendor:product` matches `glove.usb_id`. Both are `UNMEASURED`: the glove has never been
+  plugged into this laptop (agents/HARDWARE_NEEDED.md H-004), and unlike the DexH15 nothing in the
+  delivery names its VID:PID. Anything absent raises `GloveUnavailable`, so a read-only check skips.
+
+### Which binding, and what was actually verified (Q-005)
+
+`load_binding(route)` tries two routes, in this order, and `default_session()` builds a `PxCapPro`
+from whichever answered:
+
+| Route | What it is | Verified? |
+|---|---|---|
+| `pxhandsdk` | `from pxhandsdk import pxcappro`, the Debian package of `third_party/pxcap_pro_sdk.md:72` | **No.** The deb is not in the repo and is not installed (`/usr/lib/pxhandsdk` does not exist). Prefer it once Alois supplies it: it needs nothing from a vendored binary tree. |
+| `bundle` | The PyInstaller bundle's own cp310 extension, imported **in this process** | **Yes, today, with no glove attached.** |
+
+The bundled route works because the extension is `cpython-310-x86_64-linux-gnu`, the same ABI as this
+venv. Its `RPATH` (`$ORIGIN/../../../pxhandsdk`) points at a directory the bundle does not have, so
+`load_binding` preloads `BUNDLE_LIBRARY` with `ctypes.CDLL(..., RTLD_GLOBAL)` and only then puts
+`BUNDLE_BINDING` on `sys.path` — no `LD_LIBRARY_PATH`, which cannot be set after the process starts,
+and no subprocess. Reproduce it with:
+
+```bash
+.venv/bin/python -c "from drivers.pxcap import load_binding; px = load_binding('bundle'); \
+    g = px.PxCapPro(); print(g.get_sdk_version()); print(g.get_encoder_angles()[0])"
+# (0, '1.0.8 20260806 17:08')
+# 106      <- "device is not connected": a read with nothing plugged in fails, it invents no frame
+```
+
+Nothing under `third_party/` is modified or written to. What is **not** verified, because it needs
+the glove: that `connect_device` succeeds on a real node, the collection callback's exact argument,
+the achieved rate, and the channel order. `tests/test_pxcap.py` pins the fake to the real API by
+loading this binding in a subprocess (kept out of the pytest process, where the DexH15 SDK's own
+libraries also live) and comparing attribute names.
+
+A third route exists and is **not** taken: shelling out to `pxcap_pro_local --once --diagnose`
+(`third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/README.md:71`), which reads the glove and sends
+nothing. It was never run (no glove), it would mean parsing a human-readable stdout, it gives one
+frame per process for `--once` and an unstructured stream otherwise, and it cannot carry the SDK's
+host timestamps through. The in-process binding is strictly better on every count.
+
+## The real controller pose (`drivers/pico.py`)
+
+`Pico` is a `PoseDriver`: it runs `pico_bridge.PicoBridge` — the receiving half of the headset's
+PicoBridge app — and hands over `latest_frame().controllers.left.pose` as a `WristPose`, in metres
+and **xyzw**, in the headset's own `pico_native` frame, unchanged. It creates no writer of any kind
+and needs no session (R1, R2).
+
+```python
+from drivers.pico import Pico, PoseUnavailable
+
+with Pico() as pico:
+    print(pico.probe())               # headset SN, frame count, measured rate vs the bridge's own
+    sample = pico.read()              # Stamped(ts_ns, WristPose) in pico_bridge's frame and units
+    pelvis = pico.read_in_pelvis_frame()   # the same pose through teleop.retarget.pico_to_g1_base
+```
+
+- **One field of the frame.** D-006 is why: the body skeleton, the ankle trackers, GMR and the RL
+  policy all left the critical path, and the controller pose in the glove jig is the whole input.
+- **The frame transform is not applied by default.** `teleop/loop.py` already calls
+  `pico_to_g1_base` on what `read()` returns, so applying it here too would apply it twice — today
+  harmlessly (it is an `UNMEASURED` identity), and wrongly the moment Phase 1 calibrates it.
+  `read_in_pelvis_frame()` is that same map for a diagnostic that wants pelvis-frame numbers.
+- **One stamp per `seq`.** The store is latest-wins, so re-reading the same frame returns the *same*
+  `Stamped`: a rate check counts frames, not polls. `PicoFrame.timestamp_ns` is the headset's own
+  clock and is not comparable with ours, so `probe()` reports it and nothing uses it as a timestamp.
+- **Unavailability.** No frame within `teleop.pico.frame_timeout_s`, a frame with no controller pose
+  (controller off or not tracked), a newest frame older than the timeout, a receiver that cannot
+  bind, or a closed driver all raise `PoseUnavailable` naming `bind_host:port`.
+
+### Getting the headset to this laptop
+
+The headset dials **this laptop** on TCP `teleop.pico.port` (63901). Two things regularly stop that,
+both already paid for in lab time:
+
+1. **Something else is already on 63901.** On this laptop, right now, the systemd *user* unit
+   `holosim-pcservice` (`/opt/apps/roboticsservice/RoboticsServiceProcess`, the XRoboToolkit PC
+   service left over from the previous stack) holds it, and `PicoBridge.start()` fails with
+   `address already in use`. `systemctl --user stop holosim-pcservice` frees it.
+2. **Discovery does not cross the robot's NAT.** pico_bridge broadcasts from the laptop; when the
+   headset is on the Orin's `g1-teleop` AP it cannot hear it, which is why the lab runs a relay on
+   the Orin rebroadcasting `192.168.123.2|63901`
+   (`third_party/g1_pico_teleop/README.md` 3.3). If instead the headset and the laptop share one
+   ordinary Wi-Fi, discovery works unaided and no relay is needed. LUDO-G1 has no reason to prefer
+   the robot-NAT path — the robot is on a rig and the headset carries no body stream here — so
+   `teleop.pico.advertise_ip` stays `UNMEASURED` until a human picks one (H-004).
 
 
 ## Phase 1: writing a real driver
