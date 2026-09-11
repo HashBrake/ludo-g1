@@ -2071,3 +2071,8 @@ exhausted engine leaves the UI inert under every key, a duplicated key binding i
 - R1-R6 intact: no motion command (the mocks' guard admits with `simulated=True`, and the UI itself sends
   nothing), no scripted motion in `teleop/` or `runtime/`, `config/safety.yaml` untouched, nothing under
   `third_party/` touched, `hardware/session.enable` never created (still absent, still git-ignored).
+
+(T-025 commit: 2678a17; this line and the TASKS.md result hash are the only content of the follow-up commit,
+which ran the full pre-commit gate — no `--no-verify`, per D-013.)
+(Noted in passing, not fixed because this task may only touch the T-025 lines: T-016's `result:` block in
+TASKS.md still reads `commit: COMMIT_HASH` — a bookkeeping slip from that task, like the T-001 status one.)

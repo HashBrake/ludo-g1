@@ -889,7 +889,7 @@ acceptance:
   - tests pass; a 30 s headless mock session records 2 episodes with correct metadata (command in BUILD_LOG.md)
 notes: No hardware. The real teleop loop (input drivers -> IK -> Guard -> arm) is wired in Phase 2 after T-020/T-021.
 result:
-  commit: COMMIT_HASH
+  commit: 2678a17
   tests: 402 passed, 4 skipped (`.venv/bin/python -m pytest -q`, 78.1 s; was 391 passed). 11 new in
     tests/test_operator_ui.py. ruff: `.venv/bin/ruff check .` clean.
   30 s headless mock session (`.venv/bin/python -m pytest tests/test_operator_ui.py -q -s`, stub seed 2,
