@@ -2856,3 +2856,6 @@ travels intact. The mock session is recorded fresh (two episodes, MOVE + ROLL, 2
   and it passed in the full run above). Nothing under `third_party/` touched, `config/safety.yaml`
   untouched, no motion command anywhere in this task (R1-R6 intact). Committed through the full
   pre-commit gate, no `--no-verify` (D-013 item 1).
+
+T-031 work commit: 2be999e (this hash record is the follow-up commit, as T-029 and T-033 did; amending
+would have invalidated the hash it records -- D-013 item 1, no `--no-verify` either way).

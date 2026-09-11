@@ -1138,7 +1138,7 @@ acceptance:
     STATE.md as the Phase 3 gate
 notes: No credentials in git.
 
-result: (opus, 2026-09-12T03:20+07:00, commit HASH_PENDING)
+result: (opus, 2026-09-12T03:20+07:00, commit 2be999e)
   - local-transport end to end: `up` -> `train policy/train.py --sessions data/raw/<mock> --smoke` -> `down`, in
     tests/test_greennode_train.py (6 tests, 31.4 s). The job exits 0 after ~27 s, 24 frames, 38.4 M parameters at the
     test scale; the returned run.json carries dataset_manifest_sha256 776b5083... and all six config hashes, and its
