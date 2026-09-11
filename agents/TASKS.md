@@ -108,7 +108,7 @@ acceptance:
   - `shift` by a known delta then `align` recovers the original pairing (test)
   - `now_ns` is monotonic across 10000 calls (test)
 notes: Keep it small; no threads here. Latency values come from config/robot.yaml later (T-003); clock only provides the mechanism.
-result: (opus, 2026-09-11T19:20+07:00, commit HASH_PENDING; branch wt/t004)
+result: (opus, 2026-09-11T19:20+07:00, commit 956147a; branch wt/t004)
   - acceptance 1, `.venv/bin/python -m pytest -q tests/test_clock.py -s`:
     "skew over 1800 aligned frames (60 s @ 30 Hz, seed 20260911): p50 = 2.982 ms, p99 = 6.701 ms, max = 7.799 ms".
     30 Hz + 100 Hz streams, 2 ms gaussian jitter, 60 s, aligned on the nominal 30 Hz grid with a 10 ms

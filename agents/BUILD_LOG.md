@@ -153,3 +153,4 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
   adjacent pairs would otherwise invert, and a real driver stamps on arrival, so the buffer's
   non-decreasing invariant is the honest model. Stated in the test docstring and in docs/clock.md.
 - No hardware, no motion command, no blockers. No disagreement with the task as written.
+(T-004 clock commit: 956147a; this line and the TASKS.md result hash are the only content of the follow-up commit.)
