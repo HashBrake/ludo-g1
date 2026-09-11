@@ -671,7 +671,7 @@ acceptance:
     data/logs/ and a printed summary of commands executed and outcomes (command and output in BUILD_LOG.md)
 notes: No learned policy exists yet; HoldPolicy exists only so the orchestration can be tested. No scripted trajectories anywhere.
 result:
-  commit: dd3368c
+  commit: 5f84310
   tests: 352 passed, 1 skipped (`.venv/bin/python -m pytest -q`; was 327+1). 25 new in tests/test_controller.py.
   ruff: `.venv/bin/ruff check .` clean.
   loop rate (fake clock, the criterion): policy_hz 9.98 Hz over a full 20.03 s MOVE (201 calls), action_hz 29.9;
@@ -905,7 +905,7 @@ acceptance:
     goal overlay pixels differ from the raw frame
 notes: Section 8 audit tool; keep it dependency-free beyond opencv and numpy.
 result:
-  commit: dd3368c
+  commit: 5f84310
   tools/dataset_view.py (249 lines) + tests/test_dataset_view.py (8 tests) + a docs/teleop.md section.
   CLI: `python -m tools.dataset_view SESSION_ROOT [--episodes 0,3] [--out DIR]`; prints the dataset card
     (README.md) to stdout, writes episode_nnnnnn.png to SESSION_ROOT/strips/ (or --out).

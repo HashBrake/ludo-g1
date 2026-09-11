@@ -2055,5 +2055,7 @@ The full-resolution strip was rendered and looked at (scratchpad, not committed:
   `config/safety.yaml` untouched, nothing under `third_party/` touched, `hardware/session.enable`
   never created. Committed through the full pre-commit gate, no `--no-verify` (D-013).
 
-(T-026 commit: dd3368c. The hash was written into this line and the TASKS.md `result:` block by
-amending that same commit before any push, per D-013 item 1; the full pre-commit gate ran on both.)
+(T-026 commit: 5f84310, the commit that holds all the code, tests and docs of this task. This line
+and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
+pre-commit gate — no `--no-verify`, per D-013 item 1. Amending could not be used to fold the hash in:
+the amend changes the hash it is trying to record.)
