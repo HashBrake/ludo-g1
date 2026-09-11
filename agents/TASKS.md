@@ -1474,7 +1474,7 @@ acceptance:
 notes: Disk is 12 GB free; every test writes under tmp_path and deletes weights.
 
 ## T-037  Progress watchdog and per-trial failure logging in the controller (CLAUDE.md Phase 5 hardening, on mocks)
-status: in_progress
+status: review
 priority: P1
 phase: 5
 owner: opus
@@ -1495,6 +1495,39 @@ acceptance:
   - tests pass; `eval.run_eval --backend mock --kind move --n 5 --policy hold` now reports policy_stalled (command and output
     in BUILD_LOG.md)
 notes: R2: the hold on halt is the measured state, not a pose. Keep the watchdog inside controller.py's tick, no threads.
+result: (opus, 2026-09-12T05:10+07:00, commit COMMIT_HASH)
+  - runtime/controller.py: `Watchdog` sampled inside the loop's own tick (no thread): once per
+    `runtime.watchdog_interval_s` it reads the new `Perception.progress(command, before, now) -> [0, 1]`,
+    remembers the last increase, and `stalled()` is true `runtime.watchdog_stall_s` after it. The loop tests
+    `stalled()` *before* its own deadline, so a primitive that reached both ends at once is reported as the
+    stall. A halt stops policy actions, sends one `hold()` (the arm's and hand's own measured state, through
+    `send()` -> the Guard; a reading, never a pose, R2), waits one action slot, and reports
+    `Outcome(False, delta, "policy_stalled")` to the engine, which retries as for any other failure.
+  - board/perception.py: `FailureMode.POLICY_STALLED` added beside the unchanged `TIMEOUT_NO_PROGRESS` (the
+    watchdog's verdict during the primitive vs perception's after it); `MockPerception.progress` is the share
+    of the board that differs from the primitive's start, hence 0 whenever the engine's board did not change.
+  - runtime/run_report.py (new): `RunSummary` moved out of controller.py unchanged, plus `Mark` (per-command
+    counter snapshot and difference) and `TrialLog`, which writes one JSON line per execution to
+    `data/logs/controller_<session>.trials.jsonl` (command, success, failure_mode, stopped_by, duration,
+    actions, policy calls, refusals, watchdog verdict, delta) and `read_trials` to read it back.
+  - eval/run_eval.py: `cross_check_log` compares that log with the runner's own rows (line count, the file on
+    disk, and each deciding execution's success/stopped_by/failure mode) and raises rather than writing a
+    result that disagrees; the JSON gains `controller_log: {path, records, by_failure_mode, agrees}`.
+  - config/training.yaml: `runtime.watchdog_interval_s: 1.0`, `runtime.watchdog_stall_s: 20.0` (6.5 verbatim).
+    REQUIRED_KEYS untouched. docs/controller.md and docs/eval.md updated with both deadlines, the log schema
+    and the cross-check.
+  - Measured: with the timeout moved to 40 s in a config copy and the stall at its configured 20 s, the
+    primitive is halted at **20.033 s** on the fake clock (`stopped_by="watchdog"`, `timeout=0`, verdict
+    `{stalled: true, samples: 20, progress: 0.0, s_since_increase: 20.033}`, failure_mode `policy_stalled`)
+    -- inside +/- 0.2 s. A test engine whose board changes every 5 s keeps the watchdog quiet: the same
+    primitive then runs to its 40 s timeout with `{stalled: false, progress: 0.41}` and `missed_cell`.
+  - `.venv/bin/python -m eval.run_eval --backend mock --kind move --n 5 --policy hold` -> `success 0/5 (0.0%)`,
+    `policy_stalled 5`, `controller_log.agrees: true` with 5 records; written
+    eval/results/20260912T044558_move-hold.json. `python -m runtime.controller --backend mock --seconds 60`
+    -> 3 commands, `policy_stalled=2, timeout_no_progress=1`, `run_deadline=1, watchdog=2`, 9.98 Hz / 29.89 Hz,
+    0 refusals.
+  - tests/test_controller.py 30 passed, tests/test_eval.py 26 passed, `ruff check .` clean. Full suite through
+    the pre-commit hook -> SUITE_NUMBERS. PASS
 
 ## T-039  Network engine client for the real game engine (contract of CLAUDE.md 5.5 over a socket)
 status: todo

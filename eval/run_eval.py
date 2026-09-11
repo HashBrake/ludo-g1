@@ -10,6 +10,11 @@ One :class:`~runtime.controller.Controller` plays the trial commands out of a sc
 is written to ``eval/results/<timestamp>_<tag>.json`` with the git commit and the four config hashes
 it was produced under, so no number this project reports is ever separable from what produced it (R5).
 
+The loop keeps its own per-execution log (``data/logs/controller_<session>.trials.jsonl``). The
+result carries its path in ``controller_log`` and :func:`cross_check_log` compares the two records of
+the same run before the JSON is written: a run whose eval rows and controller log disagree raises
+rather than reporting a number nothing measured (R5).
+
 Engine-level recovery (``docs/engine.md``) is **on for ``kind="sequence"`` only**: a per-primitive
 success rate must count one attempt per trial, while the scripted sequence of Phase 4 is explicitly
 evaluated with the engine's retries enabled and counted. Recovery commands are attributed to the trial
@@ -35,15 +40,17 @@ from typing import Any
 
 from board.perception import MockPerception
 from drivers import make
+from engine.interface import Outcome
 from engine.stub import StubEngine
 from eval import protocol
 from eval.protocol import RESULTS_DIR, AttributedEngine, Trial
 from runtime import clock, config
 from runtime.controller import Controller
 from runtime.policy_api import HoldPolicy, Policy
+from runtime.run_report import read_trials
 from runtime.safety import REPO_ROOT
 
-__all__ = ["RESULTS_DIR", "FakeClock", "main", "make_policy", "run_trials"]
+__all__ = ["RESULTS_DIR", "FakeClock", "cross_check_log", "main", "make_policy", "run_trials"]
 
 #: Config files whose hash every result records (5.6).
 HASHED_CONFIGS: tuple[str, ...] = ("safety", "robot", "board", "training")
@@ -126,6 +133,42 @@ def _snapshot(summary) -> dict:
             "stopped_by": Counter(summary.stopped_by)}
 
 
+def cross_check_log(rows: Sequence[dict], executions: Sequence[tuple[int, bool, bool]],
+                    controller: Controller) -> dict:
+    """Check the controller's own trial log against the rows this runner built, and describe it.
+
+    Two independent records of the same run exist -- the JSONL the loop wrote per execution, and the
+    per-trial rows assembled here from the controller's counters -- and R5 is worth nothing if they
+    can disagree in silence. So they are compared: one log line per execution, the file on disk
+    identical to what the loop believes it wrote, and, for the execution that decided each trial, the
+    same reported success and the same failure mode. A disagreement raises; it is a bug in one of the
+    two, and an eval that shipped a number past it would be reporting something nothing measured.
+
+    Returns the block the result JSON carries as ``controller_log``.
+    """
+    records = controller.trials.records
+    if len(records) != len(executions):
+        raise ValueError(f"controller log has {len(records)} lines for {len(executions)} executions")
+    on_disk = read_trials(controller.trials.path)
+    if records and on_disk[-len(records):] != records:
+        raise ValueError(f"{controller.trials.path}: the file does not hold what the run wrote")
+    modes: Counter = Counter()
+    for index, row in enumerate(rows):
+        mine = [rec for rec, (i, own, _) in zip(records, executions, strict=True) if own and i == index]
+        if not mine:
+            raise ValueError(f"trial {index} has no execution of its own command in the controller log")
+        last = mine[-1]
+        logged = protocol.failure_key(Outcome(last["success"], last["observed_state_delta"], last["failure_mode"]))
+        if bool(row["reported_success"]) != bool(last["success"]) or row["stopped_by"] != last["stopped_by"]:
+            raise ValueError(f"trial {index}: eval row and controller log disagree on what happened")
+        if not row["success"] and row["failure_mode"] != logged:
+            raise ValueError(f"trial {index}: eval says {row['failure_mode']!r}, controller log says {logged!r}")
+        if not row["success"]:
+            modes[logged] += 1
+    return {"path": str(controller.trials.path), "records": len(records),
+            "by_failure_mode": dict(sorted(modes.items())), "agrees": True}
+
+
 def _cost(before: dict, after: dict) -> dict:
     """What one command cost: the counter differences, and the single reason it stopped."""
     return {"duration_s": after["elapsed_s"] - before["elapsed_s"],
@@ -189,6 +232,7 @@ def run_trials(
         before = after
 
     return {
+        "controller_log": cross_check_log(per_trial, engine.executions, controller),
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "git_commit": _git_commit(),
         "config_hashes": {name: config.config_hash(name, config_root) for name in HASHED_CONFIGS},

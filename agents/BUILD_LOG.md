@@ -3537,3 +3537,114 @@ R2: no scripted motion, no literal joint target; `drivers/` still imports nothin
 path to guard; `config/safety.yaml` untouched. `hardware/session.enable` neither created, edited nor
 read. Nothing under `third_party/` touched. Committed through the full pre-commit gate, no
 `--no-verify` (D-013).
+
+## T-037  Progress watchdog and per-trial failure logging in the controller  (opus, 2026-09-12T05:10+07:00)
+
+CLAUDE.md Phase 5 hardening, on mocks. Nothing here touched hardware, no session file was created,
+read or needed, and no real driver exists to command (R1).
+
+### What changed
+- `board/perception.py`: `FailureMode.POLICY_STALLED = "policy_stalled"` added beside the unchanged
+  `TIMEOUT_NO_PROGRESS`; the docstring says why they are two modes and not one (the watchdog's
+  verdict during the primitive vs perception's after it). `Perception` gains
+  `progress(command, before, now) -> float in [0, 1]` -- a cheap, direction-only signal, sampled ten
+  to twenty times per primitive. `MockPerception.progress` is the share of the board that differs
+  from where the primitive started (`len(state_delta) / (horses + die)`), so it is 0 unless the
+  engine's own board changed, and 0 for every primitive `HoldPolicy` runs.
+- `runtime/controller.py`: `Watchdog` (interval, stall deadline, last-increase instant, sample
+  count) sampled inside the loop's own tick -- no thread, no timer. `execute_command` takes the
+  primitive's starting board, samples `perception.progress` once per `watchdog_interval_s`, and
+  tests `stalled()` **before** its own deadline so a primitive that reached both ends at once is
+  reported as the stall (the more specific statement). A halt stops policy actions, sends one
+  `hold()` -- `arm.read_state()` and `hand.read_state()` concatenated and pushed through
+  `send()`/the Guard, a reading and never a pose (R2) -- waits one action slot so the next
+  primitive's first action does not land inside the guard's rate-limit window, and reports
+  `Outcome(success=False, delta, "policy_stalled")`. `run()` then continues with the next command
+  exactly as before; the controller still never invents a command or a retry.
+- `runtime/run_report.py` (new, 181 lines): `RunSummary` moved here unchanged, plus `Mark` (the
+  per-command counter snapshot and its `cost` difference) and `TrialLog`, which builds and appends
+  one JSON line per execution to `data/logs/controller_<session>.trials.jsonl` and keeps the same
+  records in memory. `read_trials` reads them back. It imports nothing from the controller, so the
+  dependency runs one way.
+- `eval/run_eval.py`: `cross_check_log` compares the loop's own log with the rows this runner built
+  -- one line per execution, the file on disk identical to what the loop believes it wrote, and the
+  same reported success / `stopped_by` / failure mode for the execution that decided each trial --
+  and raises rather than writing a result that disagrees with what ran. The result JSON gains
+  `controller_log: {path, records, by_failure_mode, agrees}`.
+- `config/training.yaml`: `runtime.watchdog_interval_s: 1.0` and `runtime.watchdog_stall_s: 20.0`
+  (6.5 verbatim), each with the reasoning for the number. `REQUIRED_KEYS` untouched, as instructed.
+- `docs/controller.md`: a "progress watchdog" section (both deadlines, what is sampled, what a halt
+  sends, why the two failure modes differ), the trial-log schema, the new `watchdog_halt` log event,
+  and a re-measured 60 s mock run. `docs/eval.md`: the two modes in the 6.5 table, `controller_log`
+  in the result schema, `watchdog` among `stopped_by`, and a section on the cross-check.
+- `tests/test_controller.py` (+5 tests, 30 total), `tests/test_eval.py` (+3 tests, 26 total).
+
+### Commands run, and the measured numbers
+- `.venv/bin/python -m pytest tests/test_controller.py -q -p no:randomly` -> **30 passed** in 11.9 s.
+- `.venv/bin/python -m pytest tests/test_eval.py -q -p no:randomly` -> **26 passed** in ~10 s.
+- `.venv/bin/python -m pytest tests/test_scaffold.py tests/test_config.py tests/test_engine_stub.py -q`
+  -> 115 passed, 1 skipped (the skip is the absent hardware session, R1).
+- Watchdog halt time, the acceptance measurement: with `primitive_timeout_s` moved to 40 s in a
+  config copy (`slow_config`) and `watchdog_stall_s` at its configured 20 s, the fake-clock
+  primitive is halted at **20.033 s** (`stopped_by="watchdog"`, `timeout=0`), i.e. 20 s + one 33.3 ms
+  action tick, inside the +/- 0.2 s the task asks for; the verdict recorded is
+  `{stalled: true, samples: 20, progress: 0.0, s_since_increase: 20.033}` and the failure mode is
+  `policy_stalled`. The trial's `duration_s` is 20.067 s: the halt plus the hold's action slot.
+- The quiet case: a `ProgressEngine` whose board gains one changed distractor horse every 5 s (a
+  test hook on the engine's `board_state`, not on any driver) keeps `progress` rising, the watchdog
+  never fires, and the primitive runs to its 40 s timeout with
+  `{stalled: false, samples: 39, progress: 0.41}` and perception's `missed_cell`.
+- `.venv/bin/python -m eval.run_eval --backend mock --kind move --n 5 --policy hold` ->
+  ```
+  success 0/5 (0.0%)
+  failure modes
+    policy_stalled         5
+  written /home/alois/Desktop/ludo-g1/eval/results/20260912T044558_move-hold.json
+  ```
+  with `controller_log = {"path": ".../data/logs/controller_20260912T044555.trials.jsonl",
+  "records": 5, "by_failure_mode": {"policy_stalled": 5}, "agrees": true}`, every row
+  `stopped_by="watchdog"`, `duration_s=20.067`, `actions_sent=602`, `policy_calls=200`,
+  `safety_refusals=0`.
+- `.venv/bin/python -m runtime.controller --backend mock --seconds 60` (real clock) -> 3 commands,
+  `failure modes policy_stalled=2, timeout_no_progress=1`, `stopped by run_deadline=1, watchdog=2`,
+  599 policy calls = 9.98 Hz, 1794 actions = 29.89 Hz, 0 refusals, 0 alignment failures. The run
+  shows both modes: the two primitives that ran their course were halted by the watchdog, the third
+  was cut off by the run deadline and judged by perception instead.
+
+### Findings
+1. **The two 20 s deadlines coincide for a policy that never moves, and the tie had to be decided.**
+   The loop's action grid puts its last tick 200 ns before the timeout, so a naive "check the stall
+   inside the tick" always loses the tie to the timeout and the acceptance run would have reported
+   `timeout_no_progress`. The loop now tests `stalled()` before its own deadline, which makes the
+   watchdog's the reported verdict whenever both are true. It is reversible by config alone: lower
+   `watchdog_stall_s` below `primitive_timeout_s` and the two separate cleanly (the eval tests use
+   0.5 s / 1.0 s to show exactly that).
+2. **The hold needs an action slot of its own.** Without the 33 ms wait after it, the next
+   primitive's first action arrived in the same instant and the guard's 60 Hz rate limit refused it
+   -- one spurious `safety_refusals` per command on the fake clock, and a real (if harmless) refusal
+   on hardware. With the wait, mock runs are back to 0 refusals.
+3. `MockPerception.progress` is as blind as `verify` is: it reads the engine's belief, not the
+   table. On mocks it can only ever say "the engine's board changed", so the watchdog is exercised
+   but never validated against a stalled *robot*. The first real progress signal needs the Brio
+   implementation (still a placeholder, D-013 item 3 applies here too).
+
+### Disagreement
+None with the task. One note: `runtime/controller.py` is **406 lines**, not the ~250 D-013 item 2
+suggests, after moving `RunSummary`, the per-command counter arithmetic and the whole trial-log
+schema into `runtime/run_report.py` (the file was 340 before this task and gained the watchdog, the
+hold, the outcome branch and the log call). What is left is the loop, the watchdog, `build` and the
+CLI; moving `build`/`main` out would make `run_report.py` import the controller and close an import
+cycle, so I kept them.
+
+### Files changed outside the task's touch list
+None. Every file edited is in the list, plus `runtime/run_report.py`, which the task named as the
+new sibling module.
+
+### Safety
+R1: mocks only; no session file created, edited or read; `hardware/session.enable` still absent.
+R2: the only target this task constructs is the arm's own measured state, read from the driver at
+the instant of the halt -- no pose, no waypoint, no retreat; `runtime/`, `board/` and `policy/` still
+import nothing from `tools/hardware_checks/` (the existing test asserts it and passes). R3: the hold
+goes through `send()` -> `arm.send_targets` / `hand.send_pinch` -> `Guard.admit` like every other
+action, and the test with the lunging policy shows the guard refusing 601 of 602 sends and admitting
+exactly the hold. `config/safety.yaml` untouched, `third_party/` untouched, no `--no-verify` (D-013).

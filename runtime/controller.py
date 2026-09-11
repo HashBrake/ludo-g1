@@ -11,33 +11,43 @@ its 16 entries -- the receding horizon. Every send goes through ``drivers/``, wh
 :meth:`runtime.safety.Guard.admit` (R1, R3); a :class:`~runtime.safety.SafetyViolation` is counted and
 logged and the loop continues, because the envelope is the limiter and not a crash. No threads, and
 time comes from injected callables, so the tests run the loop on a fake clock. See docs/controller.md.
+
+Two clocks end a primitive that does not end itself, and they are not the same clock (Phase 5):
+``runtime.primitive_timeout_s`` bounds how long a primitive may take, and the :class:`Watchdog`
+bounds how long it may achieve nothing -- ``runtime.watchdog_stall_s`` without an increase in
+:meth:`board.perception.Perception.progress`. A watchdog halt stops sending policy actions, asks the
+arm for exactly its own measured state (a hold, not a retreat: R2 forbids a pose of ours), and
+reports ``policy_stalled`` to the engine, whose retry machinery takes it from there. Every execution,
+halted or not, leaves one JSON line in ``data/logs/controller_<session>.trials.jsonl``
+(:class:`~runtime.run_report.TrialLog`), which is what ``eval/run_eval.py`` cross-checks its own
+numbers against.
 """
 
 from __future__ import annotations
 
 import argparse
 import time
-from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-from board.perception import MockPerception, Perception
+from board.perception import FailureMode, MockPerception, Perception, state_delta
 from drivers.interfaces import ArmDriver, CameraDriver, HandDriver
-from engine.interface import Command, EngineClient
+from engine.interface import Command, EngineClient, Outcome
 from runtime import clock, config
 from runtime.goal import GoalRenderer
 from runtime.log import get_logger
 from runtime.policy_api import ActionChunk, HoldPolicy, Observation, Policy
+from runtime.run_report import Mark, RunSummary, TrialLog
 from runtime.safety import REPO_ROOT, SafetyViolation
 from runtime.types import MotionCommand
 
-__all__ = ["Controller", "RunSummary", "build", "main"]
+__all__ = ["Controller", "RunSummary", "Watchdog", "build", "main"]
 
-#: Where heartbeats go (git-ignored, CLAUDE.md section 7).
+#: Where the heartbeat and the per-trial log go (git-ignored, CLAUDE.md section 7).
 LOG_DIR: Path = REPO_ROOT / "data" / "logs"
 #: Samples kept per stream for alignment: seconds of history, far more than the tolerance needs.
 BUFFER = 512
@@ -45,49 +55,51 @@ BUFFER = 512
 STREAMS: tuple[str, ...] = ("top", "oblique", "palm", "state", "hand")
 
 
-def _counts(counter: Counter) -> str:
-    """``a=1, b=2`` for one printed summary line, or ``none``."""
-    return ", ".join(f"{k}={v}" for k, v in sorted(counter.items())) or "none"
+class Watchdog:
+    """Halts a primitive that is achieving nothing (CLAUDE.md Phase 5, 6.5 "policy stalls").
 
+    It is a few numbers sampled inside the controller's own tick: no thread, no timer, nothing that
+    can fire while the loop is elsewhere. Once per ``interval_ns`` it reads a progress signal from
+    perception; it remembers the last time that signal *increased*; when ``stall_ns`` has passed
+    without an increase, :meth:`stalled` is true and the loop stops.
 
-@dataclass
-class RunSummary:
-    """What one run did. Every number here is counted, never described (R5)."""
+    Only the direction of the signal is read, never its magnitude, so nothing has to be calibrated
+    and a perception that can only say "something changed" is already enough. The tie with the
+    primitive timeout is deliberate: the loop tests :meth:`stalled` before its own deadline, so a
+    primitive that ends with no progress for ``stall_ns`` is reported as a stall rather than as a
+    plain timeout, which is the more specific of the two true statements.
+    """
 
-    commands: int = 0
-    succeeded: int = 0
-    policy_calls: int = 0
-    actions_sent: int = 0
-    refused: int = 0
-    align_failures: int = 0
-    elapsed_s: float = 0.0
-    primitives: Counter = field(default_factory=Counter)
-    failure_modes: Counter = field(default_factory=Counter)
-    stopped_by: Counter = field(default_factory=Counter)
+    def __init__(self, interval_ns: int, stall_ns: int, started_ns: int) -> None:
+        self.interval_ns = int(interval_ns)
+        self.stall_ns = int(stall_ns)
+        self.started_ns = int(started_ns)
+        self.last_increase_ns = int(started_ns)
+        self.next_sample_ns = int(started_ns)
+        self.value = 0.0
+        self.samples = 0
 
-    @property
-    def policy_hz(self) -> float:
-        """Measured rate of the 10 Hz loop: policy calls per second of run time."""
-        return self.policy_calls / self.elapsed_s if self.elapsed_s > 0 else 0.0
+    def __repr__(self) -> str:
+        return f"Watchdog(value={self.value:.3f}, samples={self.samples}, stall_s={self.stall_ns / 1e9:g})"
 
-    @property
-    def action_hz(self) -> float:
-        """Measured rate of the 30 Hz action stream."""
-        return self.actions_sent / self.elapsed_s if self.elapsed_s > 0 else 0.0
+    def sample(self, now_ns: int, read: Callable[[], float]) -> None:
+        """Read the progress signal if this tick is on the sampling grid, and note any increase."""
+        if now_ns < self.next_sample_ns:
+            return
+        self.next_sample_ns = now_ns + self.interval_ns
+        self.samples += 1
+        value = float(read())
+        if value > self.value:
+            self.value, self.last_increase_ns = value, now_ns
 
-    def lines(self) -> list[str]:
-        """The printed summary of a run, one fact per line."""
-        return [
-            f"elapsed            {self.elapsed_s:.2f} s",
-            f"commands executed  {self.commands} ({_counts(self.primitives)})",
-            f"outcomes           {self.succeeded} success, {self.commands - self.succeeded} failure",
-            f"failure modes      {_counts(self.failure_modes)}",
-            f"stopped by         {_counts(self.stopped_by)}",
-            f"policy calls       {self.policy_calls} = {self.policy_hz:.2f} Hz",
-            f"actions sent       {self.actions_sent} = {self.action_hz:.2f} Hz",
-            f"safety refusals    {self.refused}",
-            f"alignment failures {self.align_failures}",
-        ]
+    def stalled(self, now_ns: int) -> bool:
+        """Has the signal failed to increase for ``stall_ns``?"""
+        return now_ns - self.last_increase_ns >= self.stall_ns
+
+    def verdict(self, now_ns: int) -> dict[str, Any]:
+        """What the watchdog saw, for the trial log and the ``primitive_end`` line."""
+        return {"stalled": self.stalled(now_ns), "samples": self.samples, "progress": round(self.value, 4),
+                "s_since_increase": round((now_ns - self.last_increase_ns) / 1e9, 3)}
 
 
 def _sleep_until(ts_ns: int) -> None:
@@ -144,9 +156,14 @@ class Controller:
         self.timeout_ns = round(float(training["runtime"]["primitive_timeout_s"]) * 1e9)
         self.tolerance_ns = round(float(training["runtime"]["alignment_tolerance_ms"]) * 1e6)
         self.heartbeat_ns = round(float(training["runtime"]["heartbeat_s"]) * 1e9)
+        self.watchdog_interval_ns = round(float(training["runtime"]["watchdog_interval_s"]) * 1e9)
+        self.watchdog_stall_ns = round(float(training["runtime"]["watchdog_stall_s"]) * 1e9)
         self.session = session or datetime.now().strftime("%Y%m%dT%H%M%S")
-        self.heartbeat_path = Path(LOG_DIR if log_dir is None else log_dir) / f"controller_{self.session}.heartbeat"
+        directory = Path(LOG_DIR if log_dir is None else log_dir)
+        self.heartbeat_path = directory / f"controller_{self.session}.heartbeat"
+        self.trials = TrialLog(directory / f"controller_{self.session}.trials.jsonl")
         self.summary = RunSummary()
+        self.watchdog = Watchdog(self.watchdog_interval_ns, self.watchdog_stall_ns, self._now())
         self._goal_cache: tuple[Command, np.ndarray, np.ndarray] | None = None
         self._streams = {name: clock.StreamBuffer(name, BUFFER) for name in STREAMS}
         self._log = get_logger("runtime.controller", session=self.session)
@@ -200,17 +217,33 @@ class Controller:
                 self._log.warning("safety_refused", device=what, rule=exc.rule, detail=exc.message)
         self.summary.actions_sent += 1
 
-    def execute_command(self, command: Command, deadline_ns: int | None = None) -> str:
-        """Run one primitive. Returns why it stopped: ``policy_done``, ``timeout`` or ``run_deadline``."""
+    def execute_command(self, command: Command, deadline_ns: int | None = None,
+                        before: dict[str, Any] | None = None) -> str:
+        """Run one primitive. Why it stopped: ``policy_done``, ``watchdog``, ``timeout``, ``run_deadline``.
+
+        ``before`` is the board as the primitive started, against which the watchdog measures
+        progress; it is read from the engine when the caller does not pass one.
+        """
         self._policy.reset(command)
         start = self._now()
         timeout_at = start + self.timeout_ns
         end = timeout_at if deadline_ns is None else min(timeout_at, deadline_ns)
         stopped = "timeout" if end == timeout_at else "run_deadline"
+        board = self._engine.board_state() if before is None else before
+        self.watchdog = Watchdog(self.watchdog_interval_ns, self.watchdog_stall_ns, start)
         next_policy = next_action = next_beat = start
         chunk: ActionChunk | None = None
         index = 0
-        while (now := self._now()) < end:
+        while True:
+            now = self._now()
+            # Before the deadline test, so that a primitive which reached both ends at once is
+            # reported as the stall it is rather than as a plain timeout.
+            if self.watchdog.stalled(now):
+                stopped = "watchdog"
+                break
+            if now >= end:
+                break
+            self.watchdog.sample(now, lambda: self._perception.progress(command, board, self._engine.board_state()))
             if now >= next_policy:
                 self.sample()
                 observation = self.observe(command, now)
@@ -230,8 +263,21 @@ class Controller:
             next_action = _bump(next_action, self.action_period_ns, self._now())
             self._sleep_until(next_action)
         self._log.info("primitive_end", primitive=command.primitive.value, stopped_by=stopped,
-                       elapsed_s=round((self._now() - start) / 1e9, 3))
+                       elapsed_s=round((self._now() - start) / 1e9, 3), **self.watchdog.verdict(self._now()))
         return stopped
+
+    def hold(self) -> None:
+        """Ask arm and hand for exactly their own measured state, through the guard.
+
+        What a halted primitive gets instead of more policy actions. It is a *reading*, not a pose:
+        R2 forbids this module from owning a joint target, so the only target it may ever construct
+        is the one the robot is already at.
+        """
+        arm, hand = self._arm.read_state().payload, self._hand.read_state().payload
+        self.send(np.concatenate([arm.arm, [arm.waist_yaw, hand.pinch]]))
+        # The hold occupies one action slot: without the wait the next primitive's first action would
+        # arrive in the same instant and the guard's rate limit would (rightly) refuse it.
+        self._sleep_until(self._now() + self.action_period_ns)
 
     def _beat(self, command: Command | None) -> None:
         """One heartbeat line to ``data/logs/``. Failing to write one never stops the loop."""
@@ -246,6 +292,22 @@ class Controller:
         except OSError as exc:
             self._log.warning("heartbeat_failed", path=str(self.heartbeat_path), detail=str(exc))
 
+    def _outcome(self, command: Command, before: dict[str, Any], stopped: str) -> Outcome:
+        """What is reported to the engine: perception's verdict, or the watchdog's over it.
+
+        A watchdog halt is not perception's to judge -- the primitive was stopped, not finished --
+        so the loop labels it ``policy_stalled`` itself (6.5) and hands the arm a hold first. The
+        delta is still whatever the board shows, so a stall that did change something says so.
+        """
+        after = self._engine.board_state()
+        if stopped != "watchdog":
+            return self._perception.verify(command, before, after)
+        self.hold()
+        self._log.warning("watchdog_halt", primitive=command.primitive.value,
+                          **self.watchdog.verdict(self._now()))
+        return Outcome(success=False, observed_state_delta=state_delta(before, after),
+                       failure_mode=FailureMode.POLICY_STALLED.value)
+
     def run(self, seconds: float | None = None, max_commands: int | None = None) -> RunSummary:
         """Play commands until the engine runs out, the time is up, or ``max_commands`` is reached.
 
@@ -255,15 +317,17 @@ class Controller:
         start = self._now()
         end = None if seconds is None else start + round(seconds * 1e9)
         s, played = self.summary, 0
-        self._log.info("run_start", seconds=seconds, max_commands=max_commands, heartbeat=str(self.heartbeat_path))
+        self._log.info("run_start", seconds=seconds, max_commands=max_commands,
+                       heartbeat=str(self.heartbeat_path), trials=str(self.trials.path))
         while (end is None or self._now() < end) and (max_commands is None or played < max_commands):
             command = self._engine.next_command()
             if command is None:
                 self._log.info("engine_exhausted")
                 break
             before = self._engine.board_state()
-            stopped = self.execute_command(command, end)
-            outcome = self._perception.verify(command, before, self._engine.board_state())
+            mark = Mark.of(s, self._now())
+            stopped = self.execute_command(command, end, before)
+            outcome = self._outcome(command, before, stopped)
             self._engine.report(outcome)
             s.commands, played = s.commands + 1, played + 1
             s.primitives[command.primitive.value] += 1
@@ -271,6 +335,10 @@ class Controller:
             s.succeeded += int(outcome.success)
             if not outcome.success:
                 s.failure_modes[outcome.failure_mode or "unlabelled"] += 1
+            now = self._now()
+            self.trials.record(session=self.session, index=s.commands - 1, ts_ns=now, command=command,
+                               outcome=outcome, stopped_by=stopped, cost=mark.cost(s, now),
+                               watchdog=self.watchdog.verdict(now))
             self._log.info("command_done", primitive=command.primitive.value, success=outcome.success,
                            failure_mode=outcome.failure_mode, stopped_by=stopped,
                            src=None if command.src is None else command.src.id,
@@ -333,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in summary.lines():
         print(f"  {line}")
     print(f"  heartbeat          {controller.heartbeat_path}")
+    print(f"  trial log          {controller.trials.path}")
     return 0
 
 

@@ -6,20 +6,21 @@ comes out of a file under `eval/results/`, written by `eval/run_eval.py`, with t
 config hashes it was produced under. A number without such a file is not a result.
 
 ```bash
-.venv/bin/python -m eval.run_eval --backend mock --kind move --n 20 --policy hold
+.venv/bin/python -m eval.run_eval --backend mock --kind move --n 5 --policy hold
 ```
 
 ```
-success 0/20 (0.0%)
+success 0/5 (0.0%)
 failure modes
-  timeout_no_progress    20
-written /home/alois/Desktop/ludo-g1/eval/results/20260911T221321_move-hold.json
+  policy_stalled         5
+written /home/alois/Desktop/ludo-g1/eval/results/20260912T044558_move-hold.json
 ```
 
-That 0/20 is correct and expected: `HoldPolicy` commands no motion (R2), `MockPerception` sees the
-engine's own board state, so nothing changes and every primitive times out. **The mock runner
-measures the orchestration, never the robot.** The first non-zero success rate needs a trained policy
-(T-029, Phase 3) and the real robot.
+That 0/5 is correct and expected: `HoldPolicy` commands no motion (R2), `MockPerception` sees the
+engine's own board state, so nothing changes and the controller's watchdog halts every primitive
+after 20 s of no progress (`docs/controller.md`). **The mock runner measures the orchestration, never
+the robot.** The first non-zero success rate needs a trained policy (T-029, Phase 3) and the real
+robot.
 
 ```python
 from eval.protocol import make_trials, script_pairs
@@ -82,7 +83,14 @@ become two spellings of the same thing.
 | `wrong_horse` | the grasp took the wrong horse (an adjacent cell) |
 | `die_out_of_bowl` | the die landed outside the bowl (a human replaces it) |
 | `die_grasp_failed` | the die grasp failed |
-| `timeout_no_progress` | the policy stalled and the watchdog ended the primitive |
+| `policy_stalled` | the watchdog halted the primitive: no progress for `runtime.watchdog_stall_s` |
+| `timeout_no_progress` | the primitive ended some other way and perception saw nothing change |
+
+The last two are deliberately distinct. `policy_stalled` is the controller's watchdog speaking during
+the primitive -- the policy went nowhere and was stopped, and the arm was given its own measured
+state to hold (`docs/controller.md`). `timeout_no_progress` is perception speaking after it. An eval
+that could not tell them apart could not tell a policy that froze from one that worked the whole 20 s
+and achieved nothing.
 
 `failure_key(outcome)` is what the table counts under: the mode itself, `unlabelled` when a failure
 carries none (a finding, not a category), and an unknown string passed through unchanged rather than
@@ -113,6 +121,7 @@ number.
 
 | key | meaning |
 |---|---|
+| `controller_log` | `{path, records, by_failure_mode, agrees}` for the loop's own per-trial log (below) |
 | `created_at` | local ISO 8601 with offset; the timestamp in the file name |
 | `git_commit` | `git rev-parse HEAD`, or `null` outside a checkout |
 | `config_hashes` | `runtime.config.config_hash` of `safety`, `robot`, `board`, `training` (5.6) |
@@ -135,11 +144,28 @@ Per trial: the `Trial` fields (`index`, `primitive`, `src`, `dst`, `horse_id`, `
 | `actions_sent`, `policy_calls` | what the loop did (5.2 rates); `actions_sent` counts sends admitted by the guard |
 | `safety_refusals` | `SafetyViolation`s the guard raised (R1, R3). On mocks this is 0; anything else is a finding |
 | `engine_retries` | executions after the trial's first attempt: the engine's RECOVERs and re-issues |
-| `stopped_by` | `policy_done`, `timeout` or `run_deadline` |
+| `stopped_by` | `policy_done`, `watchdog`, `timeout` or `run_deadline` |
 | `observed_state_delta` | what perception saw change |
 
 Results are **not** committed by default: `eval/results/` is tracked (a `.gitkeep`), its contents are
 not staged by a run. A result is committed when it is a number the project stands behind.
+
+## The controller log, and why the result is checked against it
+
+The loop writes its own line per execution to `data/logs/controller_<session>.trials.jsonl` (schema in
+`docs/controller.md`). That makes two independent records of one run: the JSONL the loop wrote, and
+the per-trial rows this runner assembles from the controller's counters. R5 is worth little if they
+can disagree in silence, so `cross_check_log` compares them before the JSON is written:
+
+- one log line per execution (the engine's injected RECOVERs included);
+- the file on disk holds exactly what the loop believes it wrote;
+- for the execution that decided each trial, the same reported success, the same `stopped_by`, and
+  the same failure mode.
+
+A disagreement raises a `ValueError` and no result is written: it is a bug in one of the two, and a
+number that got past it would be measuring nothing. What the check saw is the `controller_log` block
+of the result, whose `by_failure_mode` must equal `summary.by_failure_mode` for a run in which every
+trial failed.
 
 ## The clock
 

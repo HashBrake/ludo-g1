@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -25,9 +26,13 @@ from engine.cells import load_cells
 from engine.interface import Command, Outcome, Primitive
 from eval import protocol
 from eval.protocol import CRITERIA, PERTURBATIONS, Trial, failure_key, judge, make_trials
-from eval.run_eval import main, make_policy, run_trials
+from eval.run_eval import cross_check_log, main, make_policy, run_trials
 from runtime import config
+from runtime.run_report import read_trials
 from runtime.safety import REPO_ROOT
+
+#: What the controller's watchdog reports for a primitive it halted (CLAUDE.md 6.5, Phase 5).
+STALLED = FailureMode.POLICY_STALLED.value
 
 #: Ten held-out cell pairs, all ids from ``config/board.yaml``. Stands in for the held-out half of
 #: the train/eval split that ``policy/dataset.py`` (T-027) produces from the recorded sessions.
@@ -170,8 +175,10 @@ def test_a_roll_needs_the_die_to_change_and_a_recover_needs_only_a_clean_outcome
 def test_every_65_failure_mode_has_one_spelling() -> None:
     """The enum is the vocabulary; perception produces it and eval counts it (one definition)."""
     assert {m.value for m in FailureMode} == {
-        "horse_fell", "missed_cell", "grasp_failed", "wrong_horse",
-        "die_out_of_bowl", "die_grasp_failed", "timeout_no_progress",
+        "horse_fell", "missed_cell", "grasp_failed", "wrong_horse", "die_out_of_bowl",
+        # The watchdog's verdict and perception's are two modes, never one (T-037): the first says
+        # the policy was stopped going nowhere, the second that nothing changed by the end.
+        "die_grasp_failed", "policy_stalled", "timeout_no_progress",
     }
     for mode in FailureMode:
         assert failure_key(Outcome(False, {}, mode.value)) == mode.value
@@ -262,6 +269,82 @@ def test_a_run_can_be_repeated_from_its_own_json(fast_config, tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+# the watchdog's failures, and the controller log the result is checked against (T-037)
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def stalling_config(tmp_path_factory) -> Path:
+    """``config/`` with the watchdog (0.5 s) well inside the primitive timeout (1 s).
+
+    The two coincide in the real config; here the stall is unambiguously what ends each primitive,
+    which is what a run that must count ``policy_stalled`` needs.
+    """
+    root = tmp_path_factory.mktemp("stall-config")
+    for src in (REPO_ROOT / "config").glob("*.yaml"):
+        shutil.copy(src, root / src.name)
+    training = yaml.safe_load((root / "training.yaml").read_text(encoding="utf-8"))
+    training["runtime"]["primitive_timeout_s"] = 1.0
+    training["runtime"]["watchdog_stall_s"] = 0.5
+    training["runtime"]["watchdog_interval_s"] = 0.1
+    (root / "training.yaml").write_text(yaml.safe_dump(training, sort_keys=False), encoding="utf-8")
+    return root
+
+
+def test_a_stalled_run_counts_policy_stalled_once_per_trial(stalling_config, tmp_path) -> None:
+    """The watchdog's halt is a labelled 6.5 failure in the JSON, one per trial, and nothing else."""
+    trials = make_trials("move", 5, HELD_OUT, seed=0)
+    result = run_trials(trials, kind="move", backend="mock", seed=0, config_root=stalling_config,
+                        log_dir=tmp_path, session="test-stall")
+
+    assert result["summary"]["by_failure_mode"] == {STALLED: 5}
+    assert [row["stopped_by"] for row in result["trials"]] == ["watchdog"] * 5
+    # The 0.5 s stall, plus the one action slot the halting hold occupies before the next command.
+    assert all(row["duration_s"] == pytest.approx(0.55, abs=0.05) for row in result["trials"])
+    assert result["summary"]["safety_refusals"] == 0
+
+
+def test_the_result_names_the_controller_log_and_agrees_with_it(stalling_config, tmp_path) -> None:
+    """R5: the eval JSON and the loop's own per-trial log are the same run, and it is checked."""
+    trials = make_trials("move", 5, HELD_OUT, seed=0)
+    result = run_trials(trials, kind="move", backend="mock", seed=0, config_root=stalling_config,
+                        log_dir=tmp_path, session="test-agree")
+
+    log = result["controller_log"]
+    assert log["agrees"] is True and log["records"] == 5
+    assert log["by_failure_mode"] == result["summary"]["by_failure_mode"] == {STALLED: 5}
+    assert Path(log["path"]) == tmp_path / "controller_test-agree.trials.jsonl"
+
+    records = read_trials(log["path"])
+    assert [r["failure_mode"] for r in records] == [STALLED] * 5
+    assert all(r["watchdog"]["stalled"] is True for r in records)
+    for row, record in zip(result["trials"], records, strict=True):
+        assert (record["command"]["src"], record["command"]["dst"]) == (row["src"], row["dst"])
+        assert record["actions_sent"] == row["actions_sent"]
+        assert record["policy_calls"] == row["policy_calls"]
+
+
+def test_the_cross_check_refuses_a_log_that_disagrees(tmp_path) -> None:
+    """Two records of one run that differ is a bug in one of them, never a number to report."""
+    path = tmp_path / "controller_x.trials.jsonl"
+    record = {"index": 0, "success": False, "failure_mode": STALLED, "stopped_by": "watchdog",
+              "observed_state_delta": {}}
+    path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    controller = SimpleNamespace(trials=SimpleNamespace(path=path, records=[record]))
+    row = {"success": False, "reported_success": False, "failure_mode": STALLED, "stopped_by": "watchdog"}
+
+    assert cross_check_log([row], [(0, True, True)], controller) == {
+        "path": str(path), "records": 1, "by_failure_mode": {STALLED: 1}, "agrees": True,
+    }
+    with pytest.raises(ValueError, match="disagree"):
+        cross_check_log([{**row, "stopped_by": "timeout"}], [(0, True, True)], controller)
+    with pytest.raises(ValueError, match="controller log says"):
+        cross_check_log([{**row, "failure_mode": NO_PROGRESS}], [(0, True, True)], controller)
+    with pytest.raises(ValueError, match="lines for"):
+        cross_check_log([row], [(0, True, True), (0, False, False)], controller)
+
+
+# --------------------------------------------------------------------------------------------------
 # the CLI, and what it refuses (R1, R2)
 # --------------------------------------------------------------------------------------------------
 
@@ -273,7 +356,9 @@ def test_cli_writes_the_json_and_prints_the_success_line(tmp_path, capsys) -> No
     out = capsys.readouterr().out
     assert code == 0
     assert "success 0/2 (0.0%)" in out
-    assert "failure modes" in out and f"  {NO_PROGRESS:<22} 2" in out
+    # The real config: a HoldPolicy primitive reaches the 20 s stall and the 20 s timeout together,
+    # and the watchdog's is the verdict reported (config/training.yaml runtime.watchdog_stall_s).
+    assert "failure modes" in out and f"  {STALLED:<22} 2" in out
     written = list(tmp_path.glob("*_move-hold.json"))
     assert len(written) == 1
     result = json.loads(written[0].read_text(encoding="utf-8"))

@@ -12,22 +12,46 @@ exact, because the fake clock has no scheduling jitter. The one test that uses t
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import numpy as np
 import pytest
+import yaml
 
-from board.perception import NO_PROGRESS, MockPerception, Perception, state_delta
+from board.perception import NO_PROGRESS, FailureMode, MockPerception, Perception, state_delta
 from drivers.mock import MockArm, MockCamera, MockHand
 from engine.cells import load_cells
 from engine.interface import Cell, Command, Outcome, Primitive
 from engine.stub import StubEngine
 from runtime import config
-from runtime.controller import Controller, RunSummary, build, main
+from runtime.controller import Controller, RunSummary, Watchdog, build, main
 from runtime.goal import GoalRenderer
 from runtime.policy_api import ActionChunk, HoldPolicy, Observation, Policy
+from runtime.run_report import read_trials
 from runtime.safety import REPO_ROOT
 from runtime.types import ACTION_DIM, ARM_DOF
 
 SECOND_NS = 1_000_000_000
+
+#: What the watchdog reports for a primitive it halted (CLAUDE.md 6.5, "policy stalls (watchdog)").
+STALLED = FailureMode.POLICY_STALLED.value
+
+
+@pytest.fixture(scope="module")
+def slow_config(tmp_path_factory) -> Path:
+    """``config/`` with a 40 s primitive timeout and the configured 20 s watchdog.
+
+    The two deadlines coincide in the real config, so a test that must show the *watchdog* halted a
+    primitive has to move the timeout out of the way. Nothing else changes.
+    """
+    root = tmp_path_factory.mktemp("config")
+    for src in (REPO_ROOT / "config").glob("*.yaml"):
+        shutil.copy(src, root / src.name)
+    training = yaml.safe_load((root / "training.yaml").read_text(encoding="utf-8"))
+    training["runtime"]["primitive_timeout_s"] = 40.0
+    (root / "training.yaml").write_text(yaml.safe_dump(training, sort_keys=False), encoding="utf-8")
+    return root
 
 
 class FakeClock:
@@ -64,6 +88,30 @@ class SpyEngine:
 
     def board_state(self) -> dict:
         return self.inner.board_state()
+
+
+class ProgressEngine(SpyEngine):
+    """A :class:`SpyEngine` whose board changes every ``every_s``, as if something were happening.
+
+    The test hook is on the *board state*, not on the robot: nothing here moves a joint or touches a
+    driver (R2). Each step marks one more distractor horse as having moved, which is exactly what
+    :meth:`board.perception.MockPerception.progress` reads, so a policy paired with this engine looks
+    to the watchdog like one that is getting somewhere.
+    """
+
+    def __init__(self, inner: StubEngine, now_ns, every_s: float = 5.0) -> None:
+        super().__init__(inner)
+        self._now, self._every_ns = now_ns, round(every_s * SECOND_NS)
+        self.started_ns = now_ns()
+
+    def board_state(self) -> dict:
+        board = self.inner.board_state()
+        horses = dict(board.get("horses") or {})
+        steps = (self._now() - self.started_ns) // self._every_ns
+        for i, horse in enumerate(sorted(h for h in horses if h != "R0")):
+            if i < steps:
+                horses[horse] = f"moved-{i}"
+        return {**board, "horses": horses}
 
 
 class IndexPolicy(HoldPolicy):
@@ -113,11 +161,12 @@ def move_command() -> Command:
     return Command(Primitive.MOVE, cells["track-0"], cells["track-5"], "R0")
 
 
-def make_controller(tmp_path, policy=None, script=None, seed: int = 0):
+def make_controller(tmp_path, policy=None, script=None, seed: int = 0, config_root=None, engine=None,
+                    clock=None):
     """A controller over mocks on one shared fake clock. Returns everything a test needs to assert."""
-    clk = FakeClock()
+    clk = FakeClock() if clock is None else clock
     arm, hand = MockArm(now_ns=clk), MockHand(now_ns=clk)
-    engine = SpyEngine(StubEngine(seed, script=script))
+    engine = SpyEngine(StubEngine(seed, script=script)) if engine is None else engine
     controller = Controller(
         arm=arm,
         hand=hand,
@@ -129,29 +178,31 @@ def make_controller(tmp_path, policy=None, script=None, seed: int = 0):
         sleep_until=clk.jump_to,
         session="test",
         log_dir=tmp_path,
+        config_root=config_root,
     )
     return controller, clk, engine, arm, hand
 
 
 # --------------------------------------------------------------------------------------------------
-# the loop: one MOVE to the timeout, at 10 Hz, every action through the guard
+# the loop: one MOVE to its end, at 10 Hz, every action through the guard
 # --------------------------------------------------------------------------------------------------
 
 
-def test_one_move_runs_to_timeout_and_is_reported(tmp_path) -> None:
+def test_one_move_ends_at_the_configured_deadline_and_is_reported(tmp_path) -> None:
+    """HoldPolicy moves nothing, so both deadlines are reached at 20 s and the watchdog's verdict wins."""
     controller, _clk, engine, _arm, _hand = make_controller(tmp_path, script=[move_command()])
     summary = controller.run(max_commands=1)
 
     assert summary.commands == 1
     assert engine.commands[0].primitive is Primitive.MOVE
-    assert summary.stopped_by["timeout"] == 1
-    # 20 s of CLAUDE.md 5.5, measured on the fake clock, to within one 30 Hz action period.
-    assert summary.elapsed_s == pytest.approx(config.load("training")["runtime"]["primitive_timeout_s"], abs=0.05)
+    assert summary.stopped_by["watchdog"] == 1
+    # 20 s of CLAUDE.md 5.5 and 6.5 on the fake clock, plus the action slot the halting hold occupies.
+    assert summary.elapsed_s == pytest.approx(config.load("training")["runtime"]["primitive_timeout_s"], abs=0.1)
     assert len(engine.reports) == 1
     outcome = engine.reports[0]
     assert isinstance(outcome, Outcome)
-    assert outcome.success is False and outcome.failure_mode == NO_PROGRESS
-    assert summary.failure_modes[NO_PROGRESS] == 1
+    assert outcome.success is False and outcome.failure_mode == STALLED
+    assert summary.failure_modes[STALLED] == 1
 
 
 def test_loop_runs_at_10_hz_on_the_fake_clock(tmp_path) -> None:
@@ -192,6 +243,10 @@ def test_chunk_is_executed_as_a_receding_horizon(tmp_path) -> None:
 
     assert len(policy.chunks) == summary.policy_calls
     assert sum(len(played) for played in per_chunk) == summary.actions_sent
+    # The last send of a halted primitive is the watchdog's hold -- the measured state, not a chunk
+    # entry (R2) -- so it is counted above and then set aside before the chunks are compared.
+    assert summary.stopped_by["watchdog"] == 1
+    per_chunk[-1].pop()
     for chunk, played in zip(policy.chunks, per_chunk, strict=True):
         assert len(chunk) == 16                         # config/training.yaml diffusion.chunk
         assert len(played) <= controller.execute == 8   # ... and diffusion.execute of them are played
@@ -218,8 +273,10 @@ def test_a_refused_action_is_counted_and_the_loop_continues(tmp_path) -> None:
     )
     summary = controller.run(max_commands=1)
 
-    assert summary.refused == summary.actions_sent > 0  # the arm refused every one of them
-    assert arm.guard.admitted == 0
+    # Every lunge refused; the one send the guard admitted is the watchdog's hold, which asks for
+    # the state the arm is already in and therefore cannot violate a step limit.
+    assert summary.refused == summary.actions_sent - 1 > 0
+    assert arm.guard.admitted == 1
     assert summary.commands == 1 and len(engine.reports) == 1
 
 
@@ -256,6 +313,108 @@ def test_run_ends_when_the_engine_is_exhausted(tmp_path) -> None:
     # MOVE, then RECOVER, then MOVE again, then the script is spent (docs/engine.md retry budget).
     assert summary.commands <= 4
     assert engine.inner.next_command() is None or summary.commands == 4
+
+
+# --------------------------------------------------------------------------------------------------
+# the progress watchdog and the per-trial log (CLAUDE.md Phase 5, 6.5 "policy stalls (watchdog)")
+# --------------------------------------------------------------------------------------------------
+
+
+def test_watchdog_halts_a_stalled_policy_after_twenty_seconds(tmp_path, slow_config) -> None:
+    """The watchdog, not the timeout: the primitive may run 40 s and is stopped at 20 s of nothing."""
+    controller, _clk, engine, arm, hand = make_controller(
+        tmp_path, script=[move_command()], config_root=slow_config
+    )
+    assert controller.timeout_ns == 40 * SECOND_NS          # the timeout is out of the way
+    assert controller.watchdog_stall_ns == 20 * SECOND_NS   # runtime.watchdog_stall_s, CLAUDE.md 6.5
+    sent: list[np.ndarray] = []
+    inner_send = controller.send
+    controller.send = lambda action: (sent.append(np.asarray(action)), inner_send(action))[1]
+    summary = controller.run(max_commands=1)
+
+    assert summary.stopped_by["watchdog"] == 1 and summary.stopped_by["timeout"] == 0
+    assert summary.elapsed_s == pytest.approx(20.0, abs=0.2)
+    assert engine.reports[0].success is False and engine.reports[0].failure_mode == STALLED
+    assert summary.failure_modes[STALLED] == 1
+
+    verdict = controller.trials.records[0]["watchdog"]
+    assert verdict["stalled"] is True and verdict["progress"] == 0.0
+    assert verdict["samples"] == pytest.approx(20, abs=1)          # one per watchdog_interval_s
+    assert verdict["s_since_increase"] == pytest.approx(20.0, abs=0.2)
+    assert controller.trials.records[0]["duration_s"] == pytest.approx(20.0, abs=0.2)
+
+    # R2: what the halted arm is given is its own measured state, through the guard, not a pose.
+    state, pinch = arm.read_state().payload, hand.read_state().payload.pinch
+    assert np.array_equal(sent[-1], np.concatenate([state.arm, [state.waist_yaw, pinch]]))
+    assert arm.guard.admitted == hand.guard.admitted == summary.actions_sent
+
+
+def test_a_policy_that_changes_the_board_keeps_the_watchdog_quiet(tmp_path, slow_config) -> None:
+    """Progress every 5 s: the watchdog never fires and the primitive ends on its own timeout."""
+    clk = FakeClock()
+    engine = ProgressEngine(StubEngine(0, script=[move_command()]), clk, every_s=5.0)
+    controller, _clk, _engine, _arm, _hand = make_controller(
+        tmp_path, script=None, config_root=slow_config, engine=engine, clock=clk
+    )
+    summary = controller.run(max_commands=1)
+
+    assert summary.stopped_by["timeout"] == 1 and summary.stopped_by["watchdog"] == 0
+    assert summary.elapsed_s == pytest.approx(40.0, abs=0.2)
+    record = controller.trials.records[0]
+    assert record["watchdog"]["stalled"] is False
+    assert record["watchdog"]["progress"] > 0.0
+    assert record["watchdog"]["samples"] == pytest.approx(40, abs=1)
+    assert record["watchdog"]["s_since_increase"] < 20.0
+    # Perception judges it on the board, and the board says the horse never reached dst.
+    assert record["failure_mode"] == FailureMode.MISSED_CELL.value != STALLED
+
+
+def test_watchdog_rearms_only_on_an_increase() -> None:
+    """The unit: samples on its own grid, remembers the last rise, and stalls ``stall_ns`` after it."""
+    watchdog = Watchdog(interval_ns=SECOND_NS, stall_ns=5 * SECOND_NS, started_ns=0)
+    values = iter([0.0, 0.0, 0.25, 0.25])
+    for second in range(4):
+        watchdog.sample(second * SECOND_NS, lambda: next(values))
+    assert (watchdog.samples, watchdog.value) == (4, 0.25)
+
+    watchdog.sample(3 * SECOND_NS + 1, lambda: 1.0)   # off the grid: not read at all
+    assert (watchdog.samples, watchdog.value) == (4, 0.25)
+    assert not watchdog.stalled(6 * SECOND_NS)        # the rise at t=2 s rearmed it
+    assert watchdog.stalled(7 * SECOND_NS)            # ... and 5 s later it has stalled again
+
+
+def test_mock_perception_progress_is_zero_until_the_board_changes() -> None:
+    """0 unless the mock board changed, and rising as more of it differs from where it started."""
+    perception, command = MockPerception(), move_command()
+    before = {"horses": {"R0": "track-0", "R1": "track-9", "R2": "R-base-2"}, "die": 3}
+
+    assert perception.progress(command, before, before) == 0.0
+    one = perception.progress(command, before, {**before, "horses": {**before["horses"], "R0": "track-3"}})
+    two = perception.progress(command, before, {**before, "horses": {**before["horses"], "R0": "track-3",
+                                                                     "R1": "track-11"}})
+    assert 0.0 < one < two <= 1.0
+    assert isinstance(perception, Perception)  # progress is part of the contract now
+
+
+def test_the_trial_log_has_one_json_line_per_execution(tmp_path) -> None:
+    """The per-trial failure log eval/run_eval.py reads back (R5)."""
+    controller, _clk, _engine, _arm, _hand = make_controller(tmp_path, script=[move_command()])
+    summary = controller.run(max_commands=2)   # the MOVE, then the RECOVER the stub answers with
+
+    assert controller.trials.path == tmp_path / "controller_test.trials.jsonl"
+    records = read_trials(controller.trials.path)
+    assert records == controller.trials.records and len(records) == summary.commands == 2
+    assert [r["command"]["primitive"] for r in records] == ["move", "recover"]
+    assert [r["index"] for r in records] == [0, 1]
+    assert all(r["failure_mode"] == STALLED and r["stopped_by"] == "watchdog" for r in records)
+    assert all(r["success"] is False and r["watchdog"]["stalled"] is True for r in records)
+    assert records[0]["command"] == {"primitive": "move", "src": "track-0", "dst": "track-5",
+                                     "horse_id": "R0"}
+    # The costs are this command's own, not the controller's running totals.
+    assert sum(r["actions_sent"] for r in records) == summary.actions_sent
+    assert sum(r["policy_calls"] for r in records) == summary.policy_calls
+    assert all(r["safety_refusals"] == 0 and r["align_failures"] == 0 for r in records)
+    assert all(r["duration_s"] == pytest.approx(20.0, abs=0.2) for r in records)
 
 
 # --------------------------------------------------------------------------------------------------

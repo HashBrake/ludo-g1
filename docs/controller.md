@@ -23,13 +23,19 @@ policy on anything but mocks anyway (R2, below).
 ```
 cmd = engine.next_command()            # None -> the run ends
 policy.reset(cmd)
-loop until policy.done() or 20 s:      # config/training.yaml runtime.primitive_timeout_s
+loop until policy.done(), 20 s, or the watchdog:
     sample every stream                # cameras, palm, arm state, hand state
     obs = align(streams, now, 50 ms)   # runtime/clock.py; goal channels + task one-hot added
+    watchdog.sample(...)               # once a second: perception.progress(cmd, before, now)
     chunk = policy.act(obs)            # 10 Hz
     send chunk[0..2] at 30 Hz          # never past diffusion.execute = 8 of the 16
-outcome = perception.verify(cmd, before, after)
+if the watchdog halted it:             # no progress for runtime.watchdog_stall_s
+    hold()                             # one command: the arm's own measured state, through the guard
+    outcome = Outcome(False, delta, "policy_stalled")
+else:
+    outcome = perception.verify(cmd, before, after)
 engine.report(outcome)                 # the engine decides on a RECOVER and a re-issue
+one JSON line -> data/logs/controller_<session>.trials.jsonl
 ```
 
 The controller never retries and never issues a RECOVER of its own. That is the engine's state
@@ -54,6 +60,39 @@ the current one up to index 7, then stops sending, so the arm holds the last tar
 rather than being driven off the end of a stale prediction. Entries 8..15 are never executed. A step
 that over-runs its period drops the grid points it missed instead of firing a burst of catch-up
 commands into the rate limiter (`_bump`).
+
+## The progress watchdog (CLAUDE.md Phase 5, 6.5)
+
+Two deadlines end a primitive that does not end itself, and they answer different questions. The
+**timeout** (`runtime.primitive_timeout_s`, 20 s) bounds how long a primitive may take. The
+**watchdog** (`runtime.watchdog_stall_s`, 20 s) bounds how long it may achieve *nothing*.
+
+| quantity | value | where from |
+|---|---|---|
+| progress sample | every 1 s | `runtime.watchdog_interval_s` |
+| stall verdict | 20 s without an increase | `runtime.watchdog_stall_s` |
+| what is sampled | `Perception.progress(cmd, before, now) -> [0, 1]` | `board/perception.py` |
+
+It is a few numbers (`runtime.controller.Watchdog`) read inside the loop's own tick: no thread, no
+timer, nothing that can fire while the loop is elsewhere. Only the *direction* of the signal is read,
+never its magnitude, so nothing has to be calibrated; `MockPerception.progress` counts the share of
+the board that differs from where the primitive started, and is 0 for the whole of a primitive in
+which nothing changed.
+
+On a halt the loop stops sending policy actions, sends **one hold** -- the arm's and hand's own
+measured state, through the same guard as every other command -- and reports
+`failure_mode="policy_stalled"` to the engine, which then decides on a RECOVER and a re-issue exactly
+as for any other failure. The hold is a reading, never a pose: R2 forbids this module from owning a
+joint target, so the only target it can construct is the one the robot is already at. It occupies one
+action slot (33 ms), so the next primitive's first action does not land inside the guard's rate-limit
+window.
+
+`policy_stalled` and `timeout_no_progress` are two modes and not one. The first is the watchdog's
+verdict, made during the primitive: the policy was going nowhere and was stopped. The second is
+perception's, made after it: nothing changed by the end. With `HoldPolicy` and the shipped config the
+two deadlines coincide at 20 s and the loop reports the stall, because it says the more specific of
+the two true things; a primitive cut short by the run deadline still ends in perception's verdict,
+which is why a 60 s mock run shows both (below).
 
 ## Observation
 
@@ -100,9 +139,11 @@ Phase 3. `build()` refuses it on any backend but `mock`. Nothing in `runtime/`, 
 imports from `tools/hardware_checks/`, and a test asserts that.
 
 `MockPerception` is the same kind of stand-in: it reads the engine's own board state, not the table,
-so it cannot see a fallen horse or a missed magnet. With `HoldPolicy` nothing moves, the board state
-does not change, and every primitive verifies as `timeout_no_progress`. **That is the expected result
-of every mock run** and it is what makes the engine's recovery path observable end to end.
+so it cannot see a fallen horse or a missed magnet. With `HoldPolicy` nothing moves and the board
+state does not change, so its `progress` stays 0 and the watchdog halts every primitive as
+`policy_stalled` (a primitive that ends some other way with a blank board verifies as
+`timeout_no_progress`). **That is the expected result of every mock run** and it is what makes the
+engine's recovery path observable end to end.
 
 ## What a mock run looks like
 
@@ -110,16 +151,20 @@ of every mock run** and it is what makes the engine's recovery path observable e
 the first failure with a RECOVER.
 
 ```
-elapsed            60.01 s
+elapsed            60.03 s
 commands executed  3 (recover=2, roll=1)
 outcomes           0 success, 3 failure
-failure modes      timeout_no_progress=3
-stopped by         run_deadline=1, timeout=2
-policy calls       598 = 9.96 Hz
-actions sent       1793 = 29.88 Hz
+failure modes      policy_stalled=2, timeout_no_progress=1
+stopped by         run_deadline=1, watchdog=2
+policy calls       599 = 9.98 Hz
+actions sent       1794 = 29.89 Hz
 safety refusals    0
 alignment failures 0
 ```
+
+The two primitives that ran their course were halted by the watchdog after 20 s of a board that never
+changed; the third was cut off by the run deadline, so perception judged it instead and saw the same
+blank board from the other side.
 
 On the fake clock of `tests/test_controller.py` the same loop measures 10.0 Hz exactly, because a
 fake clock has no scheduling jitter. The ~0.4 % shortfall on the real clock is the one-off cost of
@@ -133,9 +178,24 @@ One line per `runtime.heartbeat_s` (1 s) to `data/logs/controller_<session>.hear
 ts_ns=1158816410 session=20260911T204420 commands=0 primitive=roll policy_calls=9 actions=24 refused=0
 ```
 
+One JSON line per executed primitive to `data/logs/controller_<session>.trials.jsonl`, also
+git-ignored. This is the per-trial failure log: `eval/run_eval.py` reads it back and refuses to write
+a result whose rows disagree with it (`docs/eval.md`), and it is the record a phase report counts
+failures from when no eval was running.
+
+| key | meaning |
+|---|---|
+| `session`, `index`, `ts_ns` | the run, the command's position in it, and when it ended |
+| `command` | `{primitive, src, dst, horse_id}`, cells by id |
+| `success`, `failure_mode` | the `Outcome` reported to the engine |
+| `stopped_by` | `policy_done`, `watchdog`, `timeout` or `run_deadline` |
+| `duration_s`, `actions_sent`, `policy_calls`, `safety_refusals`, `align_failures` | this command's own cost, not the run's totals |
+| `watchdog` | `{stalled, samples, progress, s_since_increase}` at the end of the primitive |
+| `observed_state_delta` | what perception saw change |
+
 Everything else goes through the one `structlog` logger (`--json-logs` for machine-readable output):
-`run_start`, `observation_align_failed`, `safety_refused`, `primitive_end`, `command_done`,
-`engine_exhausted`, `run_end`.
+`run_start`, `observation_align_failed`, `safety_refused`, `primitive_end`, `watchdog_halt`,
+`command_done`, `engine_exhausted`, `run_end`.
 
 ## Injecting your own pieces
 

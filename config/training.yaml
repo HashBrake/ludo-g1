@@ -49,6 +49,19 @@ runtime:
   alignment_tolerance_ms: 50.0
   # Heartbeat line rate to data/logs/controller_<session>.heartbeat (section 7).
   heartbeat_s: 1.0
+  # The progress watchdog of CLAUDE.md Phase 5 ("a watchdog that halts on a policy that has not made
+  # progress for 20 s and reports to the engine"), which is not the primitive timeout above: the
+  # timeout bounds how long a primitive may take, the watchdog bounds how long it may achieve
+  # nothing. How often runtime/controller.py samples board.perception.Perception.progress while a
+  # primitive runs. 1 s is twenty samples per primitive: often enough to place the stall to within a
+  # sample, cheap enough that the signal may be a board difference every time.
+  watchdog_interval_s: 1.0
+  # No increase in that signal for this long halts the primitive with failure_mode policy_stalled.
+  # 20 s is section 6.5 verbatim. It equals primitive_timeout_s today, and the two ends are then
+  # reached together for a policy that never moves; the watchdog's is the verdict reported, because
+  # "no progress for 20 s" says more than "20 s passed". Lower it below the timeout to stop a frozen
+  # policy sooner than a working-but-slow one; it is not a safety limit (that is config/safety.yaml).
+  watchdog_stall_s: 20.0
 
 # --- the teleop recorder (5.2, 5.6): teleop/recorder.py --------------------------------------------
 # Design choices, not measurements. The per-path latencies the recorder compensates with are in
