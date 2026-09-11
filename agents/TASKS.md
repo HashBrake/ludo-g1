@@ -841,10 +841,10 @@ acceptance:
   - without: suite green, tests skipped naming the device
 notes: The headset must run the PicoBridge app and reach this laptop; the network path from the lab's prior setup is in
   third_party/g1_pico_teleop/README.md section 3.3 (robot NAT). Record what was needed in docs/drivers.md.
-result: (opus, 2026-09-12, branch wt/t020, commit COMMIT_HASH). NEITHER device was reached: the glove has never been
+result: (opus, 2026-09-12, branch wt/t020, commit 264fb9c; hash recorded by the follow-up commit). NEITHER device was reached: the glove has never been
   plugged into this laptop and the headset is not on the network (H-004, new).
-  - suite: see the commit's pre-commit run (ruff check . + pytest -q, no --no-verify). tests/test_pxcap.py alone
-    34 passed, 2 skipped; tests/test_pico.py alone 22 passed, 2 skipped. ruff clean on every file touched.
+  - suite: 643 passed, 14 skipped, 321.30 s through the pre-commit gate (ruff check . + pytest -q, no --no-verify).
+    tests/test_pxcap.py alone 34 passed, 2 skipped; tests/test_pico.py alone 22 passed, 2 skipped.
   - the 4 new skips name the device: "no PxCap Pro glove: config/hand.yaml glove.port is UNMEASURED and glove.usb_id
     gives nothing to discover /dev/ttyUSB*, /dev/ttyACM* with ... (H-004)" (2) and "no PicoBridge receiver: the
     PicoBridge receiver could not start on 0.0.0.0:63901 ... (H-004)" (2). --backend real exits 3 with the same reasons.

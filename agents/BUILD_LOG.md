@@ -3627,6 +3627,8 @@ one-commit follow-up and I did not make it unasked.
     tests/test_dexh15.py -q                              -> 252 passed, 10 skipped, 48 s (after the
                                                             two list edits below)
 .venv/bin/ruff check .                                   -> clean
+.venv/bin/python -m pytest -q  (the pre-commit gate, commit 264fb9c)
+                                                         -> 643 passed, 14 skipped, 321.30 s
 tools/hardware_checks/stream_stats.py --backend mock --stream glove --seconds 60 --json
     -> 3000 frames in 59.98 s, 50.000 Hz, 0 drops, interval p50/p99 20.0/20.0 ms, jitter 0.0 ms
 tools/hardware_checks/stream_stats.py --backend mock --stream pose --seconds 60 --json
