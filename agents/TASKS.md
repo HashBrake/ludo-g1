@@ -235,7 +235,7 @@ acceptance:
   - test: the mock hand maps pinch 0.0 and 1.0 to two distinct 15-joint vectors from config/hand.yaml
   - `grep -rn "Guard(" drivers/ | grep -v mock` is empty (only mocks construct simulated=True; real drivers will use simulated=False)
 notes: Interfaces are the contract for the real drivers in Phase 1; keep them minimal, no features nobody asked for.
-result: (opus, 2026-09-11T20:10+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T20:10+07:00, commit 096d01f)
   - `.venv/bin/python -m pytest tests/test_mock_drivers.py -q` -> 51 passed in 1.4 s. Full suite
     `.venv/bin/python -m pytest -q` -> 275 passed, 1 skipped (225 before). `.venv/bin/ruff check .` ->
     "All checks passed!". PASS

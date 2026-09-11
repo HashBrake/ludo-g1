@@ -1000,3 +1000,4 @@ Config hashes changed by this: robot `1ae6aa90` -> `9dc5e64a`, hand `5b615a57` -
 - No disagreement with the task as written. No blockers. Nothing under `third_party/` touched,
   nothing imported from `tools/hardware_checks/` (asserted by a test), `hardware/session.enable`
   neither created nor read for a write path.
+(T-006 commit: 096d01f; this line and the TASKS.md result hash are the only content of the follow-up commit.)
