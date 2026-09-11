@@ -66,7 +66,7 @@ notes: Facts Fable found on this laptop (verify, cite, use): (a) pxdex 3.2.1 (De
   PicoHandSnapshot separately from the skeleton frame; teleopit/retargeting/core.py RetargetingModule.retarget returns a full
   qpos via GMR (needs a full human skeleton). Joint order in teleopit/constants.py. Read ~/Teleopit only, never modify it.
   This task exists to find out whether A5 is wrong (D-002). If the Teleopit stack cannot give arm targets from a single controller, say so plainly and propose the smallest alternative (e.g. controller pose -> mink IK on the G1 MJCF directly). Do not build the alternative here.
-result: (opus, 2026-09-11T20:10+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T20:10+07:00, commit ac4fcc5)
   - docs/sdks.md: 8 device sections, each with a state-read call reference and, for the three actuator paths
     (G1 arm, G1 waist, DexH15), a target-write call reference. PASS
   - `.venv/bin/python -m pytest -q tests/test_docs_sdks.py -s` -> 9 passed; the test printed

@@ -240,3 +240,5 @@ an enable/weight slot at `motor_cmd[29].q`, so LUDO-G1 never has to publish `rt/
   repo-relative. If the repo moves (Q-007), that one line must be edited; there is a comment saying so.
 - No blockers. No safety-relevant code was added: `list_devices.py` cannot emit a motion command, and no
   driver, no `runtime/safety.py` consumer and no session file was touched.
+
+(T-002 commit: ac4fcc5; this line and the TASKS.md result hash are the only content of the follow-up commit.)
