@@ -74,7 +74,9 @@ def make_policy(spec: Sequence[str], backend: str) -> tuple[Policy, dict]:
 
     ``hold`` is :class:`~runtime.policy_api.HoldPolicy`, which commands no motion and scores 0 by
     construction; like :func:`runtime.controller.build` it is refused on any backend but mocks (R2).
-    ``bundle PATH`` is the inference bundle of T-029 and does not exist yet.
+    ``bundle PATH`` loads the inference bundle ``policy/export.py`` wrote
+    (:class:`policy.diffusion.DiffusionAdapter`); the result records the bundle's weights hash and the
+    training run behind it, so a success rate names the checkpoint it belongs to (R5).
     """
     parts = list(spec) or ["hold"]
     tag = parts[0]
@@ -86,10 +88,21 @@ def make_policy(spec: Sequence[str], backend: str) -> tuple[Policy, dict]:
             )
         return HoldPolicy(), {"tag": "hold", "checkpoint": None, "checkpoint_sha256": None}
     if tag == "bundle":
-        raise NotImplementedError(
-            "--policy bundle PATH is reserved for T-029 (policy/export.py: checkpoint -> inference bundle); "
-            "no bundle exists yet, so no success rate can be measured for one"
-        )
+        from policy.diffusion import DiffusionAdapter
+
+        if len(parts) != 2:
+            raise ValueError("--policy bundle takes exactly one path: --policy bundle data/checkpoints/<run>/bundle")
+        adapter = DiffusionAdapter(parts[1])
+        run = adapter.manifest.get("train_run") or {}
+        return adapter, {
+            "tag": "bundle",
+            "checkpoint": adapter.manifest.get("checkpoint"),
+            "checkpoint_sha256": adapter.manifest.get("weights_sha256"),
+            "bundle": str(adapter.path),
+            "inference_steps": adapter.spec.inference_steps,
+            "train_run": run.get("run"),
+            "dataset_manifest_sha256": run.get("dataset_manifest_sha256"),
+        }
     raise ValueError(f"unknown policy {tag!r}; known: 'hold', 'bundle PATH'")
 
 
@@ -209,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kind", default="move", choices=protocol.KINDS, help="trial set (default move)")
     parser.add_argument("--n", type=int, default=20, help="number of trials (default 20)")
     parser.add_argument("--policy", nargs="+", default=["hold"], metavar="SPEC",
-                        help="hold (default), or 'bundle PATH' once T-029 lands")
+                        help="hold (default), or 'bundle PATH' (an inference bundle from policy/export.py)")
     parser.add_argument("--seed", type=int, default=0, help="trial-set and engine seed (default 0)")
     parser.add_argument("--pairs", nargs="+", default=None, metavar="SRC:DST",
                         help="held-out cell pairs for --kind move (default: the pairs of eval_20_moves)")

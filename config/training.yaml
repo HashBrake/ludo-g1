@@ -109,6 +109,20 @@ diffusion:
   base: lerobot_diffusion_policy
   vision_encoder: resnet18
   encoder_per_camera: true
+  # One shape for all three cameras, in (h, w). lerobot's DiffusionConfig.validate_features refuses
+  # camera features of different shapes, and `palm` is 320x240 while `top` and `oblique` are 640x480,
+  # so policy/diffusion.py resizes every camera to this before the encoder. Chosen as the palm's own
+  # resolution: the smallest frame the observation of 5.3 carries, so no camera is upsampled.
+  encoder_image_hw: [240, 320]
+  # The diffusion U-Net's per-stage channel widths (lerobot DiffusionConfig.down_dims) and the number
+  # of SpatialSoftmax keypoints each ResNet-18 encoder reduces its feature map to; both are the
+  # upstream Diffusion Policy defaults, recorded here because they set the parameter count.
+  down_dims: [512, 1024, 2048]
+  spatial_softmax_keypoints: 32
+  # Samples policy/train.py draws to estimate the normalisation statistics (image mean/std, state and
+  # action min/max). A full pass over a real session is minutes of PNG decoding for numbers that
+  # converge in hundreds of samples; the run record says how many were drawn.
+  stats_samples: 256
   chunk: 16
   execute: 8             # receding horizon: execute 8 of the 16 predicted actions
   obs_history: 2

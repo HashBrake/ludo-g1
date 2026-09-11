@@ -292,9 +292,12 @@ def test_cli_refuses_the_real_backend(tmp_path, capsys) -> None:
         make_policy(["hold"], "real")
 
 
-def test_the_bundle_policy_is_reserved_for_t029() -> None:
-    with pytest.raises(NotImplementedError, match="T-029"):
-        make_policy(["bundle", "data/checkpoints/whatever.pt"], "mock")
+def test_the_bundle_policy_takes_one_existing_bundle(tmp_path) -> None:
+    """T-029 implemented `--policy bundle PATH`; loading a real one is tested in tests/test_diffusion.py."""
+    with pytest.raises(FileNotFoundError, match="not an inference bundle"):
+        make_policy(["bundle", str(tmp_path / "nothing")], "mock")
+    with pytest.raises(ValueError, match="exactly one path"):
+        make_policy(["bundle"], "mock")
     with pytest.raises(ValueError, match="unknown policy"):
         make_policy(["magic"], "mock")
 

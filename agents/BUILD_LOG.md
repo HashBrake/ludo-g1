@@ -2374,3 +2374,142 @@ which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
 (T-028 commit: 6628491, which holds all of the code, tests and docs of this task. This line and the
 TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full pre-commit
 gate — no `--no-verify`, per D-013 item 1; an amend cannot fold in the hash it is recording.)
+
+## T-029  Diffusion Policy wrapper, smoke train, export, inference latency  (opus, 2026-09-11T23:10+07:00)
+
+### What changed
+- `policy/diffusion.py` (new): `PolicySpec` (the architecture, from `config/training.yaml`, stored in
+  every bundle), `GoalDiffusionPolicy` (lerobot 0.4.4 `DiffusionPolicy` + a learned 1x1 goal
+  projection + the task one-hot on the state + normalisation buffers), `DiffusionAdapter`
+  (`runtime.policy_api.Policy`: chunk 16, receding horizon 8, DDIM 10), `dataset_stats`, and a
+  `python -m policy.diffusion --bundle ...` latency benchmark.
+- `policy/train.py` (new): argparse entry point, config + dataset manifest hashing, plain torch loop,
+  `data/checkpoints/<run>/{run.json,loss.csv,checkpoint.pt}`, heartbeat, `--smoke`.
+- `policy/export.py` (new): checkpoint -> bundle (`bundle.json` + `weights.pt`, TorchScript attempted
+  **and verified**), `python -m policy.export --checkpoint ...`.
+- `policy/__init__.py`: package docstring. `tests/test_diffusion.py` (new): 10 tests.
+- `config/training.yaml`: four new `diffusion` keys — `encoder_image_hw: [240, 320]`,
+  `down_dims: [512, 1024, 2048]`, `spatial_softmax_keypoints: 32`, `stats_samples: 256`. No existing
+  value changed; `REQUIRED_KEYS` untouched; `unmeasured("training")` still empty.
+- `eval/run_eval.py`: the reserved `--policy bundle PATH` branch now builds a `DiffusionAdapter` and
+  records the bundle path, the weights sha256, the DDIM steps, the training run and its dataset
+  manifest hash in the result JSON.
+- `docs/policy.md`: sections for `diffusion.py`, `train.py`, `export.py` and the latency table.
+- **Outside the touch list, and why**: `tests/test_eval.py::test_the_bundle_policy_is_reserved_for_t029`
+  asserted `NotImplementedError(... T-029 ...)` — the very reservation this task was told to fill, so
+  it had to be rewritten (it now pins the error path: a path that is not a bundle, and `bundle` with
+  no path); the two matching lines in `docs/eval.md` were updated with it. Nothing else in either
+  file was touched.
+
+### Which adaptation route lerobot 0.4.4 permits (Fable's first question)
+Neither of the "declare it and let lerobot cope" routes exists. Both were run before any code was
+written, and both are now pinned by a test:
+- 5-channel `top` beside 3-channel `oblique`/`palm`: `DiffusionConfig.validate_features`
+  (`configuration_diffusion.py:239`) raises *"`observation.images.oblique` does not match
+  `observation.images.top`, but we expect all image shapes to match"*.
+- five channels on every camera: the stock torchvision backbone raises *"Given groups=1, weight of
+  size [64, 3, 7, 7], expected input[1, 5, 240, 320] to have 3 channels, but got 5 channels instead"*.
+
+So the wrapper route: a `Conv2d(5, 3, 1)` initialised to identity-on-RGB and zero-on-goal, and the
+task one-hot concatenated onto the state (lerobot sees a 12-D `observation.state`). The same "all
+image shapes must match" rule forces one encoder input size for three cameras of two resolutions:
+`diffusion.encoder_image_hw` (240x320, the palm's own resolution, so nothing is upsampled). lerobot
+0.4.4 also moved normalisation out of the policy into processor pipelines built around a
+`LeRobotDataset` and a hub checkpoint (`processor_diffusion.py:36`), so the statistics are carried as
+buffers in this model's own `state_dict` with the same formulas (`normalize_processor.py:325-359`).
+
+### Commands and measured results
+
+```bash
+.venv/bin/ruff check .                                   # All checks passed!
+.venv/bin/python -m pytest -q                            # 461 passed, 4 skipped in 180.10s
+.venv/bin/python -m pytest tests/test_diffusion.py -q    # 10 passed in 55.52s
+```
+
+Test-scale numbers (48x64 encoder, `down_dims` 64/128/256, batch 2, lr 1e-3 — a real ResNet-18 /
+U-Net / DDIM path small enough for the suite):
+
+| measurement | value |
+|---|---|
+| smoke train, 30 steps | training loss step 1 **0.9514** -> step 30 **0.7704** (mean of the last 10: 0.7182) |
+| fixed-probe loss (same batch, same seeded noise/timestep draw, untrained vs trained) | **1.1723 -> 0.9746 (-16.9%)** |
+| export round trip | two adapters over the same bundle, seed 7: identical actions to 1e-5; and equal to `GoalDiffusionPolicy.predict` with the same pinned noise |
+| TorchScript | traced, max |diff| vs eager **0.0** |
+| `act()` at DDIM 10 | 191 ms mean over 20 calls (test-scale model; the real number is below) |
+
+Full-scale CLI run, on the mock session recorded at the real 640x480/320x240 frame sizes
+(`data/raw/mock_smoke`, 3 episodes, 75 frames, written by `teleop/recorder.py` onto the mock drivers):
+
+```bash
+.venv/bin/python -m policy.train --sessions data/raw/mock_smoke --smoke
+# run 20260911T225009_diffusion_smoke: 75 frames, 293.0M parameters
+# training config hash 862aafc738b931dd98e5f436c1b868eb18402f7c055e24a8a297daab65733605
+# dataset manifest sha256 a4a45245e0985001b1e25a2d40df0c4b9e274aa075f8c53fe39a7e4c089ac31d
+# loss step 1 1.030969 -> step 30 0.609529 (mean of the last 10: 0.706344) in 379.6 s   [12.7 s/step, CPU]
+
+.venv/bin/python -m policy.export --checkpoint data/checkpoints/20260911T225009_diffusion_smoke
+# bundle data/checkpoints/20260911T225009_diffusion_smoke/bundle
+#   spec: DiffusionAdapter(bundle='bundle', ddim=10, chunk=16, device=cpu, calls=0)
+#   torchscript: model.ts (traced, max diff vs eager 0.00e+00; fixed-shape artefact, not used at inference)
+#   weights sha256 d4c3e32d5cdfcc6f28f629a46a6b9952a085ad5bf933799546007ed4a8222fe2
+
+.venv/bin/python -m policy.diffusion --bundle .../bundle --trials 20                      # DDIM 10
+.venv/bin/python -m policy.diffusion --bundle .../bundle --trials 20 --inference-steps 5  # DDIM 5
+```
+
+| DDIM steps | `act()` median | mean | prepare | vs the 100 ms budget (5.2: 10 Hz) |
+|---|---|---|---|---|
+| 10 (`diffusion.inference_steps`) | **804 ms** | 1099 ms (p95 3652 ms) | 8 ms | **8x over** (11x on the mean) |
+| 5 (first rung of `compute.inference_fallback_order`) | **498 ms** | 502 ms (p95 566 ms) | 4 ms | **5x over** |
+
+Four DDIM-10 runs gave medians of 804, 965, 2667 and 1125 ms: the median is stable around 0.8-1.0 s
+and the means are inflated by multi-second outliers (14 threads on a laptop CPU under sustained
+load — another builder's suite was running in a second worktree for part of it). The order of
+magnitude is not in doubt.
+
+### Findings that need a decision from Fable (not fixed here: they are scope)
+1. **10 Hz inference is not reachable on this laptop.** The ladder of 5.8 does not close an 8x gap:
+   DDIM 5 halves the cost and is still 5x over, and torch here is the **CPU** wheel (D-011), so there
+   is no GPU leg to fall back to on this machine at all. The levers, in the order I would try them:
+   a CUDA torch build or the Orin NX; a smaller `encoder_image_hw` (the U-Net, not the encoders, is
+   ~99% of the time, so this is the weaker lever); a smaller `down_dims` (the 293 M parameters are
+   mostly the 512/1024/2048 U-Net). Not my call — I changed nothing about the configured values.
+2. **The observation history is repeated during training.** `diffusion.obs_history` is 2, but
+   `LudoDataset` yields one frame per sample, so training stacks the same frame twice while
+   `DiffusionAdapter` stacks a real queue of two. The model never sees motion in its conditioning
+   during training and sees it at inference. `policy/dataset.py` is outside this task's touch list
+   and this changes its sample contract, so it needs a task: give `LudoDataset` observation
+   `delta_timestamps` the way it already has action ones. **This must land before any real training
+   run (T-031).**
+3. **EMA and the LR schedule are not implemented.** `diffusion.ema_decay: 0.9999` and
+   `scheduler_warmup_steps` are in the config and `policy/train.py` applies neither (Fable's guidance
+   said "plain torch loop"). Fine for a smoke test, wrong for a 200 k-step run.
+4. **Disk.** `/home` has 12 GB free (CLAUDE.md 3.4 wants >= 500 GB for datasets). One 293 M-parameter
+   checkpoint is 1.17 GB, its bundle another 1.17 GB, and a traced `model.ts` 1.17 GB more: one smoke
+   run cost 3.3 GB. I deleted `checkpoint.pt`, `weights.pt` and `model.ts` from the smoke run after
+   measuring and kept `run.json`, `loss.csv` and `bundle.json` as evidence; the commands above
+   regenerate them. Checkpoint retention on this laptop needs a policy before Phase 3 collection.
+
+### Notes / deviations
+- **The per-step training loss is noise.** `compute_loss` draws a fresh diffusion timestep and noise
+  every step, so step 29 was 0.271 and step 30 was 0.610 in the same run. The test therefore asserts
+  a *fixed-probe* decrease (same batch, same seeded draw, untrained model vs trained model) as well
+  as `loss_last < loss_first`, and prints all of it; `loss_mean_last_10` is in `run.json` for the same
+  reason. A criterion of "step 30 below step 1" alone would pass or fail on the draw.
+- **TorchScript traced, and is still not used at inference.** Tracing with the noise drawn *inside*
+  the function makes `check_trace` compare two different random draws — it warns and saves a graph
+  nobody has verified. So the traced wrapper takes the noise as an input, and the graph is then
+  compared against the eager model directly (0.0 difference). It is kept as an artefact for the Orin
+  NX / ONNX leg and `bundle.json` records `torchscript_used_at_inference: false`: a traced
+  reverse-diffusion loop bakes in the batch size, the image size and the step count. The adapter
+  always loads the `state_dict` + spec, so the bundle is the same thing either way.
+- `GoalDiffusionPolicy.predict` calls `DiffusionModel._prepare_global_conditioning` and
+  `conditional_sample` rather than `generate_actions`, because `generate_actions` slices the horizon
+  from `n_obs_steps - 1` (lerobot's action alignment) while `policy/dataset.py` aligns the chunk at
+  delta 0. Taking `generate_actions` would have made the first executed action one step stale and
+  returned 8, not 16. Documented in both module docstrings and docs/policy.md.
+- `policy/dataset.py`, `runtime/`, `config/safety.yaml` and `third_party/` untouched; the lerobot
+  package is wrapped, never patched (no file under `.venv` was modified).
+- R1-R6 intact: no motion command anywhere (nothing in `policy/` imports a driver — a test asserts
+  it), no scripted motion, `hardware/session.enable` never created or read. Committed through the
+  full pre-commit gate, no `--no-verify` (D-013 item 1).

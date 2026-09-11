@@ -1046,7 +1046,7 @@ result:
   note: docs/README.md has no row for eval.md - outside this task's touch list, left for Fable.
 
 ## T-029  Diffusion Policy wrapper with goal channels, smoke-train, export, inference timing
-status: in_progress
+status: review
 priority: P1
 phase: 3
 owner: opus
@@ -1069,6 +1069,41 @@ acceptance:
     the 100 ms budget (CLAUDE.md 5.8 fallback ladder noted if above)
 notes: Real training happens on Greennode (Q-001). No hardware. Keep the LeRobot modifications in policy/ (wrap, do not
   patch the package).
+result:
+  commit: PENDING
+  policy/diffusion.py (~470 lines) + policy/train.py (~230) + policy/export.py (~150) + tests/test_diffusion.py
+    (10 tests) + docs/policy.md (+130 lines) + policy/__init__.py docstring + 4 new config/training.yaml
+    `diffusion` keys (encoder_image_hw [240,320], down_dims, spatial_softmax_keypoints, stats_samples; no existing
+    value changed, REQUIRED_KEYS untouched) + the `--policy bundle PATH` branch of eval/run_eval.py.
+  route: lerobot 0.4.4 permits NEITHER declared-5-channel route. validate_features raises "we expect all image
+    shapes to match" for a 5-channel `top` beside 3-channel cameras, and 5 channels on every camera dies in the
+    stock torchvision conv1 ("expected input[1,5,240,320] to have 3 channels"). Both reproduced, both pinned by a
+    test. So: a learned Conv2d(5,3,1) (identity on RGB, zero on the goal channels at init), the task one-hot
+    concatenated onto the state (lerobot sees 12-D observation.state), and every camera resized to one encoder
+    shape (240x320) because that same rule forbids two resolutions. Normalisation left the policy in 0.4.4
+    (processor pipelines), so the stats live as buffers in the model's own state_dict and travel in the bundle.
+  chunk: predict() samples conditional_sample directly and returns all 16 from index 0 (policy/dataset.py aligns
+    the chunk at delta 0; lerobot's generate_actions slices from n_obs_steps-1 and returns 8). Controller plays 8.
+  tests: 10 passed in 55.5 s; full suite 461 passed, 4 skipped in 180.1 s; ruff clean.
+  smoke train (test scale, 48x64 encoder): loss step 1 0.9514 -> step 30 0.7704 (mean of last 10 0.7182); fixed
+    probe (same batch, same seeded draw) 1.1723 -> 0.9746, -16.9%.
+  smoke train (CLI, full model, data/raw/mock_smoke at 640x480): 293.0M params, 30 steps in 379.6 s on CPU, loss
+    1.030969 -> 0.609529 (mean of last 10 0.706344); training config hash 862aafc738b931dd98e5f436c1b868eb18402f7
+    c055e24a8a297daab65733605, dataset manifest a4a45245e0985001b1e25a2d40df0c4b9e274aa075f8c53fe39a7e4c089ac31d.
+  export: bundle.json + weights.pt; torch.jit.trace SUCCEEDED with the noise passed in as an input and the graph
+    verified against the eager model (max diff 0.0), but the adapter still loads the state_dict and the manifest
+    says torchscript_used_at_inference: false (a traced diffusion loop bakes in batch size, image size and step
+    count, and the file is 1.17 GB). Round trip: two adapters, same seed -> identical actions to 1e-5.
+  latency (this laptop, CPU torch, 640x480/320x240 in, 240x320 encoder, 20 calls): DDIM 10 median 804 ms, mean
+    1099 ms -> 8x over the 100 ms budget; DDIM 5 median 498 ms, mean 502 ms -> 5x over. The 5.8 fallback ladder
+    does not close it: 10 Hz needs a GPU (CUDA torch or the Orin NX) or a smaller model. Prepare cost 8 ms.
+  open for Fable (in BUILD_LOG): (1) the 10 Hz gap above; (2) training repeats the observation frame twice
+    because LudoDataset yields one frame and obs_history is 2 -- needs a task on policy/dataset.py BEFORE any real
+    training run; (3) EMA and the LR warmup are configured but not implemented; (4) /home has 12 GB free and one
+    checkpoint+bundle is 2.3 GB.
+  outside the touch list: tests/test_eval.py's "bundle is reserved for T-029" test asserted the exact
+    NotImplementedError this task removes, so it was rewritten to pin the new error path, and the two matching
+    lines in docs/eval.md with it.
 
 ## T-030  ACT baseline wrapper, same inputs
 status: todo

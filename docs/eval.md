@@ -152,8 +152,9 @@ what to use when the thing being measured is timing rather than orchestration.
 
 - `--backend real` exits 2: no actuated real driver exists (Phase 1), and `HoldPolicy` is a test
   double that is refused on any backend but mocks (R2), exactly as in `runtime/controller.py`.
-- `--policy bundle PATH` raises `NotImplementedError` naming T-029: the inference bundle does not
-  exist yet, so no success rate can be measured for one.
+- `--policy bundle PATH` needs a bundle `policy/export.py` wrote (T-029); a path that is not one is a
+  `FileNotFoundError`, and the result records the bundle's weights hash, its DDIM step count and the
+  training run behind it, so no success rate is ever separable from the checkpoint that produced it.
 - `--kind sequence --n 19` is a `ValueError`: the script has 20 commands and a shorter run would be a
   different evaluation.
 
@@ -164,7 +165,7 @@ what to use when the thing being measured is timing rather than orchestration.
 | `--backend` | `mock` | `mock`, or `real` (refused) |
 | `--kind` | `move` | `move`, `roll`, `recover`, `sequence` |
 | `--n` | 20 | trials |
-| `--policy` | `hold` | `hold`, or `bundle PATH` once T-029 lands |
+| `--policy` | `hold` | `hold`, or `bundle PATH` (an inference bundle from `policy/export.py`) |
 | `--seed` | 0 | seeds the trial set and the stub engine |
 | `--pairs` | the `eval_20_moves` pairs | held-out pairs for `--kind move`, as `src:dst` |
 | `--tag` | `<kind>-<policy>` | result file tag |

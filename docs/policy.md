@@ -107,3 +107,131 @@ because a DataLoader worker sets `torch.set_num_threads(1)` itself, and on tenso
 default thread pool costs about three times what it saves — with the pool on, the `num_workers=0` leg
 measures 30 samples/s, which is thread contention, not the loader. Real 640x480 frames will be
 slower; that measurement belongs to the first real session, not to the mock.
+
+## `policy/diffusion.py`
+
+```python
+from policy.diffusion import DiffusionAdapter, GoalDiffusionPolicy, PolicySpec
+
+model = GoalDiffusionPolicy(PolicySpec.from_config())        # training
+policy = DiffusionAdapter("data/checkpoints/<run>/bundle")   # inference, runtime/controller.py
+```
+
+The primary policy of CLAUDE.md 5.7: lerobot 0.4.4's `DiffusionPolicy` (ResNet-18 encoder per camera,
+chunk 16, DDIM 10 at inference, receding horizon of 8) wrapped — never patched — so that it accepts
+the observation of 5.3.
+
+### What lerobot cannot be told, and what the wrapper does instead
+
+Two things 5.3 asks for have no place in the upstream config, and both refusals were reproduced
+before the wrapper was written (`tests/test_diffusion.py::test_lerobot_refuses_a_five_channel_top_beside_three_channel_cameras`):
+
+| want | what lerobot 0.4.4 does | what `GoalDiffusionPolicy` does |
+|---|---|---|
+| 5-channel `top` (RGB + 2 goal channels) | `DiffusionConfig.validate_features` (`lerobot/policies/diffusion/configuration_diffusion.py:239`) raises *"`observation.images.oblique` does not match `observation.images.top`, but we expect all image shapes to match"* | a learned **1x1 convolution** projects 5 → 3 channels before the encoder |
+| five channels on *every* camera instead | the stock torchvision backbone (`modeling_diffusion.py:475`) raises *"weight of size [64, 3, 7, 7] … but got 5 channels"* | — |
+| task one-hot as a separate input | there is no such input | it is **concatenated onto the state**: lerobot sees a 12-D `observation.state` (9 + 3) |
+| three cameras at two different resolutions | same "all image shapes must match" rule | every camera is resized to `diffusion.encoder_image_hw` (240x320) first |
+| normalisation inside the policy | moved out into processor pipelines (`processor_diffusion.py:36`) built around a `LeRobotDataset` and a hub checkpoint | the same statistics live as **buffers in this model's `state_dict`** (VISUAL mean/std, STATE and ACTION min/max to [-1, 1]), so a bundle is self-contained |
+
+The projection starts as the identity on the RGB channels with **zero weight on the goal channels**,
+so at step 0 the encoder sees exactly the image it would see without a goal and training decides how
+much goal to let in. Resizing to one encoder shape has a second effect worth knowing: the model does
+not depend on the camera resolutions at all, so a model trained on the 64x48 mock frames runs on the
+640x480 real ones unchanged.
+
+### The chunk starts at the current frame
+
+lerobot's `generate_actions` slices the predicted trajectory from `n_obs_steps - 1`, because its
+sampler aligns actions with `action_delta_indices` = [-1 … 14]. `policy/dataset.py` aligns them at
+[0 … 15] — the chunk starts at the frame that was observed. So `GoalDiffusionPolicy.predict` samples
+the trajectory directly (`DiffusionModel.conditional_sample`) and returns all 16 from index 0, and
+`runtime/controller.py` plays `diffusion.execute` (8) of them before asking again. Mixing the two
+conventions would put a one-step-stale action first; training and inference here both use the
+dataset's.
+
+### Known gap: the observation history is repeated during training
+
+`diffusion.obs_history` is 2 and `policy/dataset.py` yields one frame per sample, so **training
+repeats the current frame twice** while `DiffusionAdapter` keeps a real queue of the last two
+observations. The model therefore never sees motion in its conditioning during training, and sees it
+at inference. This must be closed before any real training run — `LudoDataset` needs observation
+`delta_timestamps` the way it already has them for actions — and it is logged as a T-029 finding in
+`agents/BUILD_LOG.md`. EMA (`diffusion.ema_decay`) and the warmup scheduler of `diffusion.scheduler`
+are likewise not applied by `policy/train.py` yet.
+
+### `DiffusionAdapter` (the `runtime.policy_api.Policy` side)
+
+`reset(command)` drops the observation queue and restarts the noise sequence; `act(observation)`
+converts the `Observation` dataclass (uint8 HWC frames, the `(2, h, w)` goal channels, the 9-D state,
+the task one-hot) into the batch, runs one DDIM sample and returns an `ActionChunk` of 16 at
+`rates.action_hz`; `done()` is **always False** — this model has no termination head, so the
+controller's 20 s `runtime.primitive_timeout_s` ends every primitive and the engine verifies the
+state change (5.5). `seed=` pins the initial noise, which is what makes an exported bundle
+reproducible.
+
+## `policy/train.py`
+
+```bash
+.venv/bin/python -m policy.train --sessions data/raw/<session> --steps 200000        # Greennode
+.venv/bin/python -m policy.train --sessions data/raw/mock_smoke --smoke              # 30 steps, CPU
+```
+
+A plain torch loop (Adam, `diffusion.learning_rate`, `diffusion.weight_decay`) over `LudoDataset`
+with the policy's own loss — no lerobot trainer, no hub. Each run writes
+`data/checkpoints/<run>/`:
+
+- `run.json` — args, git commit, **all six config hashes**, the **dataset manifest hash** (sha256 over
+  each session's `meta/info.json` and `episodes_meta.jsonl`, in session-name order), frame and episode
+  counts, parameter count, first/last loss, wall time;
+- `loss.csv` — `step,loss,elapsed_s` for every step;
+- `checkpoint.pt` — `{"spec", "state_dict", "run"}`.
+
+Two runs are comparable exactly when their config hashes and manifest hash agree (R5, 5.6). A run
+also writes `data/logs/train_<run>.heartbeat` (section 7).
+
+The per-step training loss is a noisy estimate: `compute_loss` draws a fresh diffusion timestep and
+noise every step, so a single step's number says little. Compare `loss_mean_last_10`, or the
+fixed-probe loss `tests/test_diffusion.py` uses (same batch, same seeded draw, two models).
+
+## `policy/export.py`
+
+```bash
+.venv/bin/python -m policy.export --checkpoint data/checkpoints/<run>
+.venv/bin/python -m eval.run_eval --policy bundle data/checkpoints/<run>/bundle --backend mock
+```
+
+A checkpoint becomes an inference bundle: `bundle.json` (format tag, the `PolicySpec`, the weights
+sha256, the source checkpoint and its sha256, the training run's hashes, what tracing did) and
+`weights.pt` (the `state_dict`, statistics included). `DiffusionAdapter` loads exactly that, and
+`eval/run_eval.py --policy bundle PATH` records the weights hash and the training run in every result.
+
+TorchScript is attempted and verified: the trace takes the diffusion noise as an **input** (otherwise
+the graph contains an `aten::randn` and `check_trace` compares two different random draws), and the
+traced graph is then compared against the eager model — on the smoke run the difference was exactly
+0.0 and `model.ts` was written. It is still **not what the adapter runs**: a traced reverse-diffusion
+loop bakes in the batch size, the image size and the DDIM step count, and the file is as large as the
+weights again (1.17 GB for the 293 M-parameter model). It is a starting point for the Orin NX / ONNX
+leg of 5.8, and the honest export is the `state_dict` plus the spec. Revisit by exporting the U-Net
+alone and keeping the scheduler loop in Python.
+
+## Inference latency on this laptop (CPU, 2026-09-11)
+
+```bash
+.venv/bin/python -m policy.diffusion --bundle data/checkpoints/<run>/bundle --trials 20
+.venv/bin/python -m policy.diffusion --bundle data/checkpoints/<run>/bundle --trials 20 --inference-steps 5
+```
+
+At the configured frame sizes (`top`/`oblique` 640x480, `palm` 320x240 → a 240x320 encoder input),
+the full 293 M-parameter model, torch 2.9.1+**cpu**, 14 threads:
+
+| DDIM steps | median `act()` | mean | budget (10 Hz) |
+|---|---|---|---|
+| 10 (`diffusion.inference_steps`) | **804 ms** | 1.1 s (spiky: p95 3.7 s) | 100 ms — **8x over** |
+| 5 (the first rung of `compute.inference_fallback_order`) | **498 ms** | 502 ms | 100 ms — **5x over** |
+
+Frame preparation (resize, normalise, project) is 8–16 ms of that; the rest is the U-Net. The
+fallback ladder of 5.8 does not close an 8x gap on CPU: DDIM 5 halves the cost and is still 5x over,
+so 10 Hz inference needs a GPU (a CUDA torch build on this laptop, or the Orin NX), a smaller model,
+or both. This is a measurement on an untrained smoke checkpoint, which costs exactly what a trained
+one of the same shape will.
