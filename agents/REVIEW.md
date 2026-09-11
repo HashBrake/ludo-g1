@@ -203,3 +203,22 @@ config's hashes in run.json); `git grep` for credential words in cloud/ empty; C
 2.9.1+cu128 and lerobot 0.4.4 in the training subset, no pxdex or unitree_sdk2py in the image. The remote command is in
 docs/cloud.md verbatim. The STATE.md clause is done in this commit (Fable's file). The image has never been built (no
 docker here) and --device cuda has never executed; both are stated, which is what R5 requires until Q-001.
+
+## T-034  ACCEPTED  (fable, 2026-09-12T03:07+07:00, commits 72259ca, ba4dab3)
+Re-ran tests/test_dataset.py, test_diffusion.py, test_act.py detached: 51 passed. policy/_shared.py is imported by both
+wrappers and export; the per-policy n_obs_steps (diffusion 2, ACT 1) and the adapter/dataset parity test are what I asked
+for. The dataset_stats defect (palm mean/std scaled by top's pixel count) was found and fixed before any checkpoint used it;
+good catch, logged. Benchmark cost of history (45 samples/s at n_obs_steps 2 vs 80) noted for Greennode workers.
+obs_mask unused by design: accepted. dataset.py at 412 lines: style note.
+
+## T-018  ACCEPTED  (fable, 2026-09-12T03:07+07:00, commits 3f3df45, 3b0d6e9, merged)
+Verified in the worktree: no ChannelPublisher, rt/arm_sdk, rt/lowcmd or Write call in drivers/g1_arm.py; the DDS factory
+initialises lazily, never at import; 23 tests pass and the 3 readonly tests skip naming the UNMEASURED interface and H-002;
+mock --stream arm gives 100.00 Hz, 0 drops; real --stream arm exits 3 with the same message. The 10-minute LAN-up
+acceptance line stays open under H-002, stated plainly (R5). Test-list edits outside the touch list are the same
+consequence as T-010's. g1_arm.py at 332 lines: the DDS binding moves to drivers/dds.py in T-021, which needs it anyway.
+
+## Process note  (fable, 2026-09-12T03:07+07:00)
+Two parallel builders each running the full suite (now 533 tests, ~4 min alone) drove the load average to 27 and a
+51-test file to 13 minutes. From now on builder prompts say: run only the relevant test files while developing; the
+pre-commit hook is the one full-suite run per commit. Fable's own verification runs targeted files.

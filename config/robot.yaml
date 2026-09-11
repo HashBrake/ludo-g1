@@ -94,6 +94,16 @@ control:
   # LowState_ publish rate is nominally 500 Hz on the G1 but was never observed here.
   state_hz: 500
   state_hz_status: UNMEASURED
+  # Motor slots of LowState_/LowCmd_ that are real G1 joints: the 29 of the Unitree order the
+  # `index` keys above point into (the message itself carries 35 slots, the rest unused --
+  # .venv/lib/python3.10/site-packages/unitree_sdk2py/idl/unitree_hg/msg/dds_/_LowState_.py:30).
+  # drivers/g1_arm.py records q/dq/tau_est for exactly these for the dataset (5.6). A fact about the
+  # message layout, not a measurement, so it carries no status key.
+  motor_count: 29
+  # How long drivers/g1_arm.py waits for a LowState_ before raising ArmUnavailable, and how old the
+  # newest message may be before the stream counts as gone silent. A design choice (long enough to
+  # cover a link renegotiation, short enough that a read-only check fails fast), not a measurement.
+  state_timeout_s: 3.0
   # PD gains for the commanded joints. These are the SDK example's arm values; they have not been
   # tuned on this robot with a hand attached.
   kp: 60.0

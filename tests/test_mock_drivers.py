@@ -102,9 +102,10 @@ def test_factory_builds_every_device_on_the_mock_backend(name: str) -> None:
     assert driver is not None
 
 
-#: The cameras got their real backend in T-010 (drivers/cameras.py, read-only, no session); the
-#: actuated devices have not got one yet. tests/test_cameras.py covers the camera side.
-ACTUATED = tuple(name for name in DEVICES if name not in ("top", "oblique", "palm"))
+#: The cameras got their real backend in T-010 (drivers/cameras.py) and the arm its read-only one in
+#: T-018 (drivers/g1_arm.py), both without a session; the rest have not got one yet.
+#: tests/test_cameras.py and tests/test_g1_arm.py cover those two sides.
+ACTUATED = tuple(name for name in DEVICES if name not in ("top", "oblique", "palm", "arm"))
 
 
 @pytest.mark.parametrize("name", ACTUATED)

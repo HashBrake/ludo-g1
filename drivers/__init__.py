@@ -11,10 +11,11 @@ arm = make("arm")                 # backend="mock" is the default
 cam = make("top", backend="mock")
 ```
 
-``backend="real"`` gives a :class:`drivers.cameras.V4L2Camera` for the three camera streams (T-010,
-read-only, no session needed) and raises :class:`NotImplementedError` for the actuated devices until
-their drivers exist. Only ``drivers/mock`` builds a guard with ``simulated=True``; the real drivers
-will build theirs with the session gate live (R1).
+``backend="real"`` gives a :class:`drivers.cameras.V4L2Camera` for the three camera streams (T-010)
+and a :class:`drivers.g1_arm.G1Arm` for ``arm`` (T-018), both read-only and needing no session, and
+raises :class:`NotImplementedError` for the devices whose drivers do not exist yet. Only
+``drivers/mock`` builds a guard with ``simulated=True``; the real drivers will build theirs with the
+session gate live (R1) -- ``G1Arm`` has no writer at all until T-021, so it builds none.
 """
 
 from __future__ import annotations
@@ -43,9 +44,11 @@ def make(name: str, backend: str = "mock", **kwargs: Any) -> Any:
     ``name`` is one of :data:`DEVICES`; a camera name must also exist in ``config/cameras.yaml``.
     ``kwargs`` go to the constructor -- the mocks take ``now_ns=`` (an injectable clock returning
     nanoseconds) and ``config_root=``; :class:`drivers.cameras.V4L2Camera` takes those plus
-    ``device=``. Raises ``ValueError`` for an unknown name or backend, ``NotImplementedError`` for
-    ``backend="real"`` on a device whose driver does not exist yet, and
-    :class:`drivers.cameras.CameraUnavailable` for a real camera that is absent.
+    ``device=``; :class:`drivers.g1_arm.G1Arm` takes those plus ``subscriber_factory=`` and
+    ``timeout_s=``. Raises ``ValueError`` for an unknown name or backend, ``NotImplementedError``
+    for ``backend="real"`` on a device whose driver does not exist yet,
+    :class:`drivers.cameras.CameraUnavailable` for a real camera that is absent and
+    :class:`drivers.g1_arm.ArmUnavailable` for a real arm whose state stream is not there.
     """
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r}; known backends: {', '.join(BACKENDS)}")
@@ -58,6 +61,11 @@ def make(name: str, backend: str = "mock", **kwargs: Any) -> Any:
             from drivers.cameras import V4L2Camera  # imported lazily: it pulls in cv2
 
             return V4L2Camera(name, **kwargs)
+        if name == "arm":
+            # Read-only: the real arm driver reads rt/lowstate and has no writer until T-021 (D-007).
+            from drivers.g1_arm import G1Arm
+
+            return G1Arm(**kwargs)
         raise NotImplementedError(
             f"the real {name!r} driver does not exist yet (Phase 1, CLAUDE.md section 6); use backend='mock'"
         )

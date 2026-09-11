@@ -1,36 +1,44 @@
 #!/usr/bin/env python3
-"""Read-only: stream one camera for N seconds and report fps, drops and jitter (T-010).
+"""Read-only: stream one device for N seconds and report rate, drops and jitter (T-010, T-018).
 
 This is the Phase 1 read-only check of CLAUDE.md section 6 ("stream every device at target rate for
-10 minutes and report drop rates and jitter") for the camera paths. It opens a camera, grabs frames
-as fast as the device delivers them, and reports what the stream actually did:
+10 minutes and report drop rates and jitter"). ``--stream`` picks the device: one of the three
+camera streams of ``config/cameras.yaml`` (``top``, ``oblique``, ``palm``), or ``arm`` for the G1's
+``rt/lowstate`` state stream. It takes samples as fast as the device delivers them and reports what
+the stream actually did:
 
-* **achieved fps** -- ``(frames - 1) / span``, the rate the timestamps imply, not what the device
-  claims through ``CAP_PROP_FPS``;
+* **achieved rate** -- ``(samples - 1) / span``, the rate the timestamps imply, not what the device
+  claims through ``CAP_PROP_FPS`` or what ``config/robot.yaml`` ``control.state_hz`` says;
 * **drops** -- gaps longer than 1.5 nominal periods, and the number of frames those gaps swallowed;
 * **jitter** -- ``|interval - nominal period|`` at p50 and p99, in milliseconds.
 
-Timestamps come from the driver, i.e. from ``runtime.clock.now_ns`` at the instant the frame
-arrived, which is the same clock the recorder aligns streams on (docs/clock.md).
+Timestamps come from the driver, i.e. from ``runtime.clock.now_ns`` at the instant the frame or the
+``LowState_`` message arrived, which is the same clock the recorder aligns streams on
+(docs/clock.md). Cameras are polled with ``grab()`` and de-duplicated by timestamp; the arm is
+drained with ``poll()``, which hands over every message its subscriber callback stamped, so a slow
+poll loop cannot invent a drop that the stream did not have.
 
 ``--backend mock`` needs no hardware at all and exits 0 with nothing plugged in: it streams
-``drivers.mock.MockCamera``, whose frames are a grid on the same clock, so it exercises this tool's
-statistics end to end and is what the acceptance test runs. ``--backend real`` opens the device.
+``drivers.mock.MockCamera`` or ``drivers.mock.MockArm``, whose samples are a grid on the same clock,
+so it exercises this tool's statistics end to end and is what the acceptance tests run.
+``--backend real`` opens the device.
 
-This script only reads. It opens a camera, never a robot, and cannot produce a motion command
-(R1/R2 do not apply; no hardware session is needed).
+This script only reads: a camera is a sensor and the arm driver has no writer at all (T-018), so no
+motion command can be produced from here and no hardware session is needed (R1, R2).
 
 Usage:
     .venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5
-    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --camera oblique --seconds 10
-    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --camera top --device /dev/video2 --json
+    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 10
+    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream top --device /dev/video2 --json
+    .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 600
 
-Exit codes: 0 statistics were produced, 2 usage error, 3 no usable camera (absent, busy or silent).
+Exit codes: 0 statistics were produced, 2 usage error, 3 no usable stream (absent, busy or silent).
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 import time
@@ -45,8 +53,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from runtime import clock, config  # noqa: E402
 
-#: Exit code for "there is no camera to read", distinct from a usage error (2).
-NO_CAMERA = 3
+#: Exit code for "there is no stream to read", distinct from a usage error (2).
+NO_STREAM = 3
+#: The name this exit code had when cameras were the only stream (T-010); kept for callers.
+NO_CAMERA = NO_STREAM
+
+#: Streams this tool can read: the camera names of config/cameras.yaml, plus the G1 state stream.
+CAMERAS: tuple[str, ...] = ("top", "oblique", "palm")
+STREAMS: tuple[str, ...] = (*CAMERAS, "arm")
 
 #: A gap longer than this many nominal periods counts as a drop.
 DROP_FACTOR = 1.5
@@ -55,6 +69,11 @@ DROP_FACTOR = 1.5
 #: grid point at or before now, so it has to be polled rather than waited on; sleeping a twentieth
 #: of a period keeps the loop off a busy-wait without ever being able to miss a grid point.
 MOCK_POLL_FRACTION = 0.05
+
+#: Fraction of the nominal period slept between drains of a state stream. Larger than the camera
+#: fraction because `poll()` drains a backlog rather than reporting one sample: sleeping cannot lose
+#: a message, it only delays its collection, and the backlog holds thousands.
+DRAIN_POLL_FRACTION = 0.25
 
 
 def stats(ts_ns: list[int], expected_hz: float) -> dict[str, Any]:
@@ -122,28 +141,66 @@ def stream(camera: Any, seconds: float, poll_s: float = 0.0, warmup: int = 0) ->
     return out
 
 
-def _build(backend: str, camera: str, device: str | None) -> tuple[Any, float, float]:
-    """``(camera, expected_hz, poll_s)`` for the chosen backend."""
-    expected_hz = float(config.load("cameras")[camera]["fps"])
+def drain(source: Any, seconds: float, poll_s: float, warmup: int = 0) -> list[int]:
+    """Drain ``source.poll()`` for ``seconds`` and return the arrival timestamp of every sample.
+
+    The arm driver stamps each ``LowState_`` in its subscriber callback and queues it, so draining
+    the queue reports when the messages *arrived*, not when this loop got round to asking. ``warmup``
+    samples are drained and discarded first, so that the DDS match and the first allocation do not
+    show up as jitter.
+    """
+    seen = 0
+    while seen < warmup:
+        seen += len(source.poll())
+        if poll_s:
+            time.sleep(poll_s)
+    out: list[int] = []
+    deadline = clock.now_ns() + int(seconds * 1e9)
+    while clock.now_ns() < deadline:
+        out.extend(sample.ts_ns for sample in source.poll())
+        if poll_s:
+            time.sleep(poll_s)
+    return out
+
+
+def _build(backend: str, name: str, device: str | None) -> tuple[Any, float, float]:
+    """``(driver, expected_hz, poll_s)`` for the chosen stream and backend."""
+    if name == "arm":
+        robot = config.load("robot")
+        if backend == "mock":
+            from drivers.mock import MockArm
+
+            expected_hz = float(robot["mock"]["state_hz"])
+            return MockArm(), expected_hz, DRAIN_POLL_FRACTION / expected_hz
+        from drivers.g1_arm import G1Arm
+
+        expected_hz = float(robot["control"]["state_hz"])
+        return G1Arm(), expected_hz, DRAIN_POLL_FRACTION / expected_hz
+
+    expected_hz = float(config.load("cameras")[name]["fps"])
     if backend == "mock":
         from drivers.mock import MockCamera
 
-        return MockCamera(camera), expected_hz, MOCK_POLL_FRACTION / expected_hz
+        return MockCamera(name), expected_hz, MOCK_POLL_FRACTION / expected_hz
     from drivers.cameras import V4L2Camera
 
-    return V4L2Camera(camera, device=device), expected_hz, 0.0
+    return V4L2Camera(name, device=device), expected_hz, 0.0
 
 
 def _print_human(report: dict[str, Any]) -> None:
     s = report["stats"]
-    print(f"camera       {report['camera']} ({report['backend']})")
+    print(f"stream       {report['stream']} ({report['backend']})")
     print(f"device       {report['device']}")
-    probe = report.get("probe")
-    if probe:
+    probe = report.get("probe") or {}
+    if "width" in probe:
         print(f"negotiated   {probe['width']}x{probe['height']} @ {probe['fps']:g} fps {probe['fourcc'] or '?'}")
-    print(f"policy size  {report['policy_resolution'][0]}x{report['policy_resolution'][1]}")
-    print(f"frames       {s['frames']} in {s['span_s']:.2f} s (warmup {report['warmup']} discarded)")
-    print(f"fps          {s['fps']:.2f}  (expected {s['expected_hz']:g})")
+    if "mode_machine" in probe:
+        print(f"robot        mode_machine {probe['mode_machine']}, mode_pr {probe['mode_pr']}, tick {probe['tick']}")
+        print(f"probe rate   {probe['state_hz']:.1f} Hz over {probe['samples']} samples in {probe['window_s']:g} s")
+    if report.get("policy_resolution"):
+        print(f"policy size  {report['policy_resolution'][0]}x{report['policy_resolution'][1]}")
+    print(f"samples      {s['frames']} in {s['span_s']:.2f} s (warmup {report['warmup']} discarded)")
+    print(f"rate         {s['fps']:.2f} Hz  (expected {s['expected_hz']:g})")
     print(f"drops        {s['drops']} gaps > {DROP_FACTOR:g} periods, {s['frames_missed']} frames missed")
     for what in ("interval", "jitter"):
         p50, p99, top = (s[f"{what}_ms_{k}"] for k in ("p50", "p99", "max"))
@@ -157,70 +214,72 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--backend", choices=("mock", "real"), default="mock")
-    parser.add_argument("--camera", choices=("top", "oblique", "palm"), default="top")
+    parser.add_argument("--stream", choices=STREAMS, help=f"what to read: {', '.join(STREAMS)} (default top)")
+    parser.add_argument("--camera", choices=CAMERAS, help="older spelling of --stream for a camera")
     parser.add_argument("--seconds", type=float, default=10.0, help="how long to stream")
-    parser.add_argument("--device", help="V4L2 node or index, overriding config/cameras.yaml (real only)")
-    parser.add_argument("--warmup", type=int, default=0, help="frames grabbed and discarded before timing")
+    parser.add_argument("--device", help="V4L2 node or index, overriding config/cameras.yaml (real cameras only)")
+    parser.add_argument("--warmup", type=int, default=0, help="samples taken and discarded before timing")
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     args = parser.parse_args(argv)
 
+    if args.stream and args.camera and args.stream != args.camera:
+        print(f"--stream {args.stream} and --camera {args.camera} disagree; pass one", file=sys.stderr)
+        return 2
+    name = args.stream or args.camera or "top"
     if args.seconds <= 0:
         print("--seconds must be positive", file=sys.stderr)
         return 2
     if args.warmup < 0:
         print("--warmup must be >= 0", file=sys.stderr)
         return 2
-    if args.device and args.backend != "real":
-        print("--device only means anything with --backend real", file=sys.stderr)
+    if args.device and (args.backend != "real" or name == "arm"):
+        print("--device only means anything for a real camera", file=sys.stderr)
         return 2
 
-    # CameraUnavailable lives in drivers.cameras, which imports cv2; import it lazily so that the
-    # mock path costs nothing, but name it before the try so both paths can catch it.
+    # Both live in modules with heavy imports (cv2, the DDS idl), so they are imported lazily; name
+    # them before the try so that every path below can catch them.
     from drivers.cameras import CameraUnavailable
+    from drivers.g1_arm import ArmUnavailable
 
+    unavailable = (CameraUnavailable, ArmUnavailable)
     try:
-        camera, expected_hz, poll_s = _build(args.backend, args.camera, args.device)
-    except CameraUnavailable as exc:
+        source, expected_hz, poll_s = _build(args.backend, name, args.device)
+    except unavailable as exc:
         print(f"no statistics: {exc}", file=sys.stderr)
-        return NO_CAMERA
+        return NO_STREAM
 
     try:
-        probe = camera.probe() if hasattr(camera, "probe") else None
-        ts = stream(camera, args.seconds, poll_s=poll_s, warmup=args.warmup)
+        probe = source.probe() if hasattr(source, "probe") else None
+        if name == "arm":
+            ts = drain(source, args.seconds, poll_s=poll_s, warmup=args.warmup)
+        else:
+            ts = stream(source, args.seconds, poll_s=poll_s, warmup=args.warmup)
         if len(ts) < 2:
-            print(
-                f"no statistics: {args.camera} delivered {len(ts)} frame(s) in {args.seconds:g} s",
-                file=sys.stderr,
-            )
-            return NO_CAMERA
+            print(f"no statistics: {name} delivered {len(ts)} sample(s) in {args.seconds:g} s", file=sys.stderr)
+            return NO_STREAM
         measured = stats(ts, expected_hz)
-    except CameraUnavailable as exc:
+    except unavailable as exc:
         print(f"no statistics: {exc}", file=sys.stderr)
-        return NO_CAMERA
+        return NO_STREAM
     finally:
-        if hasattr(camera, "close"):
-            camera.close()
+        if hasattr(source, "close"):
+            source.close()
 
-    selection = getattr(camera, "selection", None)
+    selection = getattr(source, "selection", None)
     # MockCamera carries its policy size as width/height; V4L2Camera as a policy_resolution pair.
-    size = list(getattr(camera, "policy_resolution", (getattr(camera, "width", 0), getattr(camera, "height", 0))))
+    size = list(getattr(source, "policy_resolution", (getattr(source, "width", 0), getattr(source, "height", 0))))
+    device = "mock" if args.backend == "mock" else f"{source.interface} {source.topic}" if name == "arm" else None
     report: dict[str, Any] = {
-        "camera": args.camera,
+        "stream": name,
         "backend": args.backend,
-        "device": selection.describe() if selection is not None else "mock",
-        "policy_resolution": size,
+        "device": device if device is not None else selection.describe() if selection is not None else "mock",
+        "policy_resolution": None if name == "arm" else size,
         "warmup": args.warmup,
-        "probe": None
-        if probe is None
-        else {
-            "width": probe.width,
-            "height": probe.height,
-            "fps": probe.fps,
-            "fourcc": probe.fourcc,
-            "card": probe.card,
-        },
+        "probe": None if probe is None else dataclasses.asdict(probe),
         "stats": measured,
     }
+    if name != "arm":
+        report["camera"] = name  # the key this report carried before --stream existed (T-010)
     if args.json:
         json.dump(report, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

@@ -3140,3 +3140,107 @@ no `--no-verify`, per D-013 item 1.)
 (T-034 commit: 72259ca, which holds all of the code, tests, config comments and docs of this task; its pre-commit
 run was ruff clean and `519 passed, 4 skipped in 761.37s`. This line and the TASKS.md `result:` hash are the only
 content of the follow-up commit, which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
+## T-018  G1 arm driver, read-only rt/lowstate state stream, and `stream_stats --stream arm`  (opus, 2026-09-12T02:10+07:00)
+
+Built in the worktree `/home/alois/Desktop/ludo-g1-wt-t018` on branch `wt/t018`.
+
+### What was built
+- **`drivers/g1_arm.py` (new, 328 lines).** `G1Arm`, the **read half** of `drivers.interfaces.ArmDriver`.
+  It subscribes to `config/robot.yaml` `topics.state` (`rt/lowstate`) with a
+  `ChannelSubscriber(topic, LowState_)` built after one `ChannelFactoryInitialize(domain_id, interface)`,
+  and it creates **no DDS writer of any kind**: no publisher, no enable weight, no guard. `send_targets`
+  raises `NotImplementedError` naming T-021 (D-007).
+  - `read_state() -> Stamped[RobotState]`: the 7 left-arm joints and waist yaw, read at the `index`
+    each declares in `config/robot.yaml`, in `action_order`; stamped with `runtime.clock.now_ns`
+    **inside the subscriber handler**, i.e. at arrival, not at read.
+  - `full_state() -> Stamped[FullState]`: `q`, `dq`, `tau_est` for all `control.motor_count` (29)
+    joints plus `mode_machine`, `mode_pr`, `tick`, for the dataset (5.6).
+  - `poll() -> list[Stamped[RobotState]]`: drains everything that arrived since the last call
+    (bounded at `BACKLOG` = 4096 samples, 8 s at 500 Hz). Never raises; an empty list means nothing
+    arrived. This is what the stream check consumes.
+  - `probe(window_s=1.0) -> ArmProbe`: the rate the arrival timestamps imply over the last window,
+    plus `mode_machine`, the interface, the domain and the topic.
+  - `RobotState.pinch` is `0.0` and is documented as meaningless here: `LowState_` carries no DexH15
+    state, and `runtime/controller.py` and `teleop/recorder.py` both take the pinch from `HandDriver`.
+  - Unavailability: an `UNMEASURED` interface, no message within `control.state_timeout_s`, a stream
+    that went silent, or a closed driver all raise `ArmUnavailable` naming the interface and the topic,
+    so a read-only check skips instead of failing (the `CameraUnavailable` pattern of T-010).
+  - The DDS factory is bound **once per process, lazily**: never at import time, and a second driver
+    asking for a different interface raises instead of silently sharing the first binding.
+    `dds_binding()` reports what the process bound to; importing the module imports no SDK at all.
+- **`drivers/__init__.py`**: `make("arm", backend="real")` now builds `G1Arm` (read-only, no session).
+- **`tools/hardware_checks/stream_stats.py`**: `--stream {top,oblique,palm,arm}` (the old `--camera`
+  still works and still fills the `camera` key of the report). The arm reuses the camera statistics
+  path -- the same `stats()`, the same drop rule (a gap > 1.5 nominal periods), the same jitter
+  p50/p99, the same exit codes -- through a new `drain()` that collects the arrival timestamps the
+  subscriber callback stamped, rather than polling `read_state()` and de-duplicating (a slow poll loop
+  then cannot invent a drop). `NO_STREAM` is the new name of `NO_CAMERA`; both are 3.
+- **`config/robot.yaml`**: two keys under `control:` that the driver reads, so that no number is a
+  constant in code (section 7): `motor_count: 29` (of the message's 35 slots) and
+  `state_timeout_s: 3.0`. Neither is a measurement, so neither carries a `_status` key; `REQUIRED_KEYS`
+  is untouched.
+- **`tests/test_g1_arm.py` (new, 26 tests: 23 hardware-free, 3 readonly)**, **`docs/drivers.md`** (a "The real arm" section with the
+  DDS setup, the IPs and the one-time `nmcli` profile), **`agents/HARDWARE_NEEDED.md`** (H-002's
+  post-check is now a real command).
+
+### How it is tested with the LAN down
+A fake subscriber hands the driver **real** `unitree_hg.msg.dds_.LowState_` objects, built from the
+installed idl with all 35 `MotorState_` slots, on a fake clock. Every field access the real callback
+performs is exercised; 500 messages at 500 Hz cost milliseconds. The tests cover: the subscribed
+topic/domain/interface, joint extraction at the configured indices, callback-time stamping, the full
+29-joint telemetry, `poll()` ordering and the bounded backlog, `probe()` rate and window, all four
+`ArmUnavailable` paths, `send_targets` refusing and naming T-021, and a grep of the module for
+`ChannelPublisher`, `rt/arm_sdk` and `rt/lowcmd` (none present). A subprocess asserts that importing
+`drivers.g1_arm` binds no DDS factory and does not import `unitree_sdk2py`.
+
+### Commands run and measured results
+```
+.venv/bin/ruff check .                                    -> All checks passed!
+.venv/bin/python -m pytest tests/test_g1_arm.py -q        -> 23 passed, 3 skipped in 7.4 s
+.venv/bin/python -m pytest -q  (the pre-commit hook's run)  -> 533 passed, 7 skipped in 1346.01 s
+    (22 min because the other builder's suite was running at the same time; 4 min is the quiet-machine cost)
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --stream arm --seconds 5
+    stream arm (mock); samples 502 in 5.01 s; rate 100.00 Hz (expected 100, config mock.state_hz);
+    drops 0; interval ms p50 10.00 p99 10.00 max 10.00; jitter ms p50 0.00 p99 0.00 max 0.00
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 5
+    exit 3, "no statistics: config/robot.yaml network.dds_interface is UNMEASURED ... (H-002)"
+```
+The three `readonly` tests skip with the reason
+`no G1 state stream on interface 'UNMEASURED': config/robot.yaml network.dds_interface is UNMEASURED:
+nothing says which interface holds the G1 LAN (192.168.123.2/24). Bring the link up and record the
+interface (agents/HARDWARE_NEEDED.md H-002; ...)` -- the interface is named, and today its name is the
+placeholder, because no interface has ever been observed holding the G1 LAN.
+
+### Two files outside the task's touch list had to change (logged, minimal)
+Delivering a real `arm` backend falsified three existing assertions; all three are one-line edits and
+none weakens a check:
+- `tests/test_cameras.py:189` and `tests/test_mock_drivers.py:107` asserted that `make(name,
+  backend="real")` raises `NotImplementedError` for **every** actuated device including `arm`. `arm`
+  moved out of both lists with a comment naming T-018, exactly as `top`/`oblique`/`palm` moved out at
+  T-010; `hand`, `glove` and `pose` are still asserted to raise.
+- `tests/test_mock_drivers.py:514` (R2) forbids the literal string `hardware_checks` anywhere under
+  `drivers/`. My `ArmUnavailable` message named `tools/hardware_checks/list_devices.py` as the way to
+  find the interface; the message now points at H-002 and at `list_devices.py` by name only. The R2
+  check is untouched and still passes, which is the point of it.
+
+### Not met, and why
+- **Acceptance 2 (LAN up) is OPEN, as the task said to expect.** No `LowState_` was ever received: the
+  robot LAN is still down (H-002 open, no interface holds 192.168.123.x), so the 600 s run, the
+  measured state rate, the drop count and the jitter p50/p99 do not exist and are not claimed (R5).
+  H-002 stays OPEN; its post-check is now the exact command that produces those numbers
+  (`stream_stats.py --backend real --stream arm --seconds 600`), and `network.dds_interface` must be
+  filled in by whoever brings the link up. Nothing about the real rate, `mode_machine`, or whether the
+  robot publishes at all is known from this task.
+- **`drivers/g1_arm.py` is 332 lines, not under 250.** Disagreement logged per the protocol: D-013
+  item 2's remedy is to move report/CLI types to a sibling module rather than cut docstrings, but the
+  task's touch-list does not include a new module, and the touch-list is the more specific instruction,
+  so I kept one file. If Fable prefers the split, moving `FullState`, `ArmProbe` and the DDS-factory
+  helpers into `drivers/dds.py` (which T-021 will want anyway) is a one-commit follow-up and takes it
+  to about 240.
+
+### Safety
+R1: no motion command is possible from this code -- there is no publisher, and a test greps for one.
+R2: no scripted motion, no literal joint target; `drivers/` still imports nothing from
+`tools/hardware_checks/`. R3: no guard is built because there is no command path to guard;
+`config/safety.yaml` untouched. `hardware/session.enable` neither created, edited nor read. Nothing
+under `third_party/` touched. Committed through the full pre-commit gate, no `--no-verify` (D-013).
