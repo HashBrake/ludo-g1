@@ -230,3 +230,11 @@ adapters and run_eval.py; compute.torch_threads is 8 and measured (the sweep tab
 taken at 1-minute load 2.8 and 0.94). The --stop-after addition is the honest way to make the resume test exact; accepted
 and logged as the builder's disagreement. The DataLoader worker-seed bug it found is the kind of thing R5 exists for.
 Consequences: D-021 (inference landing), T-036 (checkpoint-every, disk guard).
+
+## T-019  ACCEPTED  (fable, 2026-09-12T04:27+07:00, commits 4503254, 061b47a, merged)
+Verified in the worktree: the only enableMotor/setMotor/setJoint text in drivers/dexh15.py is inside the send_pinch
+NotImplementedError message, initMotorPosition absent; 33 tests pass, 3 readonly skips name the device and H-003; real
+--stream hand exits 3 with the same reason; docs/sdks.md untouched because no A3 measurement exists (R5, correct).
+Hand-present acceptance stays open under H-003. dexh15.py at 485 lines: the PalmCamera and the serial discovery split
+into drivers/serial_discovery.py when T-022 touches the file. The calculateRealAngle-needs-a-device finding is recorded
+for the H-003 session.

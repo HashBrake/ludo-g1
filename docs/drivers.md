@@ -14,7 +14,9 @@ pose  = make("pose")
 top   = make("top")                  # cameras are named as in config/cameras.yaml
 make("oblique", backend="real")      # a real V4L2 camera (T-010); read-only, no session
 make("arm", backend="real")          # the real G1 state stream (T-018); read-only, no session
-make("hand", backend="real")         # NotImplementedError until its Phase 1 driver exists
+make("hand", backend="real")         # the real DexH15 (T-019); read-only, no session
+make("palm", backend="real")         # the DexH15's own palm camera (T-019)
+make("glove", backend="real")        # NotImplementedError until its Phase 1 driver exists
 ```
 
 Three facts hold for every driver, real or mock:
@@ -31,10 +33,10 @@ Three facts hold for every driver, real or mock:
 | Protocol | Read | Write | Real driver (Phase 1) |
 |---|---|---|---|
 | `ArmDriver` | `read_state() -> Stamped[RobotState]` | `send_targets(cmd) -> MotionCommand` | `drivers/g1_arm.py`, `rt/lowstate` **(read half exists, T-018)**; the write path is T-021 (D-007) |
-| `HandDriver` | `read_state() -> Stamped[HandState]`, `palm_frame() -> Stamped[ndarray]` | `send_pinch(scalar) -> ndarray` (15 targets) | `drivers/dexh15.py`, Paxini SDK |
+| `HandDriver` | `read_state() -> Stamped[HandState]`, `palm_frame() -> Stamped[ndarray]` | `send_pinch(scalar) -> ndarray` (15 targets) | `drivers/dexh15.py`, Paxini SDK **(read half exists, T-019)**; the write path is T-022 |
 | `GloveDriver` | `read() -> Stamped[GloveSample]` | — | `drivers/pxcap.py`, PxCap Pro |
 | `PoseDriver` | `read() -> Stamped[WristPose]` | — | `drivers/pico.py`, pico_bridge |
-| `CameraDriver` | `grab() -> Stamped[ndarray]` | — | `drivers/cameras.py`, V4L2 **(exists, T-010)** |
+| `CameraDriver` | `grab() -> Stamped[ndarray]` | — | `drivers/cameras.py`, V4L2 **(exists, T-010)**; `palm` is `drivers/dexh15.py`'s `PalmCamera` **(T-019)** |
 
 The sample types are `RobotState` and `MotionCommand` from `runtime/types.py` (the 9 numbers of
 CLAUDE.md 5.3) plus three small frozen dataclasses in `drivers/interfaces.py`:
@@ -102,10 +104,11 @@ Phase 2 recorder and latency tooling have a response to measure against mocks. T
 `latency.arm_ms` plus the joint's own dynamics, measured in Phase 1.
 
 Likewise the mock's synergy poses. The real `pinch.open_pose` / `pinch.closed_pose` stay the literal
-`UNMEASURED` until the Phase 1 bench test, because a wrong pose closes the hand on a finger, and
-`drivers/dexh15.py` must refuse to run while they are. The mock reads the stand-in poses under
-`mock:` in the same file and is the only thing that may; they are not a proposal for the real
-synergy.
+`UNMEASURED` until the Phase 1 bench test (T-020), because a wrong pose closes the hand on a finger.
+The mock reads the stand-in poses under `mock:` in the same file and is the only thing that may; they
+are not a proposal for the real synergy. The real `drivers/dexh15.py` never reads them: while the
+real poses are `UNMEASURED` it simply cannot report a pinch scalar (`nan`, below), and it will refuse
+to *command* one at T-022, when a wrong pose could do damage.
 
 ## The factory
 
@@ -113,12 +116,14 @@ synergy.
 
 - `name` is one of `drivers.DEVICES`: `arm`, `hand`, `glove`, `pose`, and the three camera streams
   `top`, `oblique`, `palm`. Camera names are checked against `config/cameras.yaml`.
-- `backend="real"` builds a `V4L2Camera` for a camera name and a `G1Arm` for `arm` (both below), and
-  raises `NotImplementedError` naming the device for `hand`, `glove` and `pose`. Those names exist
-  so that callers can be written against them before Phase 1 delivers the real drivers.
+- `backend="real"` builds a `V4L2Camera` for `top` and `oblique`, a `G1Arm` for `arm`, a `DexH15` for
+  `hand` and a `PalmCamera` for `palm` (all below), and raises `NotImplementedError` naming the
+  device for `glove` and `pose`. Those two names exist so that callers can be written against them
+  before Phase 1 delivers the real drivers.
 - `kwargs` reach the constructor: the mocks take `now_ns=` (the injectable clock) and `config_root=`
   (a different `config/` directory, for tests); `V4L2Camera` takes those plus `device=`; `G1Arm`
-  takes those plus `subscriber_factory=` and `timeout_s=`.
+  takes those plus `subscriber_factory=` and `timeout_s=`; `DexH15` takes those plus
+  `control_factory=`, `camera_factory=` and `port=`.
 
 ## Real cameras (`drivers/cameras.py`)
 
@@ -161,19 +166,23 @@ config key that would supply one.
 **The read-only stream check.** `tools/hardware_checks/stream_stats.py` streams one device for N
 seconds and reports the achieved rate, drops (gaps longer than 1.5 nominal periods) and inter-sample
 jitter p50/p99 — the Phase 1 "stream every device and report drop rates and jitter" check. `--stream`
-picks the device: a camera name, or `arm` for the G1 state stream (`--camera` still works for a
-camera):
+picks the device: a camera name, `arm` for the G1 state stream, or `hand` for the DexH15's joint
+angles (`--camera` still works for a camera):
 
 ```
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 10 --warmup 15
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 600
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream hand --seconds 600
 ```
 
-Cameras are polled with `grab()` and de-duplicated by timestamp; the arm is drained with `poll()`, so
-the timestamps are the ones the subscriber callback stamped and a slow poll loop cannot invent a
-drop. `--backend mock` needs no hardware and exits 0 with nothing plugged in (`--stream arm` streams
-`MockArm`); `--json` emits the same report as a dict. Exit 3 means there was no stream to read.
+Cameras are polled with `grab()` and the hand with `read_state()`, both de-duplicated by timestamp;
+the arm is drained with `poll()`, so the timestamps are the ones the subscriber callback stamped and
+a slow poll loop cannot invent a drop. The hand has no queue at all — one `read_state()` is one
+synchronous Modbus round trip — so what `--stream hand` measures is the achieved rate of back-to-back
+reads. `--backend mock` needs no hardware and exits 0 with nothing plugged in (`--stream arm` streams
+`MockArm`, `--stream hand` streams `MockHand`); `--json` emits the same report as a dict. Exit 3
+means there was no stream to read.
 
 ## The real arm (`drivers/g1_arm.py`)
 
@@ -231,6 +240,64 @@ ping -c 2 192.168.123.164
 Then put that interface name in `config/robot.yaml` `network.dds_interface` (and flip nothing else:
 it is a Form-1 `UNMEASURED` placeholder today). Until that is done, every real-arm call raises
 `ArmUnavailable` naming the key, and the `readonly` tests skip.
+
+## The real hand (`drivers/dexh15.py`)
+
+`DexH15` is the **read half** of `HandDriver`: it queries the DexH15 over Modbus and gives the same
+`Stamped[HandState]` as `MockHand`. It **writes nothing to the hand** — no motor is powered, no
+control mode is chosen, no target is sent — so nothing in this module can move it (T-019, R1/R2).
+The write path (the CLAUDE.md 5.4 synergy behind `runtime.safety.Guard`, and the rest of the
+bring-up order of docs/sdks.md 4.2) is T-022. A test asserts by grepping the module that the SDK's
+writing verbs — `enableMotor`, `setMotor*`, `setJoint*` — appear nowhere but inside the refusing
+`send_pinch` stub, and that `initMotorPosition`, which rewrites the hand's zero, appears nowhere.
+
+```python
+from drivers.dexh15 import DexH15, HandUnavailable
+
+with DexH15() as hand:
+    print(hand.probe())               # SN, hardware/firmware/SDK versions, the link it answered on
+    state = hand.read_state()         # Stamped(ts_ns, HandState) - 15 joints in real radians + pinch
+    full  = hand.full_state()         # + raw motor counts and per-finger resultant force (5.6)
+    frame = hand.palm_frame()         # Stamped(ts_ns, (240, 320, 3) uint8)
+```
+
+Reading the hand is not a motion command: no hardware session is needed (R1, CLAUDE.md 4.6).
+
+- **One read is one round trip.** There is no stream and no queue: `read_state()` performs a single
+  synchronous `getJointPositionsAngle` and is stamped when the reply lands. `full_state()` costs two
+  further round trips, so it is for the dataset and the probe, not for the 30 Hz path.
+- **Units.** The SDK returns *normalised* angles; `HandState.joints_rad` is real radians, converted
+  with `calculateRealAngle` on the connected slave (docs/sdks.md 4.6). That conversion needs the
+  hand's hardware version, so it cannot be done off-device — `DexH15Kinematic.calculateRealAngle`
+  rejects every vector length without one.
+- **`HandState.pinch` is `nan` until T-020.** The scalar is the projection of the measured joints
+  onto the synergy line of 5.4, and `config/hand.yaml` `pinch.open_pose` / `pinch.closed_pose` are
+  still `UNMEASURED`. `nan` rather than `0.0`, which would read as "the hand is open";
+  `DexH15.pinch_measurable` says which regime you are in.
+- **The joint count is checked, not assumed.** `config/hand.yaml` `joint_order` is a hypothesis
+  (`joint_order_status: UNMEASURED`), so a live `getJointPositionsAngle` whose length disagrees with
+  it raises rather than being reshaped.
+- **Unavailability.** An unconfigured port, an adapter that is not there, a slave that does not
+  answer, anything the SDK throws, or a closed driver all raise `HandUnavailable` naming the port, so
+  a read-only check skips instead of failing. Tests that need the hand are marked `readonly`.
+
+**Device discovery** mirrors the cameras', on serial nodes: an explicit `port=`, then
+`config/hand.yaml` `device.port` (a `/dev/serial/by-id/...` path), then the lowest-numbered
+`/dev/ttyUSB*` or `/dev/ttyACM*` node whose USB `vendor:product` matches `device.usb_id`
+(`067b:23a3`). Everything else — baud (4 000 000), slave address (`0x78`) — comes from the same file
+and is still a placeholder: the hand has never been plugged in (agents/HARDWARE_NEEDED.md H-003).
+
+### The palm camera
+
+`PalmCamera` is the hand's built-in camera through `pxdex.dh15.DexH15Camera`, and satisfies the same
+`CameraDriver` protocol as everything else: `(h, w, 3)` uint8 at `config/cameras.yaml`
+`palm.policy_resolution` (320x240), stamped when `getFrame` returns. It needs **no Modbus link** —
+the palm camera is an ordinary V4L2 node the hand's USB adds (docs/sdks.md 5.2) — and it is found by
+the same `drivers.cameras.resolve_device` as the other streams, so an absent or unconfigured one
+raises `CameraUnavailable` naming `palm.device`. `DexH15.palm_frame()` builds one **lazily**, on the
+first call, and closes it with the hand. `make("palm", backend="real")` and `stream_stats --camera
+palm --backend real` both go through it.
+
 
 ## Phase 1: writing a real driver
 
