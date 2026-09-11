@@ -22,28 +22,33 @@ description: >-
 #   (WaistYaw = 12) and :47-53 (LeftShoulderPitch = 15 .. LeftWristYaw = 21)
 # `limit_rad` is the MJCF joint range, NOT a safety limit. The limits runtime/safety.py enforces are
 # in config/safety.yaml and are these tightened by 5 degrees on each side (R3).
-# Source: /home/alois/Teleopit/assets/robots/unitree_g1/g1_29dof.xml (read-only reference; T-012
-# vendors it into third_party/ and this file's `limits_source` must then be repointed).
-limits_source: /home/alois/Teleopit/assets/robots/unitree_g1/g1_29dof.xml
+# Source: third_party/unitree_g1_mjcf/g1_29dof.xml, the byte-identical vendored copy of
+# /home/alois/Teleopit/assets/robots/unitree_g1/g1_29dof.xml made in T-012 (checksums in
+# third_party/unitree_g1_mjcf/MANIFEST.txt). `mjcf_line` numbers refer to that file.
+# `mjcf_qpos_index` is the joint's address in MjModel.qpos for this MJCF, i.e. jnt_qposadr, which is
+# the 29-joint `index` + 7 because the model's first joint is a 7-qpos floating base. It is the index
+# the mink IK writes into (T-013). Measured by tests/test_assets.py, which loads the model and
+# asserts these values still match it.
+limits_source: third_party/unitree_g1_mjcf/g1_29dof.xml
 
 arm:
   side: left
   dof: 7
   joints:
-    - {name: left_shoulder_pitch_joint, index: 15, limit_rad: [-3.0892, 2.6704], mjcf_line: 180}
-    - {name: left_shoulder_roll_joint,  index: 16, limit_rad: [-1.5882, 2.2515], mjcf_line: 184}
-    - {name: left_shoulder_yaw_joint,   index: 17, limit_rad: [-2.618, 2.618],   mjcf_line: 188}
-    - {name: left_elbow_joint,          index: 18, limit_rad: [-1.0472, 2.0944], mjcf_line: 193}
-    - {name: left_wrist_roll_joint,     index: 19, limit_rad: [-1.97222, 1.97222], mjcf_line: 198}
-    - {name: left_wrist_pitch_joint,    index: 20, limit_rad: [-1.61443, 1.61443], mjcf_line: 202}
-    - {name: left_wrist_yaw_joint,      index: 21, limit_rad: [-1.61443, 1.61443], mjcf_line: 207}
+    - {name: left_shoulder_pitch_joint, index: 15, limit_rad: [-3.0892, 2.6704], mjcf_line: 180, mjcf_qpos_index: 22}
+    - {name: left_shoulder_roll_joint,  index: 16, limit_rad: [-1.5882, 2.2515], mjcf_line: 184, mjcf_qpos_index: 23}
+    - {name: left_shoulder_yaw_joint,   index: 17, limit_rad: [-2.618, 2.618],   mjcf_line: 188, mjcf_qpos_index: 24}
+    - {name: left_elbow_joint,          index: 18, limit_rad: [-1.0472, 2.0944], mjcf_line: 193, mjcf_qpos_index: 25}
+    - {name: left_wrist_roll_joint,     index: 19, limit_rad: [-1.97222, 1.97222], mjcf_line: 198, mjcf_qpos_index: 26}
+    - {name: left_wrist_pitch_joint,    index: 20, limit_rad: [-1.61443, 1.61443], mjcf_line: 202, mjcf_qpos_index: 27}
+    - {name: left_wrist_yaw_joint,      index: 21, limit_rad: [-1.61443, 1.61443], mjcf_line: 207, mjcf_qpos_index: 28}
 
 waist:
   # waist_roll (13) and waist_pitch (14) exist on the 29-DoF G1 but LUDO-G1 uses yaw only (5.3), and
   # both are marked INVALID when the waist is locked in the robot's own configuration. Whether this
   # robot's waist is locked is a Phase 1 check before anything is blamed on hardware (docs/sdks.md 3).
   joints:
-    - {name: waist_yaw_joint, index: 12, limit_rad: [-2.618, 2.618], mjcf_line: 160}
+    - {name: waist_yaw_joint, index: 12, limit_rad: [-2.618, 2.618], mjcf_line: 160, mjcf_qpos_index: 19}
   locked: UNMEASURED
 
 # The 9-D action vector of CLAUDE.md 5.3 in order: 7 arm joints, waist yaw, pinch scalar. Anything

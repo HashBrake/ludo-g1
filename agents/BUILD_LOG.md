@@ -578,3 +578,116 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
 - `config/safety.yaml` was read, never edited. Nothing under `third_party/` touched. No blockers, no
   scripted motion, no disagreement with the task as written.
 (T-005 commit: 8c03733; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+---
+
+## T-012  Dependencies and assets for the arm IK path  (opus, 2026-09-11T19:45+07:00)
+
+### What changed
+- **`third_party/unitree_g1_mjcf/` (new, tracked).** Byte-identical copy of
+  `/home/alois/Teleopit/assets/robots/unitree_g1/` restricted to `g1_29dof.xml`, `LICENSE`, `README.md`
+  and exactly the 35 meshes the XML references (all under `meshes/g1/`), with the `meshes/` relative
+  layout kept so `meshdir="meshes"` resolves. **38 files, 19 697 688 bytes (19 MB)**; the source
+  `meshes/` tree is 63 MB (dex3 16 MB, o6_left 14 MB, o6_right 14 MB, avp 1.3 MB, g1 19 MB) and none of
+  the other variants are referenced by this XML. The mesh list was extracted from the XML by regex, not
+  by hand, and the vendored set is asserted equal to it in the test. The source tree was never modified
+  (`diff -r --brief` of both trees: no differences).
+- **`MANIFEST.txt`** in that directory: a comment header with `source_root`, `copy_date`, selection
+  rationale, file and byte counts, then, per file, a `# src: <absolute source path>  copied: <ISO8601>
+  bytes: <n>` comment followed by a `sha256sum`-format line. GNU `sha256sum -c` ignores the `#` lines
+  (verified), so the file is both human-readable and directly checkable.
+- **`requirements.txt`**: added `mujoco==3.13.0`, `mink==1.3.0` (direct) and `pico_bridge` 0.2.1 by
+  release URL with `--hash=sha256:7cf0fee07c76541fd06e2ee6bdeec3d11fec578cd4ef6b45179dec4af31b369f`;
+  removed `opencv-python-headless==5.0.0.93` (D-008); added the 26 new transitive pins. Header comment
+  on line 3 no longer claims mujoco is unwanted.
+- **`config/robot.yaml`**: `limits_source` repointed to `third_party/unitree_g1_mjcf/g1_29dof.xml`
+  (now repo-relative, was absolute), its comment block rewritten, and `mjcf_qpos_index` added to each of
+  the 8 joint entries. No other key touched.
+- **`tests/test_assets.py`** (new, 10 tests) and **`docs/setup.md`** (resolved versions, the wheel hash,
+  the OpenCV rule, a "Vendored G1 model" section).
+
+### Resolved versions (uv, Python 3.10.18 venv)
+`mujoco==3.13.0` (latest 3.x), `mink==1.3.0` (latest; requires `mujoco>=3.1.6`), `pico_bridge==0.2.1`.
+29 packages installed in total. New transitive pins: absl-py 2.5.0, aioice 0.10.2, aiortc 1.15.0,
+attrs 26.1.0, av 17.1.0, cffi 2.1.1, cryptography 50.0.1, daqp 0.9.1, dnspython 2.8.0, etils 1.13.0,
+fsspec 2026.7.0, glfw 2.10.2, google-crc32c 1.8.0, ifaddr 0.2.0, importlib-resources 7.1.0,
+pillow 12.3.0, psutil 7.2.2, pyarrow 25.0.1, pycparser 3.0, pyee 13.0.1, pylibsrtp 1.0.0,
+pyopengl 3.1.10, pyopenssl 26.4.0, qpsolvers 4.13.0, rerun-sdk 0.37.2, zipp 4.1.0.
+
+### Measured qpos addresses (mujoco 3.13.0, `MjModel.jnt_qposadr`)
+Model: `njnt=30`, `nq=36`, `nv=35`; joint 0 is `floating_base_joint` (free, 7 qpos), so every hinge's
+qpos address is its 29-joint index + 7.
+
+| joint | 29-joint index | jnt id | mjcf_qpos_index |
+|---|---|---|---|
+| waist_yaw_joint | 12 | 13 | 19 |
+| left_shoulder_pitch_joint | 15 | 16 | 22 |
+| left_shoulder_roll_joint | 16 | 17 | 23 |
+| left_shoulder_yaw_joint | 17 | 18 | 24 |
+| left_elbow_joint | 18 | 19 | 25 |
+| left_wrist_roll_joint | 19 | 20 | 26 |
+| left_wrist_pitch_joint | 20 | 21 | 27 |
+| left_wrist_yaw_joint | 21 | 22 | 28 |
+
+The model's `jnt_range` for all 8 also equals the `limit_rad` already in `config/robot.yaml`
+(asserted to rel 1e-5 in `test_yaml_joint_ranges_match_the_model`), which independently confirms the
+T-002 limit extraction.
+
+### Commands run and results
+1. `/home/alois/.local/bin/uv pip install --python .venv/bin/python -r requirements.txt`
+   -> `Installed 29 packages`.
+2. `/home/alois/.local/bin/uv pip install --python .venv/bin/python -r requirements.txt --dry-run`
+   -> `Resolved 51 packages` / `Checked 51 packages` / **`Would make no changes`**.
+3. **Acceptance 1.** `.venv/bin/python -c "import mujoco, mink, pico_bridge"` -> **exit 0**.
+4. **Acceptance 2.** `.venv/bin/python -m pytest tests/test_assets.py -q` -> **10 passed**.
+   `.venv/bin/python -m pytest -q` -> **173 passed, 1 skipped** (163 before this task + 10 new; the skip
+   is the usual motion autoskip). `.venv/bin/ruff check .` -> **All checks passed!**, exit 0.
+5. **Acceptance 3.** `cd third_party/unitree_g1_mjcf && sha256sum -c MANIFEST.txt` -> **exit 0**,
+   38 output lines, **38 `: OK`, 0 `FAILED`**. Tail of the output:
+   ```
+   meshes/g1/torso_link_rev_1_0.STL: OK
+   meshes/g1/waist_roll_link_rev_1_0.STL: OK
+   meshes/g1/waist_yaw_link_rev_1_0.STL: OK
+   ```
+6. **Acceptance 4.** `.venv/bin/python -c "import cv2; print(cv2.__file__)"` ->
+   `/home/alois/Desktop/ludo-g1/.venv/lib/python3.10/site-packages/cv2/__init__.py`, exit 0.
+   `uv pip list | grep -i opencv` -> exactly one line, `opencv-python 5.0.0.93`.
+7. Hash enforcement check: the same URL requirement with one hex digit of the sha256 changed, installed
+   into a throwaway venv with `--no-deps`, aborts with
+   `Hash mismatch for pico-bridge ... Expected: sha256:00000000... Computed: sha256:7cf0fee0...`.
+   So uv does verify the pin; `--dry-run` alone does not (it downloads nothing).
+8. Source-fidelity check: `diff -r --brief /home/alois/Teleopit/assets/robots/unitree_g1/meshes/g1
+   third_party/unitree_g1_mjcf/meshes/g1` and `diff -q` on the XML -> no output, identical.
+
+### Findings worth Fable's attention
+- **Removing `opencv-python-headless` broke `cv2` and the repair is not automatic.** Both distributions
+  install into the same `site-packages/cv2/`; `uv pip uninstall opencv-python-headless` deleted the
+  shared files, after which `import cv2` still *succeeded* (as an empty namespace package, `__file__`
+  is `None`) while every attribute was gone -- `cv2.__version__` raised `AttributeError`. The literal
+  acceptance command `import cv2; print(cv2.__file__)` exits 0 in that broken state, so it is not a
+  sufficient check on its own. Fixed with
+  `uv pip install --reinstall-package opencv-python -r requirements.txt`; the checks above were re-run
+  after the fix and `cv2.__version__` is `5.0.0`. Documented in `docs/setup.md`. This is D-008's hazard
+  showing up exactly as predicted; anyone recreating the venv from scratch is unaffected.
+- **The vendored `README.md` is Teleopit's and describes files that are not here** (dex3 / o6 / avp
+  meshes, a `download_assets.py` script, and a claim that the directory is git-ignored). It is copied
+  verbatim because nothing under `third_party/` is modified (section 7). `MANIFEST.txt` carries the
+  correct description of what this copy contains, and `docs/setup.md` repeats it. If Fable prefers, the
+  clarification belongs in a sibling file, not in the copied README.
+- **`docs/config.md:87` still says "T-012 vendors it into ..." in the future tense.** Out of the file
+  list for this task, so untouched; a one-line update is a candidate for the next task that owns
+  `docs/config.md`.
+- `mjcf_qpos_index` was added per joint entry (8 entries) rather than as one top-level mapping, so the
+  address sits next to the `index` and `limit_rad` it belongs with. `runtime/config.py` `REQUIRED_KEYS`
+  was not touched: it cannot traverse lists, and the key is checked by `tests/test_assets.py` instead.
+- `pico_bridge` drags in a large transport stack (aiortc/av/rerun-sdk/pyarrow, ~26 transitive pins) for
+  what LUDO-G1 uses as a pose reader. Nothing in the wheel is optional at import time, so it is taken as
+  is. Flagging the footprint, not proposing a change.
+
+### Not done / limits
+- No hardware was touched, no motion command was sent, `hardware/session.enable` was never created,
+  edited or read. Nothing existing under `third_party/` was modified; the only addition is the new
+  `unitree_g1_mjcf/` directory. `config/safety.yaml` untouched.
+- The MJCF is only *loaded* here. Pinning the legs and the right arm for the IK is T-013 and is done at
+  load time in code, never by editing the asset.
+- No disagreement with the task as written; no blockers.

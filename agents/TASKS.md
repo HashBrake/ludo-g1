@@ -353,7 +353,7 @@ acceptance:
 notes: Use the MJCF vendored by T-012 (third_party/unitree_g1_mjcf/), loaded with mujoco; joint order from config/robot.yaml. The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
 
 ## T-012  Dependencies and assets for the arm IK path (D-006, D-008)
-status: in_progress
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -380,6 +380,29 @@ acceptance:
   - `.venv/bin/python -c "import cv2; print(cv2.__file__)"` works and `uv pip list` shows exactly one opencv distribution
 notes: The MJCF originates from Unitree (BSD-3); keep its LICENSE next to it. Never modify the XML; if the IK needs legs
   pinned, do it at load time in code (T-013), not by editing the asset.
+result:
+  commit: PENDING
+  - vendored third_party/unitree_g1_mjcf/: 38 files, 19,697,688 bytes (19 MB) -- g1_29dof.xml, LICENSE,
+    README.md and exactly the 35 meshes the XML references, meshes/ layout preserved, byte-identical to
+    /home/alois/Teleopit/assets/robots/unitree_g1/ (diff -r --brief: no differences; source not modified)
+  - MANIFEST.txt: `cd third_party/unitree_g1_mjcf && sha256sum -c MANIFEST.txt` -> exit 0, 38 lines,
+    38 ": OK", 0 FAILED
+  - resolved versions: mujoco==3.13.0 (latest 3.x), mink==1.3.0 (needs mujoco>=3.1.6), pico_bridge==0.2.1
+    by release URL + --hash=sha256:7cf0fee07c76541fd06e2ee6bdeec3d11fec578cd4ef6b45179dec4af31b369f;
+    29 packages installed; opencv-python-headless removed (D-008)
+  - `uv pip install -r requirements.txt --dry-run` -> "Resolved 51 packages / Checked 51 packages /
+    Would make no changes"
+  - acceptance 1: `.venv/bin/python -c "import mujoco, mink, pico_bridge"` -> exit 0
+  - acceptance 2: pytest tests/test_assets.py -> 10 passed; full suite -> 173 passed, 1 skipped
+    (163 before + 10 new; skip is the motion autoskip); `.venv/bin/ruff check .` -> All checks passed!
+  - acceptance 4: `import cv2; print(cv2.__file__)` -> .venv/lib/python3.10/site-packages/cv2/__init__.py,
+    exit 0; `uv pip list | grep -i opencv` -> exactly one line, opencv-python 5.0.0.93
+  - config/robot.yaml: limits_source -> third_party/unitree_g1_mjcf/g1_29dof.xml; mjcf_qpos_index added to
+    all 8 joint entries, measured from the model (waist_yaw 19, left arm 22..28 = 29-joint index + 7,
+    the model's first joint being a 7-qpos floating base); tests/test_assets.py asserts the yaml matches
+  - note for review: uninstalling opencv-python-headless deletes files opencv-python shares in
+    site-packages/cv2/ and leaves `import cv2` succeeding as an empty namespace package; repaired with
+    `uv pip install --reinstall-package opencv-python -r requirements.txt`. See agents/BUILD_LOG.md T-012.
 
 ## T-013  Controller-pose to 8-DoF arm IK prototype (pulled forward from Phase 2, non-hardware)
 status: todo
