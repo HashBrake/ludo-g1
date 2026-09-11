@@ -74,9 +74,10 @@ def make_policy(spec: Sequence[str], backend: str) -> tuple[Policy, dict]:
 
     ``hold`` is :class:`~runtime.policy_api.HoldPolicy`, which commands no motion and scores 0 by
     construction; like :func:`runtime.controller.build` it is refused on any backend but mocks (R2).
-    ``bundle PATH`` loads the inference bundle ``policy/export.py`` wrote
-    (:class:`policy.diffusion.DiffusionAdapter`); the result records the bundle's weights hash and the
-    training run behind it, so a success rate names the checkpoint it belongs to (R5).
+    ``bundle PATH`` loads the inference bundle ``policy/export.py`` wrote -- either model of 5.7,
+    whichever the bundle names (:func:`policy.export.open_bundle`); the result records the bundle's
+    policy, its weights hash and the training run behind it, so a success rate names the checkpoint
+    it belongs to (R5).
     """
     parts = list(spec) or ["hold"]
     tag = parts[0]
@@ -88,18 +89,20 @@ def make_policy(spec: Sequence[str], backend: str) -> tuple[Policy, dict]:
             )
         return HoldPolicy(), {"tag": "hold", "checkpoint": None, "checkpoint_sha256": None}
     if tag == "bundle":
-        from policy.diffusion import DiffusionAdapter
+        from policy.export import open_bundle
 
         if len(parts) != 2:
             raise ValueError("--policy bundle takes exactly one path: --policy bundle data/checkpoints/<run>/bundle")
-        adapter = DiffusionAdapter(parts[1])
+        adapter = open_bundle(parts[1])
         run = adapter.manifest.get("train_run") or {}
         return adapter, {
             "tag": "bundle",
+            "policy": adapter.manifest.get("policy", "diffusion"),
             "checkpoint": adapter.manifest.get("checkpoint"),
             "checkpoint_sha256": adapter.manifest.get("weights_sha256"),
             "bundle": str(adapter.path),
-            "inference_steps": adapter.spec.inference_steps,
+            # DDIM steps for the Diffusion Policy; the ACT baseline has no such knob (5.8, D-019).
+            "inference_steps": getattr(adapter.spec, "inference_steps", None),
             "train_run": run.get("run"),
             "dataset_manifest_sha256": run.get("dataset_manifest_sha256"),
         }

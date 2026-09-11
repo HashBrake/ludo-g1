@@ -6,9 +6,13 @@
 .venv/bin/python -m eval.run_eval --policy bundle data/checkpoints/<run>/bundle --backend mock
 ```
 
-A bundle is what :class:`policy.diffusion.DiffusionAdapter` loads and what an eval result names, so it
-has to stand on its own: the architecture (:class:`~policy.diffusion.PolicySpec`), the weights, the
-normalisation statistics, and the provenance of the checkpoint it came from.
+A bundle is what an adapter loads and what an eval result names, so it has to stand on its own: the
+architecture (:class:`~policy.diffusion.PolicySpec` or :class:`~policy.act.ACTSpec`), the weights,
+the normalisation statistics, and the provenance of the checkpoint it came from. Both models of
+CLAUDE.md 5.7 export the same way; ``bundle.json`` carries a ``policy`` field and a format tag, and
+:func:`open_bundle` is the one place that turns a bundle back into a
+:class:`runtime.policy_api.Policy` -- so ``eval/run_eval.py --policy bundle PATH`` takes either
+without being told which.
 
 **TorchScript is attempted, verified, and not relied on.** ``compute.export_format: torchscript`` is
 the target, so :func:`export` tries ``torch.jit.trace`` on the inference path at fixed shapes. The
@@ -39,14 +43,18 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 
+from policy.act import ACTAdapter, ACTSpec, GoalACTPolicy
 from policy.diffusion import BUNDLE_FILE, WEIGHTS_FILE, DiffusionAdapter, GoalDiffusionPolicy, PolicySpec
 from policy.train import git_commit
-from runtime.policy_api import GOAL_CHANNELS
+from runtime.policy_api import GOAL_CHANNELS, Policy
 
-__all__ = ["BUNDLE_FORMAT", "TORCHSCRIPT_FILE", "TRACE_TOLERANCE", "export", "main"]
+__all__ = ["BUNDLE_FORMAT", "BUNDLE_FORMATS", "TORCHSCRIPT_FILE", "TRACE_TOLERANCE", "export", "main", "open_bundle"]
 
 #: Version tag in ``bundle.json``; a loader that does not know the tag refuses the bundle.
 BUNDLE_FORMAT = "ludo-g1/diffusion-bundle/1"
+#: One tag per policy of 5.7. A bundle written before the ACT baseline existed carries no ``policy``
+#: field and is a diffusion bundle by definition, which is why "diffusion" is also the default below.
+BUNDLE_FORMATS: dict[str, str] = {"diffusion": BUNDLE_FORMAT, "act": "ludo-g1/act-bundle/1"}
 TORCHSCRIPT_FILE = "model.ts"
 #: How far the traced graph may differ from the eager model on the example inputs before it is
 #: discarded. Float32 accumulation over a 10-step DDIM loop, not a model difference.
@@ -67,7 +75,19 @@ class _TraceWrapper(nn.Module):
         return self.model.predict(batch, noise=noise)
 
 
-def _example_inputs(spec: PolicySpec) -> tuple[Tensor, ...]:
+class _ACTTraceWrapper(nn.Module):
+    """The ACT inference path, tensor in, tensor out. No noise input: ACT is deterministic in eval."""
+
+    def __init__(self, model: GoalACTPolicy) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, top: Tensor, oblique: Tensor, palm: Tensor, state: Tensor, task_id: Tensor) -> Tensor:
+        batch = {"top": top, "oblique": oblique, "palm": palm, "state": state, "task_id": task_id}
+        return self.model.predict(batch)
+
+
+def _observation_inputs(spec: PolicySpec | ACTSpec) -> tuple[Tensor, ...]:
     """One batch of one at the encoder's own shapes: the smallest thing the trace can run."""
     height, width = spec.image_hw
     return (
@@ -76,6 +96,13 @@ def _example_inputs(spec: PolicySpec) -> tuple[Tensor, ...]:
         torch.rand(1, 3, height, width),
         torch.zeros(1, spec.state_dim),
         torch.eye(spec.task_dim)[:1],
+    )
+
+
+def _example_inputs(spec: PolicySpec) -> tuple[Tensor, ...]:
+    """The diffusion trace's inputs: the observation plus the pinned noise (module docstring)."""
+    return (
+        *_observation_inputs(spec),
         torch.randn(1, spec.chunk, spec.action_dim, generator=torch.Generator().manual_seed(0)),
     )
 
@@ -88,6 +115,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def open_bundle(bundle: Path | str, **kwargs) -> Policy:
+    """Load the bundle at ``bundle`` as the adapter its ``policy`` field names (5.7).
+
+    The one reader of the format: ``eval/run_eval.py --policy bundle PATH`` and every other caller
+    takes whichever of the two models of 5.7 the bundle holds without being told which.
+    """
+    path = Path(bundle)
+    manifest_path = path if path.is_file() else path / BUNDLE_FILE
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"{manifest_path} is not an inference bundle (policy/export.py writes one)")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    kind = str(manifest.get("policy", "diffusion"))
+    adapters: dict[str, type] = {"diffusion": DiffusionAdapter, "act": ACTAdapter}
+    if kind not in adapters:
+        raise ValueError(f"{manifest_path} names policy {kind!r}; this code knows {sorted(adapters)}")
+    if manifest.get("format") != BUNDLE_FORMATS[kind]:
+        raise ValueError(f"{manifest_path} has format {manifest.get('format')!r}, expected {BUNDLE_FORMATS[kind]!r}")
+    return adapters[kind](manifest_path, **kwargs)
+
+
 def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: bool = True) -> dict:
     """Write the bundle for ``checkpoint`` (a run directory or a ``checkpoint.pt``) and return its manifest."""
     path = Path(checkpoint)
@@ -95,10 +142,14 @@ def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: 
     if not file.is_file():
         raise FileNotFoundError(f"{file} is not a training checkpoint (policy/train.py writes one)")
     payload = torch.load(file, map_location="cpu", weights_only=True)
-    spec = PolicySpec.from_dict(payload["spec"])
+    kind = str(payload.get("policy", "diffusion"))
+    if kind not in BUNDLE_FORMATS:
+        raise ValueError(f"{file} names policy {kind!r}; this code knows {sorted(BUNDLE_FORMATS)}")
+    is_act = kind == "act"
+    spec = (ACTSpec if is_act else PolicySpec).from_dict(payload["spec"])
     if spec.goal_channels != GOAL_CHANNELS:
         raise ValueError(f"checkpoint declares {spec.goal_channels} goal channels, the observation has {GOAL_CHANNELS}")
-    model = GoalDiffusionPolicy(spec)
+    model = (GoalACTPolicy if is_act else GoalDiffusionPolicy)(spec)
     model.load_state_dict(payload["state_dict"])
     model.eval()
 
@@ -108,11 +159,12 @@ def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: 
     trace_error: str | None = None
     trace_max_diff: float | None = None
     if trace:
-        example = _example_inputs(spec)
+        wrapper = _ACTTraceWrapper if is_act else _TraceWrapper
+        example = _observation_inputs(spec) if is_act else _example_inputs(spec)
         try:
-            traced = torch.jit.trace(_TraceWrapper(model), example, check_trace=True)
+            traced = torch.jit.trace(wrapper(model), example, check_trace=True)
             with torch.no_grad():
-                trace_max_diff = float((traced(*example) - _TraceWrapper(model)(*example)).abs().max())
+                trace_max_diff = float((traced(*example) - wrapper(model)(*example)).abs().max())
             if trace_max_diff > TRACE_TOLERANCE:
                 raise RuntimeError(f"traced graph differs from the eager model by {trace_max_diff:.2e}")
             traced.save(str(directory / TORCHSCRIPT_FILE))
@@ -122,7 +174,8 @@ def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: 
 
     torch.save({"state_dict": model.state_dict()}, directory / WEIGHTS_FILE)
     manifest = {
-        "format": BUNDLE_FORMAT,
+        "format": BUNDLE_FORMATS[kind],
+        "policy": kind,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "git_commit": git_commit(),
         "spec": spec.to_dict(),
@@ -153,8 +206,8 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = export(args.checkpoint, args.out, trace=not args.no_trace)
     directory = Path(args.out) if args.out else Path(manifest["checkpoint"]).parent / "bundle"
-    adapter = DiffusionAdapter(directory)
-    print(f"bundle {directory}")
+    adapter = open_bundle(directory)
+    print(f"bundle {directory} ({manifest['policy']})")
     print(f"  spec: {adapter!r}")
     if manifest["torchscript"]:
         print(f"  torchscript: {manifest['torchscript']} (traced, max diff vs eager "

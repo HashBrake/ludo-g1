@@ -2624,3 +2624,170 @@ immediately and re-made the same commit with `git commit --amend --no-edit`, whi
 full suite and printed "pre-commit: ok"; db2b922 is that commit and the bypassed one never survived.
 No `--no-verify` was used anywhere, but the effect was the same for one minute, so it is recorded
 here per D-013 item 1.)
+
+## T-030  ACT baseline wrapper, same inputs, temporal ensembling, latency  (opus, 2026-09-12T01:00+07:00)
+
+### What changed
+- `policy/act.py` (new, ~400 lines): `ACTSpec` (the architecture, from `config/training.yaml` `act`,
+  stored in every bundle), `TemporalEnsemble` (ACT's exponential ensembling generalised from one
+  action per query to a chunk), `GoalACTPolicy` (lerobot 0.4.4 `ACTPolicy` + the *same* 1x1 goal
+  projection, task one-hot and normalisation buffers as `policy/diffusion.py` -- imported from it,
+  not copied), `ACTAdapter` (`runtime.policy_api.Policy`: one forward pass, 16 ensembled actions of
+  the 32 ACT predicts), and a `python -m policy.act --bundle ...` latency benchmark that reuses
+  `policy.diffusion.benchmark` and its synthetic observation so the two models are measured the same.
+- `policy/train.py`: `--policy {diffusion,act}`. `POLICIES` maps the flag to (spec, model); `train()`
+  dispatches on the *type of the spec* (`policy_kind`), so a caller that builds a spec never names the
+  policy twice. Every default (steps, batch, lr, weight decay, seed, encoder size, stats samples) now
+  comes from the chosen policy's block, and `run.json` / `checkpoint.pt` record `"policy"`.
+- `policy/export.py`: one export path for both models. `BUNDLE_FORMATS` adds
+  `ludo-g1/act-bundle/1`; `bundle.json` carries `policy`; the ACT trace wrapper takes no noise input
+  (ACT is deterministic at inference); new `open_bundle(path)` is the single reader that turns a
+  bundle back into the right adapter.
+- `eval/run_eval.py`: the `--policy bundle PATH` branch now calls `open_bundle`, so it takes either
+  model without being told which, and records `policy` and (for ACT) `inference_steps: null`.
+- `tests/test_act.py` (new): 15 tests, mirroring `tests/test_diffusion.py` and at its scale.
+- `config/training.yaml` `act` block: added `pretrained_backbone_weights: null`, `encoder_image_hw`,
+  `expose`, `dim_model`, `n_heads`, `dim_feedforward`, `n_encoder_layers`, `n_decoder_layers`,
+  `use_vae`, `latent_dim`, `n_vae_encoder_layers`, `dropout`, `stats_samples`; **removed**
+  `encoder_per_camera` (see Deviations). `REQUIRED_KEYS` untouched; `unmeasured("training")` still
+  empty; no other block and no existing value changed.
+- `docs/policy.md`: a `policy/act.py` section (the ACT-vs-Diffusion table, the ensembling math), and
+  the `train.py` / `export.py` sections updated for the flag and the two bundle formats.
+
+### Which adaptation route lerobot 0.4.4 permits for ACT (the T-029 question, asked again)
+ACT is *less* accommodating than the Diffusion Policy, not more:
+- `ACTConfig.validate_features` does not check image shapes, so a 5-channel `top` is accepted by the
+  config -- and then dies in the **one shared** ResNet-18 (`ACT.__init__` builds a single
+  `self.backbone`; there is no `use_separate_rgb_encoder_per_camera`) with *"expected input[2, 5, 48,
+  64] to have 3 channels, but got 5 channels instead"*. Reproduced, and pinned by
+  `test_lerobot_act_has_one_backbone_three_channels_wide`. So the 1x1 projection is the only route
+  here too, and it is literally the same construction.
+- `ACTConfig.__post_init__` refuses any `n_obs_steps` but 1, which means **the T-029 observation-
+  history gap does not exist for ACT**: `LudoDataset` yields one frame and ACT wants one. ACT is
+  therefore the model that can be trained on today's dataset without the `policy/dataset.py` change
+  T-029 asked for.
+- Setting `temporal_ensemble_coeff` forces `n_action_steps = 1` (`configuration_act.py:137`), because
+  `ACTPolicy.select_action` consumes one ensembled action per query. Our contract is 10 Hz queries
+  and a 30 Hz chunk, so the wrapped config keeps the coefficient at None (`select_action` is never
+  called) and `TemporalEnsemble` does the averaging with lerobot's own weights
+  `w_i = exp(-coeff * i)`, oldest first, over every still-live prediction of each action-step, at the
+  nominal query stride `s = round(action_hz / policy_hz)` = 3. Pinned against upstream at stride 1.
+- Normalisation: upstream ACT maps STATE/ACTION to MEAN_STD and the Diffusion Policy to MIN_MAX, but
+  neither processor pipeline runs (both carry statistics as buffers), so both wrappers use MIN_MAX.
+  Two baselines that normalise differently would not be comparable.
+- `pretrained_backbone_weights` defaults to `ResNet18_Weights.IMAGENET1K_V1` upstream and downloads
+  at construction; set to null to match the Diffusion Policy, whose default is None.
+
+### Commands and measured results
+
+```bash
+.venv/bin/ruff check .                                 # All checks passed!
+.venv/bin/python -m pytest tests/test_act.py -q -s     # 15 passed in 390.26s
+.venv/bin/python -m pytest -q                          # 490 passed, 4 skipped in 747.74s
+```
+
+Test-scale numbers (48x64 encoder, `dim_model` 64, 1 encoder layer, batch 2, lr 1e-3 -- a real
+ResNet-18 / transformer / VAE path small enough for the suite):
+
+| measurement | value |
+|---|---|
+| smoke train, 30 steps | training loss step 1 **23.4603** -> step 30 **0.9738** (mean of the last 10: 0.8906) |
+| fixed-probe loss (same batch, same seeded VAE draw, untrained vs trained) | **22.7715 -> 0.7060**, a 96.9% reduction |
+| temporal ensemble vs `ACTTemporalEnsembler`, stride 1, 12 queries | **2.87e-08** as lerobot ships (its weight table is float32, this is float64) and **2.22e-16** with the same weights in float64 |
+| export round trip | two adapters over the same bundle: identical actions to 1e-12 (ACT is deterministic at inference); equal to `GoalACTPolicy.predict`'s first 16 to 1e-5 |
+| TorchScript | traced, max |diff| vs eager **0.0** |
+| `act()` | 23 ms mean over 20 calls (test-scale model) |
+
+Full-scale CLI run, on **the same mock session T-029 used** (`data/raw/mock_smoke`, copied into this
+worktree; the dataset manifest sha256 below is byte-for-byte T-029's, so the two models were trained
+on the same data as 5.7 requires):
+
+```bash
+.venv/bin/python -m policy.train --sessions data/raw/mock_smoke --policy act --smoke
+# run 20260912T000630_act_smoke (act): 75 frames, 51.6M parameters
+# training config hash 42b976e662597e9d2c1cf0d0725698523abb81e20a79ce130fb2201ae4ff144d
+# dataset manifest sha256 a4a45245e0985001b1e25a2d40df0c4b9e274aa075f8c53fe39a7e4c089ac31d
+# loss step 1 69.791473 -> step 30 8.221072 (mean of the last 10: 8.161582) in 1124.9 s
+
+.venv/bin/python -m policy.export --checkpoint data/checkpoints/20260912T000630_act_smoke
+#   torchscript: model.ts (traced, max diff vs eager 0.00e+00; fixed-shape artefact, not used at inference)
+#   weights sha256 4e8a1d37cc0171a7851a375abd1491a5f905ed4c55d34c144cb8bebf7191e754
+
+.venv/bin/python -m policy.act --bundle data/checkpoints/20260912T000630_act_smoke/bundle --trials 20
+```
+
+### Latency at the real input sizes (640x480 / 320x240 in, 240x320 encoder), and a thread finding
+The first reading of `python -m policy.act` was **5730 ms mean / 5683 ms median**, worse than the
+diffusion policy -- which is not a property of ACT. Repeating it gave medians of 2282 and 453 ms, so
+the number was noise, and the noise has a cause: **torch's default thread count (14 on this laptop)
+oversubscribes ACT's many small transformer ops**, especially while another builder's suite is
+running. Sweeping the thread count on the same process, same model, same inputs (8 calls each):
+
+| torch threads | ACT `predict()` median |
+|---|---|
+| 1 | 439 ms |
+| 2 | 340 ms |
+| **4** | **181 ms** |
+| 8 | 953 ms |
+| 14 (default) | 6091 ms |
+
+So the two models were then measured **in one script, in the same minutes, at both thread counts**
+(untrained models at the configured shapes -- cost does not depend on the weights, as T-029 noted):
+
+| model | 4 threads (median) | 14 threads (median) |
+|---|---|---|
+| Diffusion, DDIM 10 (T-029 recorded 804 ms) | 560 ms | 863 ms |
+| Diffusion, DDIM 5 (T-029 recorded 498 ms) | 373 ms | 730 ms |
+| **ACT** (51.6M params vs 293.0M) | **154 ms** | 3666 ms |
+
+Read against the 100 ms budget of 5.2: ACT at 4 threads is **1.5-1.8x over**, the closest anything in
+this project has come; the diffusion policy's best rung is 3.7x over at the same setting. Every run
+was taken with the machine at load 13-28 (another builder's suite), so all of these are pessimistic;
+the ordering held in every repetition.
+
+### Findings that need a decision from Fable (not fixed here: they are scope)
+1. **The torch thread count is a bigger inference lever than the fallback ladder of 5.8.** ACT goes
+   from 6091 ms to 181 ms between 14 and 4 threads, and the diffusion policy gains ~35% too. Nothing
+   in `config/training.yaml` sets it and `runtime/controller.py` does not either, so today the
+   deployed rate depends on whatever torch guesses. It wants a configured value (a `compute` key) and
+   a measurement on the quiet machine. Not my call; I changed no configured value to chase it.
+2. **ACT is the model that can be trained on today's dataset.** The T-029 blocker (training repeats
+   the observation frame because `obs_history` is 2 and `LudoDataset` yields one frame) cannot occur
+   for ACT: `ACTConfig` forbids `n_obs_steps > 1`. If T-031 slips, a real ACT run is still honest.
+3. **ACT's loss is dominated by the KL term at initialisation** (69.8 at step 1, 8.2 at step 30 with
+   `kl_weight` 10). Nothing to decide before real data, but a `loss_last` from an ACT run and one
+   from a diffusion run are not on the same scale and must never be compared as numbers; only eval
+   success rates compare (R5).
+4. **Disk.** One full-scale ACT smoke run is 621 MB (checkpoint 207 MB + weights 207 MB + `model.ts`
+   207 MB) against the diffusion policy's 3.5 GB. I deleted the three large files after measuring and
+   kept `run.json`, `loss.csv` and `bundle.json` as evidence; the commands above regenerate them.
+   `/home` still has 12 GB free (Q-002).
+
+### Deviations and notes
+- **`act.encoder_per_camera` was removed, not added to.** The key promised a lerobot feature that ACT
+  does not have (one shared backbone, `modeling_act.py` `ACT.__init__`), and `ACTSpec` cannot honour
+  it. Leaving a key that no code reads and no model implements would be a false statement about the
+  baseline, so it is gone and the comment in its place says why. Everything else in the block is an
+  addition; no existing value changed.
+- `policy/act.py` imports three private names from `policy/diffusion.py` (`_Normalizer`,
+  `_image_tensor`, and `_synthetic_observation` inside the CLI). That is deliberate and commented:
+  5.7's comparison is only meaningful if the two models are fed, normalised and measured by the same
+  code, and `policy/diffusion.py` is outside this task's touch list so they could not be made public.
+  If Fable prefers, promoting them (and the `benchmark` helper) into a `policy/_shared.py` is a
+  one-commit follow-up.
+- The ACT trace takes no noise input, unlike the diffusion one: with the VAE encoder inactive at
+  inference the latent is zeros and `check_trace` compares two identical runs. The manifest still
+  says `torchscript_used_at_inference: false` for the same reason as T-029 (fixed shapes).
+- `data/raw/mock_smoke` was **copied** from the main working tree into this worktree rather than read
+  in place, so nothing in the main tree was opened for writing by lerobot; the manifest hash proves
+  it is the same data.
+- The full suite ran 747 s here against the 179 s recorded at worktree setup, and `tests/test_act.py`
+  390 s against 55 s for `tests/test_diffusion.py` at its own creation. Both are contention, not this
+  task: the ACT fixtures are 30 training steps of a `dim_model` 64 transformer, and the same suite's
+  `test_diffusion.py` fixture took 295 s in the same run (it took 55 s when the machine was quiet).
+  Standalone and quiet, `tests/test_act.py` runs in about 60 s.
+- R1-R6 intact: nothing in `policy/` imports a driver or `tools/hardware_checks/` (a test asserts it
+  for `policy/act.py`), no scripted motion, no literal joint target, `config/safety.yaml` untouched,
+  `hardware/session.enable` neither created nor read, nothing under `third_party/` or in the
+  installed lerobot package modified (wrapped only). Committed through the full pre-commit gate, no
+  `--no-verify` (D-013 item 1).

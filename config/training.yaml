@@ -140,16 +140,43 @@ diffusion:
 act:
   base: lerobot_act
   vision_encoder: resnet18
-  encoder_per_camera: true
+  # No `encoder_per_camera` key: lerobot's ACT builds ONE ResNet-18 and runs every camera through it
+  # (modeling_act.py ACT.__init__ has a single `self.backbone`), unlike DiffusionConfig, which has
+  # `use_separate_rgb_encoder_per_camera`. The key was here before the model was; it never existed.
+  # No pretrained weights: the upstream ACT default is ResNet18_Weights.IMAGENET1K_V1, which
+  # downloads at construction time. The Diffusion Policy trains its encoders from scratch
+  # (DiffusionConfig.pretrained_backbone_weights is None), so the baseline does too, or the
+  # comparison of 5.7 is between two architectures AND two initialisations.
+  pretrained_backbone_weights: null
+  # One shape for all three cameras, in (h, w), as policy/diffusion.py resizes to. It MUST equal
+  # diffusion.encoder_image_hw: the two models of 5.7 are compared on identical inputs, and
+  # tests/test_act.py pins the two keys against each other.
+  encoder_image_hw: [240, 320]
   chunk: 32
+  # Actions handed to runtime/controller.py per policy call. ACT's chunk of 32 is internal: the
+  # controller contract of 5.2 is a chunk of the diffusion size, of which it plays diffusion.execute.
+  expose: 16
   temporal_ensemble: true
   temporal_ensemble_coeff: 0.01
   obs_history: 1
+  # The transformer that sets the parameter count (upstream ACT defaults, recorded here for the same
+  # reason diffusion.down_dims is). n_decoder_layers is 1 upstream, matching the original ACT code.
+  dim_model: 512
+  n_heads: 8
+  dim_feedforward: 3200
+  n_encoder_layers: 4
+  n_decoder_layers: 1
+  use_vae: true
+  latent_dim: 32
+  n_vae_encoder_layers: 4
+  dropout: 0.1
   batch_size: 8
   learning_rate: 1.0e-5
   weight_decay: 1.0e-4
   train_iterations: 100000
   kl_weight: 10.0
+  # Samples drawn for the normalisation statistics, as diffusion.stats_samples.
+  stats_samples: 256
   seed: 0
 
 # --- multi-task (5.7): one model over all three primitives ---------------------------------------

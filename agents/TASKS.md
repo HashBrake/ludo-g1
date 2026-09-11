@@ -1106,7 +1106,7 @@ result:
     lines in docs/eval.md with it.
 
 ## T-030  ACT baseline wrapper, same inputs
-status: in_progress
+status: review
 priority: P2
 phase: 3
 owner: opus
@@ -1120,6 +1120,52 @@ acceptance:
   - tests pass with the printed numbers; BUILD_LOG.md commands
 notes: CLAUDE.md 5.7: ACT is trained on every dataset the diffusion model is trained on. train.py must make that a one-flag
   change.
+result:
+  commit: pending (recorded in the follow-up commit)
+  policy/act.py (new, ~400 lines: ACTSpec, TemporalEnsemble, GoalACTPolicy, ACTAdapter, latency CLI) + policy/
+    train.py `--policy {diffusion,act}` (POLICIES map; train() dispatches on the spec type; run.json and
+    checkpoint.pt record "policy"; every default from the chosen block) + policy/export.py (one export path for
+    both, BUNDLE_FORMATS adds ludo-g1/act-bundle/1, new open_bundle() reader) + eval/run_eval.py (`--policy
+    bundle PATH` now takes either model through open_bundle and records which) + tests/test_act.py (15 tests) +
+    docs/policy.md (+90 lines) + config/training.yaml act keys.
+  route: ACT is less accommodating than the Diffusion Policy. ACTConfig does not check image shapes, so a
+    5-channel `top` is accepted by the config and then dies in the ONE shared ResNet-18 ("expected input[2,5,48,
+    64] to have 3 channels") -- reproduced and pinned by a test -- so the same Conv2d(5,3,1) + task one-hot +
+    one encoder size is the only route here too, and it is literally the same code (imported from
+    policy/diffusion.py, not copied). ACTConfig also refuses n_obs_steps > 1, so T-029's "training repeats the
+    observation frame" gap CANNOT occur for ACT: ACT can be trained on today's dataset before T-031 lands.
+  temporal ensembling: setting temporal_ensemble_coeff in 0.4.4 forces n_action_steps=1 (select_action consumes
+    one ensembled action per query), which is not our 10 Hz-query / 30 Hz-chunk contract. So the wrapped config
+    keeps the coefficient None and TemporalEnsemble averages over the chunk with lerobot's own weights
+    w_i = exp(-coeff*i), oldest first, over every live prediction of each action-step, at stride
+    round(action_hz/policy_hz)=3. Pinned against ACTTemporalEnsembler at stride 1: 2.87e-08 as lerobot ships
+    (float32 weight table) and 2.22e-16 with the same weights in float64. act() returns 16, chunk 32 is internal,
+    so the controller contract of 5.2 is unchanged.
+  tests: 15 passed in 390 s; full suite 490 passed, 4 skipped in 747 s; ruff clean. (Both times are under load
+    13-28 from another builder's suite in the main tree; test_diffusion.py's own fixture took 295 s in the same
+    run against 55 s when it was written.)
+  smoke train (test scale, 48x64 encoder, dim_model 64): loss step 1 23.4603 -> step 30 0.9738 (mean of last 10
+    0.8906); fixed probe (same batch, same seeded VAE draw) 22.7715 -> 0.7060, a 96.9% reduction.
+  smoke train (CLI, full model, data/raw/mock_smoke at 640x480 -- T-029's session, same dataset manifest
+    a4a45245e0985001b1e25a2d40df0c4b9e274aa075f8c53fe39a7e4c089ac31d): 51.6M params (vs 293.0M), 30 steps in
+    1124.9 s under load, loss 69.791473 -> 8.221072 (mean of last 10 8.161582); training config hash
+    42b976e662597e9d2c1cf0d0725698523abb81e20a79ce130fb2201ae4ff144d.
+  export: bundle.json + weights.pt; torch.jit.trace SUCCEEDED with no noise input (ACT is deterministic at
+    inference: the VAE encoder runs in training only), max diff vs eager 0.0, torchscript_used_at_inference still
+    false. Round trip: two adapters -> identical actions to 1e-12.
+  latency (this laptop, CPU torch, 640x480/320x240 in, 240x320 encoder): the default 14 torch threads
+    OVERSUBSCRIBE ACT -- first reading 5730 ms mean, repeats 2282 and 453 ms median. Thread sweep on one model:
+    1 -> 439, 2 -> 340, 4 -> 181, 8 -> 953, 14 -> 6091 ms median. Measured side by side in one script in the same
+    minutes: at 4 threads ACT 154 ms vs diffusion DDIM 10 560 ms and DDIM 5 373 ms; at 14 threads ACT 3666 ms vs
+    863 / 730 ms. So ACT at 4 threads is 1.5-1.8x over the 100 ms budget, the closest anything here has come, and
+    the thread count is a bigger lever than the 5.8 fallback ladder (D-019). All under load; pessimistic.
+  open for Fable (in BUILD_LOG): (1) torch thread count is unconfigured and worth 30x on ACT -- wants a compute
+    key and a measurement on a quiet machine; (2) ACT can train before T-031; (3) ACT and diffusion loss values
+    are on different scales (KL term) and must never be compared as numbers, only eval success rates;
+    (4) an ACT smoke run costs 621 MB against the diffusion policy's 3.5 GB (deleted, records kept).
+  deviation: config/training.yaml act.encoder_per_camera was REMOVED (not just added to). lerobot's ACT has one
+    shared backbone and no such option, so the key promised a feature no code can honour; the comment in its
+    place says so. No other existing value changed; REQUIRED_KEYS untouched; unmeasured("training") still empty.
 
 ## T-031  Greennode training launch for real: train.py inside the pinned image, manifest and checkpoint round trip
 status: todo
