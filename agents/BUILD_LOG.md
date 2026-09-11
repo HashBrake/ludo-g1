@@ -92,3 +92,151 @@ see the T-001 result block in agents/TASKS.md.
 - No disagreements with the task as written. No hardware needed. No blockers.
 
 (T-001 scaffold commit: 4255484; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-002  SDK inventory and assumption verification  (2026-09-11T20:10+07:00)
+
+### What was built
+- `docs/sdks.md` (new): eight device sections (G1 arm, G1 waist, DexH15, DexH15 palm camera, PxCap Pro,
+  Pico controller pose, Brio, Orbbec), each with package/version, install route, the exact state-read call and
+  (for actuators) the exact target-write call as `path:line`, plus rates, units, joint order and partial-command
+  capability. Section 1 records the four install attempts; section 7 is the A5 investigation; section 9 carries
+  a verdict line for A1..A7 and U2; section 10 lists what still needs a human.
+- `tests/test_docs_sdks.py` (new): parses every backticked `path:line` token in docs/sdks.md, resolves
+  repo-relative (including git-ignored `.venv/` and `third_party/**/_internal/`), absolute and `~` paths,
+  asserts the file exists and the line is in range, and prints the count. Also asserts all eight sections are
+  present and that A1..A7 + U2 each have a verdict line.
+- `tools/hardware_checks/list_devices.py` (new): read-only probe. V4L2 nodes via `VIDIOC_QUERYCAP`
+  (O_RDONLY|O_NONBLOCK, no streaming), `/dev/ttyUSB*` and `/dev/ttyACM*` with their USB ids and permissions,
+  every USB vid:pid from sysfs, and network interfaces with a `192.168.123.x` flag. Stdlib only. `--json` mode.
+- `requirements.txt`: added the two successful installs pinned (`pxdex` from the vendored cp310 wheel,
+  `unitree_sdk2py` from upstream GitHub at commit `f7a5526`) plus the transitives uv resolved
+  (`cyclonedds==0.10.2`, `opencv-python==5.0.0.93`, `rich`, `rich-click`, `click`, `markdown-it-py`, `mdurl`).
+  `pyorbbecsdk` is explicitly NOT added, with the reason in a comment.
+- `agents/HARDWARE_NEEDED.md`: H-002 (robot LAN, so the DDS link can be verified) and H-003 (one-time
+  enumeration plug-in of Brio + DexH15 + glove), both read-only with exact steps and a post-check.
+- `agents/QUESTIONS.md`: Q-008 (Orbbec has no usable Python SDK: three options, assumption stated) and
+  Q-009 (two cv2 distributions now installed: which one do we keep).
+
+### Commands run and measured results
+```
+$ uv pip install --python .venv/bin/python "third_party/dexh15_sdk/DexH15 SDK/pxdex-3.2.1-cp310-cp310-linux_x86_64.whl"
+Installed 1 package: + pxdex==3.2.1                                    # SUCCESS
+$ .venv/bin/python -c "import pxdex.dh15 as d; print(d.DexH15Control().getSDKVersion())"
+DexHandSDK_3.2.1                                                       # no device touched (no port opened)
+
+$ uv pip install --python .venv/bin/python "unitree_sdk2py @ git+https://github.com/unitreerobotics/unitree_sdk2_python@1983e88888217f6c69283cf3a9d1af01e87f07af"
+x Failed to download and build ... failed to find branch, tag, or commit 1983e888...   # FAILED (private commit)
+$ uv pip install --python .venv/bin/python "unitree_sdk2py @ git+https://github.com/unitreerobotics/unitree_sdk2_python@f7a55264759fe212b23911046a1a59cf13a8d5ea"
+Installed 8 packages: unitree-sdk2py==1.0.1, cyclonedds==0.10.2, opencv-python==5.0.0.93,
+                      rich==15.0.0, rich-click==1.9.9, click==8.5.0, markdown-it-py==4.2.0, mdurl==0.1.2   # SUCCESS
+$ .venv/bin/python -c "from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_; ..."
+imports OK                                                             # no ChannelFactoryInitialize call, no DDS participant
+
+$ uv pip install --python .venv/bin/python pyorbbecsdk
+Installed 1 package: + pyorbbecsdk==1.3.2
+$ .venv/bin/python -c "import pyorbbecsdk"
+ModuleNotFoundError: No module named 'pyorbbecsdk'                     # INSTALLS BUT UNUSABLE
+  RECORD: pyorbbecsdk.cpython-311-darwin.so, libOrbbecSDK.1.10.5.dylib ...
+  WHEEL:  Tag: cp310-cp310-manylinux1_x86_64                           # mis-tagged macOS wheel
+$ uv pip uninstall --python .venv/bin/python pyorbbecsdk               # removed again
+
+$ uv pip install --python .venv/bin/python -r requirements.txt --dry-run
+Resolved 23 packages ... Would make no changes                         # requirements.txt == installed env
+
+$ .venv/bin/python -m pytest -q tests/test_docs_sdks.py -s
+docs/sdks.md: checked 157 path:line references (129 unique)
+9 passed in 0.01s                                                      # acceptance 2: PASS (>= 12 refs)
+
+$ .venv/bin/ruff check .        -> All checks passed!  exit=0
+$ .venv/bin/python -m pytest -q -> 24 passed, 1 skipped ("no session gate yet")
+$ .venv/bin/python tools/hardware_checks/list_devices.py ; echo $?
+... (output below) ... 0                                               # acceptance 4: PASS
+```
+
+Every one of the 129 unique references was also printed with its cited line and read back by hand; ten line
+numbers were off by a few lines after the first pass (they pointed at a code fence or a neighbouring row) and
+were corrected before the commit.
+
+### Read-only device probe output (2026-09-11T19:58+07:00)
+```
+== V4L2 video nodes ==
+  /dev/video0      'Integrated RGB Camera: Integrat' usb=174f:11b4  [VIDEO_CAPTURE,META_CAPTURE,STREAMING]
+  /dev/video1      'Integrated RGB Camera: Integrat' usb=174f:11b4  [META_CAPTURE,STREAMING]
+  /dev/video2      'Integrated RGB Camera: Integrat' usb=174f:11b4  [VIDEO_CAPTURE,META_CAPTURE,STREAMING]
+  /dev/video3      'Integrated RGB Camera: Integrat' usb=174f:11b4  [META_CAPTURE,STREAMING]
+  /dev/video4      'ORBBEC: Ego left'  usb=2bc5:1201  [VIDEO_CAPTURE,META_CAPTURE,STREAMING]
+  /dev/video5      'ORBBEC: Ego left'  usb=2bc5:1201  [META_CAPTURE,STREAMING]
+  /dev/video6      'ORBBEC: Ego right' usb=2bc5:1201  [VIDEO_CAPTURE,META_CAPTURE,STREAMING]
+  /dev/video7      'ORBBEC: Ego right' usb=2bc5:1201  [META_CAPTURE,STREAMING]
+== USB serial nodes (/dev/ttyUSB*, /dev/ttyACM*) ==
+  (none)
+== USB devices ==
+  2109:0817 VIA Labs USB3.0 Hub | 0bda:0412 4-Port USB 3.0 Hub | 0b95:1790 ASIX AX88179 (USB Ethernet)
+  05e3:0749 USB3.0 Card Reader  | 2bc5:1201 ORBBEC EGO | 8087:0037 Intel | 2109:2817 VIA Labs USB2.0 Hub
+  0bda:5412 4-Port USB 2.0 Hub  | 2357:0115 Realtek 802.11ac NIC | 27c6:6594 Goodix | 174f:11b4 SunplusIT camera
+  (+ 4 root hubs)
+== Network interfaces ==
+  CloudflareWARP     172.16.0.2       unknown
+  enp0s31f6          -                down
+  enx000ec6c10aa5    -                down
+  lo                 127.0.0.1        unknown
+  wlxd037457570db    192.168.10.108   up
+  (no interface holds a 192.168.123.x address)
+```
+So at the time of this task: the **Orbbec Ego is connected** (and is a stereo UVC device, left + right, not
+RGB+depth); the **Brio, the DexH15 and the PxCap Pro glove are not connected** (no Logitech id, no serial
+nodes); the **robot LAN is down** (H-002). No motion command was possible from any of this (R1).
+
+### The A5 finding (the point of this task)
+**A5 is refuted as written.** The vendored Pico pipeline does not produce arm joint targets from a controller
+pose. It is: Pico body-tracking skeleton (24 joints) -> GMR/mink full-body IK -> 36-D qpos -> 35-D mimic obs ->
+ONNX RL whole-body tracking policy -> 29-joint position targets. Evidence with line references in
+docs/sdks.md section 7; the three load-bearing facts are
+
+1. the IK task table demands pelvis, both hips, knees, feet, spine3, both shoulders, elbows and wrists, with
+   the highest weights on feet and knees (`.../gmr/ik_configs/pico_bridge_to_g1.json:24`, `:73`, `:122`);
+2. the provider drops any frame whose body tracking is inactive (`teleopit/inputs/pico4_provider.py:462`), and
+   body tracking on the PICO 4 needs the headset plus two ankle motion trackers (fork README:4);
+3. the provider reads only `grip/trigger/axis_x/axis_y` off the controller and never touches
+   `controller.pose` (`teleopit/inputs/pico4_provider.py:634`), even though `pico_bridge` delivers a full
+   6-DoF `Pose` (meters, xyzw) for each controller
+   (`~/miniconda3/envs/teleopit/.../pico_bridge/frames.py:107` and `:137`).
+
+Even the fork's "arms only" mode still routes through GMR and the RL policy
+(`teleopit/runtime/arm_mocap.py:31`). For LUDO-G1 that would mean an operator wearing a headset and two ankle
+trackers for every episode and a balance policy commanding legs bolted to a rig.
+
+**Smallest alternative (proposed, NOT built here, per the task note):** read
+`PicoBridge.wait_frame().controllers.left.pose` directly and solve our own 8-DoF IK (left arm 15..21 + waist
+yaw 12) with `mink` on the G1 MJCF with the legs pinned, output to `rt/arm_sdk` through `runtime/safety.py`.
+Cost: `pico_bridge` 0.2.1 (pure-Python wheel) into our venv, `mujoco` + `mink` into requirements, and the G1
+MJCF vendored (T-011 decides; the files exist at `~/Teleopit/assets/robots/unitree_g1/`: `g1_29dof.xml`,
+`g1_29dof_dex3.xml`, `g1_29dof_neck_o6.xml`, `LICENSE`, `README.md`, `meshes/` with 5 subdirectories — and
+they are NOT vendored in this repo, although `teleopit/runtime/assets.py:9` expects them there).
+A second, smaller finding that helps here: Unitree's own `rt/arm_sdk` topic commands arms + waist only, with
+an enable/weight slot at `motor_cmd[29].q`, so LUDO-G1 never has to publish `rt/lowcmd` and never owns the legs.
+
+### Acceptance criteria
+1. "docs/sdks.md has all eight sections with both a state-read and (for actuators) a target-write call
+   reference" — PASS. Sections 2,3,4,5,6,7,8.1,8.2; write refs for arm (`...g1_arm7_sdk_dds_example.py:174`),
+   waist (same topic, index 12), DexH15 (`pxdex/dh15.pyi:150`); the four sensors have no write call by nature
+   and say so.
+2. "`pytest -q tests/test_docs_sdks.py` passes and checks at least 12 references" — PASS, 157 checked.
+3. "every A1..A7 and U2 has a verdict line" — PASS, docs/sdks.md section 9, asserted by the test.
+4. "list_devices.py runs without a device present and exits 0" — PASS, exit 0 (and it also ran with the
+   Orbbec attached, which is the harder case).
+
+### Notes, deviations, disagreements
+- **Deviation from the task wording:** the task asked to install unitree_sdk2py "from the upstream GitHub repo
+  at a pinned commit", and the notes suggested preferring the local trees. The GR00T tree's commit `1983e88`
+  does not exist upstream (it is a merge of a private branch), so the pin used is `f7a5526`, which is the
+  commit the `~/meta-quest-teleoperate` tree is on and which IS public. Both outcomes are recorded.
+- **Not done, deliberately:** nothing was imported from the PxCapPro PyInstaller bundle and the `g1_bridge_sdk`
+  built extension under `~/Teleopit` was not imported or copied. Q-005 needs an answer first (three candidate
+  routes are laid out in docs/sdks.md 6.1) and the task forbids copying the MJCF.
+- **Left UNMEASURED on purpose** (no hardware): DexH15 command rate, palm-camera native format, Brio node and
+  resolution, Orbbec stream formats, every latency (U1). H-002 and H-003 carry the exact steps.
+- `requirements.txt` now contains one absolute `file://` URL for the pxdex wheel, because a file URL cannot be
+  repo-relative. If the repo moves (Q-007), that one line must be edited; there is a comment saying so.
+- No blockers. No safety-relevant code was added: `list_devices.py` cannot emit a motion command, and no
+  driver, no `runtime/safety.py` consumer and no session file was touched.

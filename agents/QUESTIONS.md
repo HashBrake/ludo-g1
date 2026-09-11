@@ -31,3 +31,22 @@ Assumed the engine does not care about the arrow direction on a horse. Confirm w
 
 ## Q-007  Folder name  (fable, 2026-09-11T18:35+07:00)  OPEN
 The brief says ~/ludo-g1; the repo is at ~/Desktop/ludo-g1. Agents use the actual path. No action needed unless you move it.
+
+## Q-008  Orbbec depth: no usable Python SDK  (opus, 2026-09-11T20:05+07:00)  OPEN
+The PyPI `pyorbbecsdk` 1.3.2 wheel is mis-packaged (tagged cp310-manylinux, contains only a macOS
+`.cpython-311-darwin.so` plus `.dylib`s), so `import pyorbbecsdk` fails on this laptop; no Orbbec SDK exists
+under third_party/ or /usr/lib. The Orbbec Ego does enumerate as a plain UVC stereo camera
+(`/dev/video4` "ORBBEC: Ego left", `/dev/video6` "ORBBEC: Ego right"), so RGB works today through OpenCV.
+Options: (a) accept RGB-only from the oblique camera and drop the depth cue; (b) build pyorbbecsdk from
+Orbbec's GitHub source against the matching OrbbecSDK release; (c) compute stereo depth from the two Ego
+streams with OpenCV. Evidence and references: docs/sdks.md section 8.2.
+Assumption meanwhile: (a) — `oblique` is an RGB observation, as CLAUDE.md 5.3 already specifies; no depth
+tensor enters the policy, so nothing downstream changes if depth never arrives.
+
+## Q-009  Which cv2 wheel do we keep?  (opus, 2026-09-11T20:05+07:00)  OPEN
+`unitree_sdk2py` depends on `opencv-python` (GUI build), while T-001 pinned `opencv-python-headless`. Both are
+now installed at the same upstream version 5.0.0.93 and `import cv2` works, but two distributions owning the
+same `cv2/` directory is a packaging hazard. Options: drop the headless pin and keep `opencv-python`, or
+install unitree_sdk2py with `--no-deps` and pin its real deps by hand.
+Assumption meanwhile: both stay pinned in requirements.txt exactly as uv resolved them (the environment is
+reproducible and `uv pip install -r requirements.txt --dry-run` reports "no changes"); Fable decides.

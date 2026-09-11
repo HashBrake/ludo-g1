@@ -11,11 +11,31 @@ ruff==0.16.7
 opencv-python-headless==5.0.0.93
 scipy==1.15.3
 
+# device SDKs (T-002, see docs/sdks.md section 1 for the install attempts and their outcomes)
+# DexH15 / palm camera. cp310-only wheel vendored on disk under third_party/ (git-ignored payload-free,
+# the .whl itself is tracked). Needs the system-wide DexHandSDK 3.2.1 deb (already installed on this laptop).
+# NOTE: a file:// URL cannot be repo-relative, so this line hardcodes the current repo path (Q-007).
+# If the repo moves, update this one line.
+pxdex @ file:///home/alois/Desktop/ludo-g1/third_party/dexh15_sdk/DexH15%20SDK/pxdex-3.2.1-cp310-cp310-linux_x86_64.whl
+# G1 arm + waist over DDS. Pinned to the public upstream commit f7a5526 ("Merge pull request #159", 2026-06-04),
+# the same commit ~/meta-quest-teleoperate/unitree_sdk2_python is checked out at.
+unitree_sdk2py @ git+https://github.com/unitreerobotics/unitree_sdk2_python@f7a55264759fe212b23911046a1a59cf13a8d5ea
+# NOT INSTALLED: pyorbbecsdk. The PyPI 1.3.2 wheel is mis-tagged cp310-manylinux but ships only a macOS
+# .so/.dylib, so `import pyorbbecsdk` fails. The Orbbec Ego enumerates as plain UVC; see docs/sdks.md 8.2.
+
 # transitive, pinned for reproducibility
+click==8.5.0
+cyclonedds==0.10.2
 exceptiongroup==1.3.1
 iniconfig==2.3.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+# pulled in by unitree_sdk2py; same upstream version as the headless build pinned above (docs/sdks.md 1)
+opencv-python==5.0.0.93
 packaging==26.3
 pluggy==1.6.0
 pygments==2.21.0
+rich==15.0.0
+rich-click==1.9.9
 tomli==2.4.1
 typing-extensions==4.16.0

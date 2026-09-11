@@ -36,7 +36,7 @@ result: (opus, 2026-09-11T18:45+07:00, commit 4255484)
   - deviation logged in BUILD_LOG: venv interpreter is uv-managed 3.10.20, not /usr/bin/python3 3.10.12.
 
 ## T-002  SDK inventory and assumption verification: docs/sdks.md
-status: in_progress
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -66,6 +66,24 @@ notes: Facts Fable found on this laptop (verify, cite, use): (a) pxdex 3.2.1 (De
   PicoHandSnapshot separately from the skeleton frame; teleopit/retargeting/core.py RetargetingModule.retarget returns a full
   qpos via GMR (needs a full human skeleton). Joint order in teleopit/constants.py. Read ~/Teleopit only, never modify it.
   This task exists to find out whether A5 is wrong (D-002). If the Teleopit stack cannot give arm targets from a single controller, say so plainly and propose the smallest alternative (e.g. controller pose -> mink IK on the G1 MJCF directly). Do not build the alternative here.
+result: (opus, 2026-09-11T20:10+07:00, commit COMMIT_HASH)
+  - docs/sdks.md: 8 device sections, each with a state-read call reference and, for the three actuator paths
+    (G1 arm, G1 waist, DexH15), a target-write call reference. PASS
+  - `.venv/bin/python -m pytest -q tests/test_docs_sdks.py -s` -> 9 passed; the test printed
+    "docs/sdks.md: checked 157 path:line references (129 unique)". Requirement was >= 12. PASS
+  - A1..A7 and U2 each have a verdict line (docs/sdks.md section 9), asserted by the test. PASS
+  - `.venv/bin/python tools/hardware_checks/list_devices.py` -> exit 0 with no DexH15/glove/Brio/robot-LAN
+    present (it also enumerated the connected Orbbec Ego). PASS
+  - Installs: pxdex 3.2.1 from the vendored cp310 wheel SUCCESS (import + getSDKVersion -> DexHandSDK_3.2.1);
+    unitree_sdk2py 1.0.1 from GitHub at f7a5526 SUCCESS (the GR00T tree's 1983e88 is not public, exact error
+    recorded); pyorbbecsdk 1.3.2 INSTALLS BUT UNUSABLE (PyPI wheel is a mis-tagged macOS build; uninstalled,
+    not in requirements.txt). Successes pinned in requirements.txt; `uv pip install -r requirements.txt
+    --dry-run` -> "Would make no changes".
+  - A5 REFUTED: the vendored pipeline is Pico body skeleton -> GMR/mink -> 29-DoF qpos -> RL whole-body policy
+    and it discards the controller pose (pico4_provider.py:634) that pico_bridge does provide
+    (frames.py:137). Smallest alternative proposed (controller pose -> 8-DoF mink IK on the G1 MJCF ->
+    rt/arm_sdk), not built. Details in docs/sdks.md section 7 and agents/BUILD_LOG.md.
+  - New: H-002, H-003 in HARDWARE_NEEDED.md; Q-008, Q-009 in QUESTIONS.md. No blockers.
 
 ## T-003  Config files with UNMEASURED placeholders and a validated loader
 status: todo
