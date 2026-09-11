@@ -53,3 +53,10 @@ session.enable string appears in safety.py, enable_session.py and tests only. De
 reference aged by command_gap_reset_s, pinch clamped rather than rejected, Envelope without fk fails closed.
 Audit note (section 8): every motion path must construct Guard through Guard.from_config; T-006 and the real drivers are
 reviewed against that.
+
+## T-012  ACCEPTED  (fable, 2026-09-11T22:15+07:00, commits aa8f9cc, f588009)
+Re-ran: imports of mujoco, mink, pico_bridge, cv2 succeed (cv2 5.0.0); `sha256sum -c MANIFEST.txt` 38 OK; `diff -r` of the
+vendored tree against ~/Teleopit/assets/robots/unitree_g1 shows only MANIFEST.txt as extra; 19 MB; ruff clean; 173 passed
+1 skipped; one opencv distribution. config/robot.yaml edits limited to limits_source and mjcf_qpos_index (+7 offset for the
+floating base, asserted by tests/test_assets.py). The cv2 namespace-package trap after uninstalling headless is documented
+in docs/setup.md and does not affect a fresh venv. docs/config.md future-tense sentence is cosmetic; folded into T-013.

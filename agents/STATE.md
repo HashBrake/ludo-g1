@@ -1,12 +1,12 @@
 # STATE.md (Fable rewrites this every cycle)
 
-updated: 2026-09-11T21:50+07:00
+updated: 2026-09-11T22:15+07:00
 phase: 0 (discovery and scaffolding, no hardware motion)
 milestone: Phase 0 exit checks (CLAUDE.md section 6, Phase 0 "Verify")
-last_accepted_commit: 1153c55 (T-005 safety gate accepted; 163 tests green)
+last_accepted_commit: f588009 (T-012 accepted: mujoco, mink, pico_bridge, vendored G1 model; 173 tests green)
 loop: running
 
-next three tasks: T-012 IK deps + G1 model (in progress), T-007 engine stub (in progress, parallel), T-006 mock drivers
+next three tasks: T-011 left-arm FK (in progress), T-007 engine stub (in progress, parallel), T-006 mock drivers
 
 what Alois should look at (ten-second version):
 - QUESTIONS.md Q-001 (Greennode credentials), Q-002 (disk: 15 GB free vs 500 GB target), Q-003 (may I pip-install unitree_sdk2py), Q-004 (name the physical e-stop)

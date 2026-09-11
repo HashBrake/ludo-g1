@@ -336,7 +336,7 @@ acceptance:
 notes: Read-only; no session needed. Do not touch the palm camera here (it comes with the DexH15 driver in Phase 1).
 
 ## T-011  Left-arm forward kinematics for the workspace box
-status: todo
+status: in_progress
 priority: P1
 phase: 0
 owner: opus
@@ -353,7 +353,7 @@ acceptance:
 notes: Use the MJCF vendored by T-012 (third_party/unitree_g1_mjcf/), loaded with mujoco; joint order from config/robot.yaml. The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
 
 ## T-012  Dependencies and assets for the arm IK path (D-006, D-008)
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -425,7 +425,8 @@ deliverables:
 acceptance:
   - tests pass with the printed pass rate >= 90%
   - mean solve time < 5 ms per call (measured, command logged)
-notes: No hardware, no drivers touched. This is the IK that D-006 replaces Teleopit with; keep it under 200 lines.
+notes: No hardware, no drivers touched. This is the IK that D-006 replaces Teleopit with; keep it under 200 lines. Also fix the
+  future-tense sentence about T-012 in docs/config.md.
 
 ## T-014  Worktree helper for parallel builders
 status: todo
