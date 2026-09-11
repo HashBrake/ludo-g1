@@ -381,7 +381,7 @@ acceptance:
 notes: The MJCF originates from Unitree (BSD-3); keep its LICENSE next to it. Never modify the XML; if the IK needs legs
   pinned, do it at load time in code (T-013), not by editing the asset.
 result:
-  commit: PENDING
+  commit: aa8f9cc
   - vendored third_party/unitree_g1_mjcf/: 38 files, 19,697,688 bytes (19 MB) -- g1_29dof.xml, LICENSE,
     README.md and exactly the 35 meshes the XML references, meshes/ layout preserved, byte-identical to
     /home/alois/Teleopit/assets/robots/unitree_g1/ (diff -r --brief: no differences; source not modified)

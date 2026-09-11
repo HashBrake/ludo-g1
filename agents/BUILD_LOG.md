@@ -691,3 +691,4 @@ T-002 limit extraction.
 - The MJCF is only *loaded* here. Pinning the legs and the right arm for the IK is T-013 and is done at
   load time in code, never by editing the asset.
 - No disagreement with the task as written; no blockers.
+(T-012 commit: aa8f9cc; this line and the TASKS.md result hash are the only content of the follow-up commit.)
