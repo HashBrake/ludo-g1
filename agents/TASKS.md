@@ -780,7 +780,7 @@ result: drivers/g1_arm.py (332 lines) -- G1Arm, the read half of ArmDriver: Chan
   message to name H-002 and `list_devices.py` without the path. No check was weakened.
   Deviation 1: the module is 332 lines, not under 250; D-013 item 2's remedy (a sibling module) is outside this task's
   touch list, so it stayed one file -- BUILD_LOG has the proposed split for T-021.
-  commit: COMMIT_HASH
+  commit: 3f3df45 (pre-commit hook: ruff clean, 533 passed, 7 skipped in 1346 s under load; no --no-verify)
 
 ## T-019  DexH15 driver, read-only state and palm camera, 10-minute stream stats
 status: todo

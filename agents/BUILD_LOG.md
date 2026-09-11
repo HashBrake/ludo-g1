@@ -3088,7 +3088,8 @@ topic/domain/interface, joint extraction at the configured indices, callback-tim
 ```
 .venv/bin/ruff check .                                    -> All checks passed!
 .venv/bin/python -m pytest tests/test_g1_arm.py -q        -> 23 passed, 3 skipped in 7.4 s
-.venv/bin/python -m pytest -q                             -> SUITE
+.venv/bin/python -m pytest -q  (the pre-commit hook's run)  -> 533 passed, 7 skipped in 1346.01 s
+    (22 min because the other builder's suite was running at the same time; 4 min is the quiet-machine cost)
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --stream arm --seconds 5
     stream arm (mock); samples 502 in 5.01 s; rate 100.00 Hz (expected 100, config mock.state_hz);
     drops 0; interval ms p50 10.00 p99 10.00 max 10.00; jitter ms p50 0.00 p99 0.00 max 0.00
