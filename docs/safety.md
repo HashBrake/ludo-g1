@@ -188,6 +188,33 @@ The session file is a human artifact, so its timestamps are wall clock and expir
 cannot be moved by NTP. `check()` takes `now_ns` explicitly so that tests are deterministic; in
 production it defaults to `runtime.clock.now_ns()`.
 
+## Before a session
+
+`tools/hardware_checks/session_preflight.py` (T-041) prints the go/no-go table a human reads before
+running `enable_session.py`. It is read-only: it asks the gate for its status, reads the six config
+files, opens each device through the read-only drivers for three seconds, and sends nothing.
+
+```
+.venv/bin/python tools/hardware_checks/session_preflight.py          # the table
+.venv/bin/python tools/hardware_checks/session_preflight.py --json   # the same rows as a list
+```
+
+Each row is PASS, FAIL or SKIP, and the rows marked `*` are the ones the exit code is made of: the
+placeholders in `session_preflight.MOTION_KEYS` that make a motion command wrong or impossible while
+they are guesses (the envelope box, the joint and waist limits, the velocity and first-step caps, the
+DDS interface, the arm gains, the two actuation and two teleop latencies, the controller-to-pelvis
+transform, the hand's bus and pinch poses, the top camera and the AprilTag geometry), the e-stop the
+session checklist must name by device (Q-004, D-004), and the `arm` and `hand` devices, which are the
+two a motion command can reach (R1). The other rows -- the session gate itself, the sensor devices,
+the board calibration, the dataset disk and the git tree -- are printed because a human about to open
+a session wants to see them, and are not part of the verdict: none of them can make an arm move
+wrongly. Exit 0 means every `*` row passed, 1 that one did not (a SKIP counts as not passing, because
+a device that is absent is not a device that answered), 2 a usage error.
+
+The tool is the first step of the Phase 1 session procedure: run it, clear every `*` FAIL, then a
+human runs `enable_session.py`. It never writes `hardware/session.enable` and never asks for it; a
+closed gate is the expected answer here.
+
 ## Before a motion run
 
 Per CLAUDE.md 4.6, `agents/BUILD_LOG.md` must state, for every run that moves the robot: what will

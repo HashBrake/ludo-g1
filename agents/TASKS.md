@@ -1636,7 +1636,7 @@ acceptance:
 notes: CLAUDE.md 5.5 names "the policy's own termination signal or a 20 s timeout"; until this lands only the timeout exists.
 
 ## T-041  Session pre-flight: a read-only go/no-go table before any hardware session
-status: in_progress
+status: review
 priority: P1
 phase: 1
 owner: opus
@@ -1653,6 +1653,32 @@ deliverables:
 acceptance:
   - tests pass; running it on this laptop today prints the table with the expected FAIL/SKIP rows (output in BUILD_LOG.md)
 notes: Read-only, no session needed. T-021's session procedure starts with this tool.
+result: (opus, 2026-09-12T23:10+07:00, commit COMMIT_HASH; branch wt/t041)
+  - `.venv/bin/python -m pytest tests/test_session_preflight.py -q` -> 29 passed in 4.87 s, exit 0. Both the PASS and
+    the FAIL path of every row (session gate, e-stop, config key, device, calibration, disk, git), the exit-code rule
+    on hand-built rows, the `*` marking, and the CLI (table, --json, --budget 0 -> 2). PASS
+  - `.venv/bin/ruff check .` -> "All checks passed!", exit 0. PASS
+  - `.venv/bin/python tools/hardware_checks/session_preflight.py` on this laptop today -> exit 1, 8.6 s wall,
+    "0/28 motion-relevant checks pass", "NO-GO for a motion session." Full table in agents/BUILD_LOG.md. PASS
+    Rows: session gate SKIP (no session file); e-stop named FAIL (the checklist says only "e-stop within reach",
+    Q-004 unanswered); 25 config rows FAIL, one per MOTION_KEYS placeholder (envelope box + limits + velocity +
+    first-step cap + watchdog, dds_interface, the three control gains, the four latencies, pico_to_pelvis,
+    hand port + pinch poses, top camera, the four apriltag keys); device arm/hand/glove/pose/top/palm SKIP, each
+    carrying the driver's own message naming H-002/H-003/H-004 or the config key; device oblique PASS at
+    30.0 Hz over 91 samples in 3.0 s (ORBBEC: Ego left, the only device plugged in); board calibration FAIL
+    (config/board_calib.yaml absent, H-001); dataset disk FAIL (12.0 GB free vs the 500 GB target, Q-002);
+    git FAIL (run before this commit; the clean-tree branch is covered by a test).
+  - exit rule: 0 only when every motion-relevant row is PASS; a SKIP on one of them is not a pass. The motion-relevant
+    rows are the 25 placeholders, the e-stop, and `arm`/`hand` (the two devices a motion command can reach, R1);
+    the session gate, the sensor devices, calibration, disk and git are reported and unstarred.
+  - `--json` prints the same rows as a JSON list of {check, status, detail, motion_relevant}. PASS
+  - read-only: no Guard built, no writer imported, `hardware/session.enable` only read through SessionGate.status();
+    config/safety.yaml unchanged. PASS
+  - the pre-commit run caught a real defect: git_row inherited the hook's GIT_DIR/GIT_INDEX_FILE and reported the
+    wrong repository; it now scrubs every GIT_* variable from the child environment, with a regression test. PASS
+  - deviations logged in BUILD_LOG: the tool is 362 lines, not under 300 (D-013 item 2 -- the touch-list has no
+    sibling module to move the report/CLI types into); the 500 GB disk target is a documented module constant
+    because no config file in the touch-list is the right home for it.
 
 ## T-042  Module splits per D-013 (no behaviour change)
 status: todo
