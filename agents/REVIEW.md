@@ -42,3 +42,14 @@ destructive flags: the only `--delete` is on the push of the repo mirror to REMO
 data/checkpoints. Remote transport and Dockerfile are untested until Q-001 and say so in docs/cloud.md; that is the honest
 state, not a defect. Deviation accepted: `train` waits by default with `--detach` optional. The worktree note about the
 git-ignored PyInstaller payload is turned into T-014.
+
+## T-005  ACCEPTED  (fable, 2026-09-11T21:50+07:00, commits 8c03733, 1153c55)
+Read runtime/safety.py SessionGate.status, Guard.admit, and enable_session.py's write path in full; grepped for environ,
+getenv, bypass, dev mode, force: none. The only gate skip is the keyword-only `simulated` argument, and it never skips the
+envelope. Gate fails closed on: unreadable, unparsable, missing field, empty enabled_by, wrong checklist value, bad stamps,
+inverted window, window > max_seconds, enabled_at in the future, expired; status is re-read on every admit. Re-ran: ruff
+clean; 163 passed 1 skipped; `enable_session.py < /dev/null` exits 2 and hardware/ still holds only README.md; the
+session.enable string appears in safety.py, enable_session.py and tests only. Design choices accepted as logged: velocity
+reference aged by command_gap_reset_s, pinch clamped rather than rejected, Envelope without fk fails closed.
+Audit note (section 8): every motion path must construct Guard through Guard.from_config; T-006 and the real drivers are
+reviewed against that.

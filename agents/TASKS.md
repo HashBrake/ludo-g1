@@ -170,7 +170,7 @@ result: (opus, 2026-09-11T19:20+07:00, commit 956147a; branch wt/t004)
     noted in BUILD_LOG.
 
 ## T-005  runtime/safety.py: envelope, session gate, rate limit; enable_session.py
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -353,7 +353,7 @@ acceptance:
 notes: Use the MJCF vendored by T-012 (third_party/unitree_g1_mjcf/), loaded with mujoco; joint order from config/robot.yaml. The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
 
 ## T-012  Dependencies and assets for the arm IK path (D-006, D-008)
-status: todo
+status: in_progress
 priority: P0
 phase: 0
 owner: opus
