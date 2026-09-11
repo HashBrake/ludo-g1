@@ -303,3 +303,97 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
   non-decreasing invariant is the honest model. Stated in the test docstring and in docs/clock.md.
 - No hardware, no motion command, no blockers. No disagreement with the task as written.
 (T-004 clock commit: 956147a; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+---
+
+## T-003  Config files with UNMEASURED placeholders and a validated loader  (opus, 2026-09-11T21:40+07:00)
+
+### What changed
+- `config/robot.yaml` — left arm 7 joints + waist yaw with their 29-slot Unitree indices (15..21, 12) and
+  their MJCF ranges; `action_order` = the 9-D action of CLAUDE.md 5.3; DDS transport (laptop 192.168.123.2,
+  robot 192.168.123.164, domain 0, interface UNMEASURED); `topics.command: rt/arm_sdk` only (D-007) with the
+  weight slot 29; control 50 Hz; seven `latency.*_ms` entries at 0.0 + UNMEASURED plus the measurement method.
+- `config/safety.yaml` — session gate (file, 7200 s default, 28800 s cap, required fields), workspace box in
+  the pelvis frame, per-joint limits, waist clamp, velocity/rate/gap/watchdog limits, pinch range. Every
+  number carries the R3 warning and an UNMEASURED tag; see "Numbers chosen" below.
+- `config/cameras.yaml` — `top`/`oblique`/`palm` with V4L2 selector, capture resolution/fps/fourcc (all
+  UNMEASURED: no node was ever opened) and `policy_resolution` (640x480, 640x480, 320x240 — from 5.3, not a
+  measurement). Orbbec is the left UVC RGB stream per D-009; the right node is recorded but unused.
+- `config/hand.yaml` — Modbus 4000000 baud, slave 0x78, port UNMEASURED; 15 joint names, 7 motors, per-joint
+  limits from the Paxini bundle; `joint_order_status: UNMEASURED` because docs/sdks.md 4.6 says the SDK slot
+  order is a hypothesis; pinch synergy poses all literal UNMEASURED; glove thumb-index distance mapping.
+- `config/board.yaml` — 600x600 mm, AprilTag family/ids/size/centres all UNMEASURED, horse/die dimensions
+  UNMEASURED, `board_origin_in_base: UNMEASURED`, and an 88-cell placeholder table (48 track + 16 base +
+  24 home) under `layout`, the whole block marked `layout_status: UNMEASURED` with a header saying the engine
+  team owns the real topology. Layout: 15x15 Ludo cross at 40 mm pitch, `[(c-7)*40, (7-r)*40]`, arms 3 wide
+  and 6 long. Track = the two outer lanes of each arm as one cycle; the arm-tip cell that a standard 52-cell
+  ring would own belongs to the home lane instead, which is exactly what turns 52 into 48 and 5 home cells
+  into 6. Starts R/G/Y/B = track-12/24/36/0, home entry = the cell before the next colour's start.
+- `config/training.yaml` — rates 5.2, spaces 5.3, Diffusion (chunk 16, execute 8, DDIM 10, ResNet-18) and ACT
+  (chunk 32, temporal ensembling) 5.7, augmentation with `geometric_on_top: false`, dataset 5.6, compute 5.8.
+  No placeholders at all, by design.
+- `runtime/config.py` — `load(name, root=None)` (schema of required dotted paths per file, `ConfigError`
+  naming file and key), `config_hash(name)` (sha256 of the parsed doc re-dumped with sorted keys),
+  `unmeasured(name)` (both tag forms, reported under the value's path, deduped, document order), plus
+  `NAMES`, `REQUIRED_KEYS`, `CONFIG_DIR`, `STATUS_VALUES`. A `_status` key is itself validated: it must hold
+  UNMEASURED or MEASURED and must annotate an existing sibling, so a typo cannot hide a placeholder.
+- `tests/test_config.py` — 70 tests (loader mechanism on synthetic files in tmp_path; content invariants on
+  the six real files). `docs/config.md` — the tag convention and one section per file.
+
+### Commands run and measured results
+1. `.venv/bin/python -m pytest -q` -> `103 passed, 1 skipped in 2.93s` (the skip is the pre-existing
+   motion-marker autoskip "no session gate yet"); 70 of those are tests/test_config.py.
+2. `.venv/bin/ruff check .` -> `All checks passed!` (exit 0).
+3. Acceptance "all six files load": `test_every_config_loads` parametrised over
+   `config.NAMES == ('board','cameras','hand','robot','safety','training')`. PASS
+4. Acceptance "config_hash deterministic across two loads, changes when any value changes":
+   `test_config_hash_is_deterministic_across_two_loads` (6 files, two calls each, 64 hex chars),
+   `test_config_hash_is_stable_across_key_order` (same doc dumped unsorted / sorted / top level reversed ->
+   one hash), `test_config_hash_changes_when_a_value_changes` (diffusion.chunk 16 -> 17 changes the hash),
+   `test_config_hash_ignores_comments_and_whitespace`. PASS. Hashes at this commit:
+   board a05d0595f7fe4789f98fb1e482cc177139fff8c700970a2d3836bcb1403b3c13
+   cameras 35cae8290d946ce22790d6a6cf1188fb4699519cc538bc690dc13e2908b40595
+   hand 5b615a57d18f05238d9533bc8b687a18b3053323756c201f30715b973a817d5d
+   robot 1ae6aa90e41b9ae4b92ed94d6488fdf25552083806d6bbd698a87464100d53fc
+   safety 6dc24062a636c07c03e3f25b2513a850e11807f602dbd3b08229254f6c2bc13a
+   training e5cde12ff6a2a39345f80469bd1e9351533ca9fca5079c218a1fd1b5e09ab6c0
+5. Acceptance "unmeasured('safety') non-empty, unmeasured('training') empty":
+   `.venv/bin/python -c "from runtime import config; ..."` ->
+   safety 10 entries `['workspace_box_m.min','workspace_box_m.max','workspace_box_m.margin_m',
+   'joint_limits_rad','waist_yaw_clamp_rad','joint_velocity_limit_rad_s','command_rate_limit_hz',
+   'command_gap_reset_s','watchdog_timeout_s','hand.pinch_rate_limit_per_s']`; training `[]`.
+   Other counts: board 15, cameras 15, hand 12, robot 13. PASS
+6. Acceptance "missing required key raises a clear error naming file and key":
+   `test_missing_required_key_names_file_and_key` asserts the message contains `config/safety.yaml`,
+   `'workspace_box_m.max'` and `missing required key`. `test_each_required_key_is_individually_enforced`
+   goes further: it deletes each of the 94 required paths in turn across the six files and asserts every
+   single deletion fails the load. PASS
+
+### Numbers chosen in config/safety.yaml, and why (all UNMEASURED, R3: human commit only)
+- Workspace box, pelvis frame, wrist point: x 0.15..0.65 m (in front of the chest, short of full reach),
+  y -0.10..0.60 m (asymmetric to the robot's left because only the left arm is used), z -0.40..0.30 m
+  (table height below the pelvis is unknown; this is the least defensible number in the file). 2 cm margin.
+- Per-joint limits = the MJCF range tightened by 5 deg (0.0873 rad) each side, so a command can never ride a
+  mechanical stop. `test_safety_joint_limits_are_strictly_inside_the_mechanical_range` asserts that exact
+  relation against config/robot.yaml, so the two files cannot drift apart silently.
+- Waist yaw clamp +/- 0.6 rad on top of the joint limit (+/- 2.5307): a 600 mm board needs no more, and the
+  waist swings the whole upper body on a hip mount.
+- Joint velocity 1.5 rad/s: a Ludo move is a slow pick-and-place; nothing here needs a fast arm.
+- Command rate limit 60 Hz (>= the 50 Hz arm_sdk publish rate, so the driver is not starved, but a runaway
+  loop cannot saturate DDS), gap reset 0.5 s, watchdog 1.0 s to release the arm_sdk weight, pinch rate
+  2.0 /s. Session 7200 s default (4.6) with a 28800 s ceiling so a typo cannot grant a week-long window.
+
+### Notes / deviations
+- The task's deliverable list says `layout_status: UNMEASURED` marks the cell table, and separately lists
+  `cell_pitch_mm` etc. at the top level. A bare `layout_status` with no `layout` sibling would violate the
+  loader's own rule that a `_status` must annotate an existing key, so the topology keys (grid, pitch,
+  colours, starts, home entries, lengths, cells) are nested under `layout:` and `layout_status` annotates
+  that whole block. Same information, one fewer special case. Dotted paths changed accordingly
+  (`layout.cells`, `layout.cell_pitch_mm`).
+- 48 track cells and 6 home cells are not both achievable with the standard 52-cell Ludo ring geometry
+  (a 3-wide arm of length L gives 2L+1 track cells per quadrant, which is always odd). The construction
+  above resolves it by giving the arm-tip cell to the home lane. Recorded here because it is a real
+  topological choice, not a rounding: the engine team's layout may differ and this table is replaceable.
+- `unmeasured()` returns document order, not sorted order. Deterministic for a given file; noted in
+  docs/config.md in case Fable prefers sorted.
+- No hardware touched, no motion command, no session file read or written, no blockers, no new questions.

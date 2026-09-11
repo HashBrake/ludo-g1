@@ -1,0 +1,112 @@
+# LUDO-G1 hand configuration: the Paxini DexH15 (left) and the pinch synergy of CLAUDE.md 5.4.
+#
+# Placeholder convention (docs/config.md): the literal value UNMEASURED, or a numeric leaf with a
+# sibling `<key>_status: UNMEASURED`. The hand was not connected during the SDK inventory (T-002), so
+# every number that describes its behaviour is a placeholder; only the wiring facts are real.
+
+# --- transport (docs/sdks.md 4.2) ----------------------------------------------------------------
+device:
+  # Modbus RTU over a USB serial adapter. Port, baud and slave address are the SDK example's values
+  # (third_party/dexh15_sdk/DexH15 SDK/linux_x86/dexh15/python/position_control.py:27,29,31).
+  port: UNMEASURED          # e.g. /dev/serial/by-id/...; /dev/ttyUSB0 in the example
+  baud: 4000000
+  slave_address: 0x78
+  usb_id: "067b:23a3"       # recorded by the Paxini teleop bundle
+  # Bring-up order is mandatory and lives in drivers/dexh15.py, not here:
+  # open port -> initModbusDevice -> initMotorPosition -> setMotorControlMode(POSITION_CONTROL_MODE)
+  # -> enableMotor.
+  command_hz: 30
+  command_hz_status: UNMEASURED
+
+# --- joints --------------------------------------------------------------------------------------
+# 15 joints driven by 7 motors. `joint_order` is the order in which getJointPositionsAngle /
+# setJointPositionsAngle return and accept the 15 values.
+#
+# WARNING: this order is a hypothesis, not a verified fact. It is the Paxini teleop bundle's
+# control-interface finger order [index, middle, ring, pinky, thumb] crossed with its per-finger
+# joint names (pxcap_pro_left_dexh15.yaml:122 and :80), and that same file warns that the SDK slot
+# order is NOT the URDF XML order (pxcap_pro_left_dexh15.yaml:3). Phase 1 verifies it on hardware by
+# commanding one joint at a time and watching which one moves. Until then `joint_order_status` is
+# UNMEASURED and nothing may rely on it.
+joint_order:
+  - left_index_joint_0
+  - left_index_joint_1
+  - left_index_joint_2
+  - left_middle_joint_0
+  - left_middle_joint_1
+  - left_middle_joint_2
+  - left_ring_joint_0
+  - left_ring_joint_1
+  - left_ring_joint_2
+  - left_pinky_joint_0
+  - left_pinky_joint_1
+  - left_pinky_joint_2
+  - left_thumb_joint_0
+  - left_thumb_joint_1
+  - left_thumb_joint_2
+joint_order_status: UNMEASURED
+
+# The 7 motors, in the FingerMotor enum's naming (pxdex/dh15.pyi:227). Used only by the raw-motor
+# fallback path in drivers/dexh15.py; the default path is setJointPositionsAngle.
+motor_order: [INDEX_MOTOR, MIDDLE_MOTOR, RING_MOTOR, PINKY_MOTOR, THUMB_MOTOR_1, THUMB_MOTOR_2, THUMB_MOTOR_3]
+
+# Per-joint upper limits the Paxini bundle applies to the DexH15 target side, in radians
+# (pxcap_pro_left_dexh15.yaml:197): thumb 1.91 / 1.51 / 2.09, every other joint 1.39; lower limit 0.
+# Units here are a further unknown: the SDK's get/setJointPositionsAngle work in NORMALISED angle and
+# DexH15Kinematic.calculateRealAngle converts (docs/sdks.md 4.6). drivers/dexh15.py owns that
+# conversion; this table is in real radians.
+joint_limits_rad:
+  left_index_joint_0: [0.0, 1.39]
+  left_index_joint_1: [0.0, 1.39]
+  left_index_joint_2: [0.0, 1.39]
+  left_middle_joint_0: [0.0, 1.39]
+  left_middle_joint_1: [0.0, 1.39]
+  left_middle_joint_2: [0.0, 1.39]
+  left_ring_joint_0: [0.0, 1.39]
+  left_ring_joint_1: [0.0, 1.39]
+  left_ring_joint_2: [0.0, 1.39]
+  left_pinky_joint_0: [0.0, 1.39]
+  left_pinky_joint_1: [0.0, 1.39]
+  left_pinky_joint_2: [0.0, 1.39]
+  left_thumb_joint_0: [0.0, 1.91]
+  left_thumb_joint_1: [0.0, 1.51]
+  left_thumb_joint_2: [0.0, 2.09]
+joint_limits_rad_status: UNMEASURED
+
+# --- pinch synergy (CLAUDE.md 5.4) ---------------------------------------------------------------
+# One scalar s in [0, 1] maps to all 15 joint targets:
+#
+#     q = open_pose + s * (closed_pose - open_pose)
+#
+# i.e. the "synergy matrix" of 5.4 is the 15x2 matrix [open_pose, closed_pose - open_pose] applied to
+# [1, s]. It is defined after the Phase 1 bench tests (10 grasps on a horse and 10 on the die) and is
+# the SAME scalar the glove drives during teleop, so operator intent and robot action live in one
+# dimension. The raw 15 DexH15 joints and the raw glove channels are recorded anyway (5.4, 5.6).
+#
+# All three poses are lists of 15 values in `joint_order`. They stay the literal UNMEASURED until the
+# bench test fills them in, because a wrong pose here closes the hand on a finger.
+pinch:
+  scalar_range: [0.0, 1.0]
+  open_pose: UNMEASURED     # s = 0: thumb and index apart, clear of the board
+  closed_pose: UNMEASURED   # s = 1: thumb opposed and flexed onto index (and middle if it helps)
+  # Fingers not participating in the pinch are held curled and out of the way for the whole episode;
+  # these entries of open_pose and closed_pose are identical and equal to this pose.
+  idle_curl_pose: UNMEASURED
+  idle_fingers: [ring, pinky]
+  idle_fingers_status: UNMEASURED
+  # Which scalar counts as "holding" when the operator UI and eval/ ask whether a grasp closed.
+  grasp_threshold: 0.7
+  grasp_threshold_status: UNMEASURED
+
+# --- glove -> pinch scalar (teleop/retarget.py, Phase 2) -----------------------------------------
+# The PxCap Pro gives 17 encoder angles in degrees at 50 Hz and no wrist pose (docs/sdks.md 6). The
+# scalar is the thumb-tip-to-index-tip distance, normalised between the operator's own open and
+# pinched calibration poses, which are captured per operator at the start of a session.
+glove:
+  source: thumb_index_tip_distance_mm
+  open_distance_mm: 90.0
+  open_distance_mm_status: UNMEASURED
+  closed_distance_mm: 10.0
+  closed_distance_mm_status: UNMEASURED
+  input_hz: 50
+  input_hz_status: UNMEASURED

@@ -1,0 +1,104 @@
+# LUDO-G1 training and inference configuration (CLAUDE.md 5.2, 5.3, 5.7).
+#
+# This file contains NO placeholders: every value here is a design choice from the brief, not a
+# measurement of the hardware. `runtime.config.unmeasured("training")` must stay empty; a test
+# asserts it. Anything that has to be measured belongs in robot.yaml, cameras.yaml, hand.yaml,
+# safety.yaml or board.yaml instead.
+
+# --- rates (5.2) ---------------------------------------------------------------------------------
+rates:
+  camera_hz: 30
+  state_hz: 100          # where the SDK allows; subsampled to dataset_hz for the dataset
+  dataset_hz: 30
+  policy_hz: 10          # inference; each call emits a chunk
+  action_hz: 30          # the rate the chunk is played out at
+
+# --- observation and action spaces (5.3) ---------------------------------------------------------
+observation:
+  images:
+    top: [640, 480]      # Brio, cropped to the board region first (config/cameras.yaml top.crop)
+    oblique: [640, 480]  # Orbbec Ego left RGB (D-009)
+    palm: [320, 240]     # DexH15 palm camera, downscaled
+  # 7 arm joints + waist yaw + pinch scalar; the order is config/robot.yaml `action_order`.
+  state_dim: 9
+  # Two goal heatmap channels rendered into the `top` frame: source cell and target cell. For ROLL
+  # and RECOVER the relevant channel points at the bowl or at the fallen horse.
+  goal_channels: 2
+  goal_sigma_px: 12.0
+  task_ids: [move, roll, recover]
+  # Recorded in every episode but not fed to the policy by default (5.3).
+  extra_recorded:
+    dexh15_joints: 15
+    glove_channels: 17
+
+action:
+  dim: 9
+  space: absolute_joint_targets
+  hz: 30
+
+# --- primary policy: Diffusion Policy (5.7) ------------------------------------------------------
+diffusion:
+  base: lerobot_diffusion_policy
+  vision_encoder: resnet18
+  encoder_per_camera: true
+  chunk: 16
+  execute: 8             # receding horizon: execute 8 of the 16 predicted actions
+  obs_history: 2
+  scheduler: ddim
+  train_steps: 100
+  inference_steps: 10    # fall back to 5, then to ACT, then to the Orin NX if 10 Hz does not hold
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  train_iterations: 200000
+  ema_decay: 0.9999
+  seed: 0
+
+# --- baseline: ACT (5.7), trained on every dataset the diffusion model is trained on --------------
+act:
+  base: lerobot_act
+  vision_encoder: resnet18
+  encoder_per_camera: true
+  chunk: 32
+  temporal_ensemble: true
+  temporal_ensemble_coeff: 0.01
+  obs_history: 1
+  batch_size: 8
+  learning_rate: 1.0e-5
+  weight_decay: 1.0e-4
+  train_iterations: 100000
+  kl_weight: 10.0
+  seed: 0
+
+# --- multi-task (5.7): one model over all three primitives ---------------------------------------
+multitask:
+  enabled: true
+  task_conditioning: one_hot
+  # Relative sampling weight per primitive, so a large move dataset does not drown roll and recover.
+  sample_weights: {move: 1.0, roll: 1.0, recover: 1.0}
+
+# --- augmentation (5.7) --------------------------------------------------------------------------
+# NEVER geometric on `top`: the goal heatmap lives in the same frame and would stop matching.
+augmentation:
+  color_jitter: {brightness: 0.3, contrast: 0.3, saturation: 0.3, hue: 0.05}
+  random_crop_ratio: 0.95
+  random_crop_cameras: [oblique, palm]
+  goal_heatmap_blur_px: [0.0, 4.0]
+  geometric_on_top: false
+
+# --- dataset (5.6) -------------------------------------------------------------------------------
+dataset:
+  format: lerobot_v2
+  root: data/raw
+  val_fraction: 0.1
+  # Held-out cell pairs are chosen by eval/protocol.py, not by a random split: the split has to be
+  # over cell pairs, not over frames.
+  split_by: cell_pair
+
+# --- compute (5.8) -------------------------------------------------------------------------------
+compute:
+  train_target: greennode
+  inference_target: laptop
+  inference_fallback_order: [ddim_5, act, orin_nx]
+  checkpoint_dir: data/checkpoints
+  export_format: torchscript

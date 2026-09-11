@@ -1,0 +1,180 @@
+# LUDO-G1 board configuration: geometry, AprilTags, and the cell table.
+#
+# ###############################################################################################
+# # THE ENGINE TEAM OWNS THE TRUE TOPOLOGY AND THE TRUE CELL IDS.                               #
+# # Everything under `layout` is a placeholder invented here so that the rest of the system     #
+# # (engine/stub.py, board/calibration.py, the goal heatmaps, eval/protocol.py) has something   #
+# # concrete to address. `layout_status: UNMEASURED` says exactly that. When the engine team     #
+# # delivers its cell ids and adjacency, this table is REPLACED, not merged, and every dataset   #
+# # recorded against the old table keeps the old board_config_hash (CLAUDE.md 5.6).              #
+# ###############################################################################################
+#
+# Placeholder convention (docs/config.md): the literal value UNMEASURED, or a numeric leaf with a
+# sibling `<key>_status: UNMEASURED`.
+
+# --- physical board ------------------------------------------------------------------------------
+size_mm: [600.0, 600.0]
+# Board frame: origin at the board centre, +x toward the board's right edge, +y toward the board's
+# far edge, +z out of the playing surface. board/calibration.py (T-008) defines it from the four
+# AprilTags and produces the homography to Brio pixels; `top_px` for each cell is computed there and
+# is deliberately NOT stored in this file (it changes whenever the camera moves).
+frame: board_centre
+# Pose of the board frame in the G1 pelvis frame. Unknown until the rig and the table are measured;
+# runtime/safety.py never uses it (it clamps in the pelvis frame directly), but teleop/retarget.py
+# and eval/ need it.
+board_origin_in_base: UNMEASURED
+
+# Square horse with an arrow on top; the arrow's orientation is assumed NOT to matter to the engine
+# (D-002 U4, Q-006) until the engine team says otherwise.
+horse:
+  footprint_mm: 20.0
+  footprint_mm_status: UNMEASURED
+  height_mm: 30.0
+  height_mm_status: UNMEASURED
+  arrow_orientation_matters: false
+  arrow_orientation_matters_status: UNMEASURED
+die:
+  size_mm: 16.0
+  size_mm_status: UNMEASURED
+  bowl_centre_mm: UNMEASURED   # in the board frame; the bowl sits off the board itself
+  bowl_diameter_mm: UNMEASURED
+
+# --- AprilTags -----------------------------------------------------------------------------------
+# Four tags, one per corner of the board, defining the board frame and the Brio homography. Nothing
+# here was measured: the board was not photographed during T-002.
+apriltags:
+  family: UNMEASURED          # e.g. tag36h11
+  size_mm: UNMEASURED         # black square edge length, not the white border
+  # Tag id at each corner, named in the board frame (-x-y is the near-left corner).
+  ids:
+    corner_neg_x_neg_y: UNMEASURED
+    corner_pos_x_neg_y: UNMEASURED
+    corner_pos_x_pos_y: UNMEASURED
+    corner_neg_x_pos_y: UNMEASURED
+  # Centre of each tag in the board frame, mm. Set by whoever prints and mounts the board.
+  centres_mm: UNMEASURED
+
+# --- layout ---------------------------------------------------------------------------------------
+# The placeholder layout is a standard 15 x 15 Ludo cross at a 40 mm pitch (15 * 40 = 600 mm), with
+# grid column c and row r mapping to board_xy_mm = [(c - 7) * 40, (7 - r) * 40]; r = 0 is the far
+# edge. The four arms are 3 cells wide and 6 cells long; the centre 3 x 3 is the finish and holds no
+# addressable cell.
+#
+#   - track (48 cells): the two OUTER lanes of each arm, 4 arms x 2 lanes x 6 cells. Walked as one
+#     cycle, track-0 .. track-47, in the direction of play. Consecutive track cells are 40 mm apart
+#     within a lane, 56.57 mm (one diagonal) at the four outer corners of the cross where the ring
+#     turns, and 80 mm at the four arm tips where the ring crosses the mouth of a home lane.
+#     (A standard 52-cell Ludo ring puts a track cell at each arm tip; here that tip cell belongs to
+#     the home lane instead, which is what turns 52 into 48 and 5 home cells into 6.)
+#   - home (4 x 6 cells): the MIDDLE lane of each arm, home-0 at the tip (where the piece enters
+#     from the track) to home-5 adjacent to the centre.
+#   - base (4 x 4 cells): a 3-cell-wide square in each corner region between two arms.
+#
+# Colours R/G/Y/B are red/green/yellow/blue. Each colour's start cell and home entry follow from the
+# cycle: start R = track-12, G = track-24, Y = track-36, B = track-0, evenly spaced 12 apart, and the
+# home entry is the track cell immediately before the next colour's start.
+# `layout_status: UNMEASURED` marks this whole block, cell table included.
+layout_status: UNMEASURED
+layout:
+  grid: [15, 15]
+  cell_pitch_mm: 40.0
+  colors: [R, G, Y, B]
+  starts: {R: track-12, G: track-24, Y: track-36, B: track-0}
+  home_entries: {R: track-11, G: track-23, Y: track-35, B: track-47}
+  track_length: 48
+  home_length: 6
+  base_size: 4
+  cells:
+    # --- track (48 cells, one cycle; track-0 is blue's start) ---
+    - {id: track-0, board_xy_mm: [-280.0, 40.0]}
+    - {id: track-1, board_xy_mm: [-240.0, 40.0]}
+    - {id: track-2, board_xy_mm: [-200.0, 40.0]}
+    - {id: track-3, board_xy_mm: [-160.0, 40.0]}
+    - {id: track-4, board_xy_mm: [-120.0, 40.0]}
+    - {id: track-5, board_xy_mm: [-80.0, 40.0]}
+    - {id: track-6, board_xy_mm: [-40.0, 80.0]}
+    - {id: track-7, board_xy_mm: [-40.0, 120.0]}
+    - {id: track-8, board_xy_mm: [-40.0, 160.0]}
+    - {id: track-9, board_xy_mm: [-40.0, 200.0]}
+    - {id: track-10, board_xy_mm: [-40.0, 240.0]}
+    - {id: track-11, board_xy_mm: [-40.0, 280.0]}
+    - {id: track-12, board_xy_mm: [40.0, 280.0]}
+    - {id: track-13, board_xy_mm: [40.0, 240.0]}
+    - {id: track-14, board_xy_mm: [40.0, 200.0]}
+    - {id: track-15, board_xy_mm: [40.0, 160.0]}
+    - {id: track-16, board_xy_mm: [40.0, 120.0]}
+    - {id: track-17, board_xy_mm: [40.0, 80.0]}
+    - {id: track-18, board_xy_mm: [80.0, 40.0]}
+    - {id: track-19, board_xy_mm: [120.0, 40.0]}
+    - {id: track-20, board_xy_mm: [160.0, 40.0]}
+    - {id: track-21, board_xy_mm: [200.0, 40.0]}
+    - {id: track-22, board_xy_mm: [240.0, 40.0]}
+    - {id: track-23, board_xy_mm: [280.0, 40.0]}
+    - {id: track-24, board_xy_mm: [280.0, -40.0]}
+    - {id: track-25, board_xy_mm: [240.0, -40.0]}
+    - {id: track-26, board_xy_mm: [200.0, -40.0]}
+    - {id: track-27, board_xy_mm: [160.0, -40.0]}
+    - {id: track-28, board_xy_mm: [120.0, -40.0]}
+    - {id: track-29, board_xy_mm: [80.0, -40.0]}
+    - {id: track-30, board_xy_mm: [40.0, -80.0]}
+    - {id: track-31, board_xy_mm: [40.0, -120.0]}
+    - {id: track-32, board_xy_mm: [40.0, -160.0]}
+    - {id: track-33, board_xy_mm: [40.0, -200.0]}
+    - {id: track-34, board_xy_mm: [40.0, -240.0]}
+    - {id: track-35, board_xy_mm: [40.0, -280.0]}
+    - {id: track-36, board_xy_mm: [-40.0, -280.0]}
+    - {id: track-37, board_xy_mm: [-40.0, -240.0]}
+    - {id: track-38, board_xy_mm: [-40.0, -200.0]}
+    - {id: track-39, board_xy_mm: [-40.0, -160.0]}
+    - {id: track-40, board_xy_mm: [-40.0, -120.0]}
+    - {id: track-41, board_xy_mm: [-40.0, -80.0]}
+    - {id: track-42, board_xy_mm: [-80.0, -40.0]}
+    - {id: track-43, board_xy_mm: [-120.0, -40.0]}
+    - {id: track-44, board_xy_mm: [-160.0, -40.0]}
+    - {id: track-45, board_xy_mm: [-200.0, -40.0]}
+    - {id: track-46, board_xy_mm: [-240.0, -40.0]}
+    - {id: track-47, board_xy_mm: [-280.0, -40.0]}
+    # --- red ---
+    - {id: R-base-0, board_xy_mm: [120.0, 240.0]}
+    - {id: R-base-1, board_xy_mm: [240.0, 240.0]}
+    - {id: R-base-2, board_xy_mm: [120.0, 120.0]}
+    - {id: R-base-3, board_xy_mm: [240.0, 120.0]}
+    - {id: R-home-0, board_xy_mm: [0.0, 280.0]}
+    - {id: R-home-1, board_xy_mm: [0.0, 240.0]}
+    - {id: R-home-2, board_xy_mm: [0.0, 200.0]}
+    - {id: R-home-3, board_xy_mm: [0.0, 160.0]}
+    - {id: R-home-4, board_xy_mm: [0.0, 120.0]}
+    - {id: R-home-5, board_xy_mm: [0.0, 80.0]}
+    # --- green ---
+    - {id: G-base-0, board_xy_mm: [120.0, -120.0]}
+    - {id: G-base-1, board_xy_mm: [240.0, -120.0]}
+    - {id: G-base-2, board_xy_mm: [120.0, -240.0]}
+    - {id: G-base-3, board_xy_mm: [240.0, -240.0]}
+    - {id: G-home-0, board_xy_mm: [280.0, 0.0]}
+    - {id: G-home-1, board_xy_mm: [240.0, 0.0]}
+    - {id: G-home-2, board_xy_mm: [200.0, 0.0]}
+    - {id: G-home-3, board_xy_mm: [160.0, 0.0]}
+    - {id: G-home-4, board_xy_mm: [120.0, 0.0]}
+    - {id: G-home-5, board_xy_mm: [80.0, 0.0]}
+    # --- yellow ---
+    - {id: Y-base-0, board_xy_mm: [-240.0, -120.0]}
+    - {id: Y-base-1, board_xy_mm: [-120.0, -120.0]}
+    - {id: Y-base-2, board_xy_mm: [-240.0, -240.0]}
+    - {id: Y-base-3, board_xy_mm: [-120.0, -240.0]}
+    - {id: Y-home-0, board_xy_mm: [0.0, -280.0]}
+    - {id: Y-home-1, board_xy_mm: [0.0, -240.0]}
+    - {id: Y-home-2, board_xy_mm: [0.0, -200.0]}
+    - {id: Y-home-3, board_xy_mm: [0.0, -160.0]}
+    - {id: Y-home-4, board_xy_mm: [0.0, -120.0]}
+    - {id: Y-home-5, board_xy_mm: [0.0, -80.0]}
+    # --- blue ---
+    - {id: B-base-0, board_xy_mm: [-240.0, 240.0]}
+    - {id: B-base-1, board_xy_mm: [-120.0, 240.0]}
+    - {id: B-base-2, board_xy_mm: [-240.0, 120.0]}
+    - {id: B-base-3, board_xy_mm: [-120.0, 120.0]}
+    - {id: B-home-0, board_xy_mm: [-280.0, 0.0]}
+    - {id: B-home-1, board_xy_mm: [-240.0, 0.0]}
+    - {id: B-home-2, board_xy_mm: [-200.0, 0.0]}
+    - {id: B-home-3, board_xy_mm: [-160.0, 0.0]}
+    - {id: B-home-4, board_xy_mm: [-120.0, 0.0]}
+    - {id: B-home-5, board_xy_mm: [-80.0, 0.0]}

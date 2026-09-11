@@ -1,0 +1,125 @@
+# LUDO-G1 robot configuration: the G1 left arm (7 DoF) + waist yaw, the DDS transport, and the
+# actuation latencies used by runtime/clock.py to align recorded actions with the robot's response.
+#
+# Placeholder convention (docs/config.md): a leaf whose value is the literal string UNMEASURED, or a
+# numeric leaf with a sibling `<key>_status: UNMEASURED`, has never been measured on this hardware.
+# Every one of them is a Phase 1 measurement (CLAUDE.md section 6, Phase 1).
+#
+# Sources are cited as `path:line` and are the ones recorded in docs/sdks.md (T-002).
+
+model: unitree_g1_29dof
+description: >-
+  Hip-mounted on a rig, legs locked, head replaced by a projector. Only the left arm and the waist
+  yaw are ever commanded by this project (CLAUDE.md 3.1, 5.3).
+
+# --- joints ------------------------------------------------------------------------------------
+# `index` is the slot in the 29-joint Unitree order, i.e. the index into LowState_.motor_state[] and
+# LowCmd_.motor_cmd[]. Source of the names and the order:
+#   third_party/g1_pico_teleop/teleopit/constants.py:11  (G1_JOINT_NAMES, 29 entries)
+# Source of the same order as integer constants (class G1JointIndex; it lives in the SDK's *example*,
+# not in the installed unitree_sdk2py package -- verified absent from the package by grep in T-003):
+#   /home/alois/meta-quest-teleoperate/unitree_sdk2_python/example/g1/high_level/g1_arm7_sdk_dds_example.py:40
+#   (WaistYaw = 12) and :47-53 (LeftShoulderPitch = 15 .. LeftWristYaw = 21)
+# `limit_rad` is the MJCF joint range, NOT a safety limit. The limits runtime/safety.py enforces are
+# in config/safety.yaml and are these tightened by 5 degrees on each side (R3).
+# Source: /home/alois/Teleopit/assets/robots/unitree_g1/g1_29dof.xml (read-only reference; T-012
+# vendors it into third_party/ and this file's `limits_source` must then be repointed).
+limits_source: /home/alois/Teleopit/assets/robots/unitree_g1/g1_29dof.xml
+
+arm:
+  side: left
+  dof: 7
+  joints:
+    - {name: left_shoulder_pitch_joint, index: 15, limit_rad: [-3.0892, 2.6704], mjcf_line: 180}
+    - {name: left_shoulder_roll_joint,  index: 16, limit_rad: [-1.5882, 2.2515], mjcf_line: 184}
+    - {name: left_shoulder_yaw_joint,   index: 17, limit_rad: [-2.618, 2.618],   mjcf_line: 188}
+    - {name: left_elbow_joint,          index: 18, limit_rad: [-1.0472, 2.0944], mjcf_line: 193}
+    - {name: left_wrist_roll_joint,     index: 19, limit_rad: [-1.97222, 1.97222], mjcf_line: 198}
+    - {name: left_wrist_pitch_joint,    index: 20, limit_rad: [-1.61443, 1.61443], mjcf_line: 202}
+    - {name: left_wrist_yaw_joint,      index: 21, limit_rad: [-1.61443, 1.61443], mjcf_line: 207}
+
+waist:
+  # waist_roll (13) and waist_pitch (14) exist on the 29-DoF G1 but LUDO-G1 uses yaw only (5.3), and
+  # both are marked INVALID when the waist is locked in the robot's own configuration. Whether this
+  # robot's waist is locked is a Phase 1 check before anything is blamed on hardware (docs/sdks.md 3).
+  joints:
+    - {name: waist_yaw_joint, index: 12, limit_rad: [-2.618, 2.618], mjcf_line: 160}
+  locked: UNMEASURED
+
+# The 9-D action vector of CLAUDE.md 5.3 in order: 7 arm joints, waist yaw, pinch scalar. Anything
+# that builds or consumes an action uses this list, never a hard-coded ordering.
+action_order:
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_joint
+  - left_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - waist_yaw_joint
+  - pinch_scalar
+
+# --- transport ---------------------------------------------------------------------------------
+network:
+  # Lab addressing from third_party/g1_pico_teleop/README.md:59. No interface held a 192.168.123.x
+  # address during T-002, so the link itself is unverified (HARDWARE_NEEDED H-002).
+  laptop_ip: 192.168.123.2
+  robot_ip: 192.168.123.164
+  # ChannelFactoryInitialize(domain_id, interface) --
+  # .venv/lib/python3.10/site-packages/unitree_sdk2py/core/channel.py:298
+  dds_domain_id: 0
+  # Candidates: the built-in enp0s31f6, or the ASIX AX88179 USB dongle enumerated as enx000ec6c10aa5
+  # (present but down during T-002). Pick the one that holds 192.168.123.2 once the LAN is up.
+  dds_interface: UNMEASURED
+
+topics:
+  # D-007: the write path is rt/arm_sdk only. rt/lowcmd owns the legs and is never used by drivers/,
+  # runtime/ or policy/.
+  state: rt/lowstate
+  command: rt/arm_sdk
+  # motor_cmd[29].q is the arm_sdk enable weight: 1 enables, 0 releases
+  # (g1_arm7_sdk_dds_example.py:135). The driver ramps it, never steps it (D-007).
+  arm_sdk_weight_index: 29
+
+control:
+  # The SDK example's arm_sdk loop period is control_dt_ = 0.02 s
+  # (g1_arm7_sdk_dds_example.py, docs/sdks.md 2.4). The driver publishes at this rate and
+  # zero-order-holds the 30 Hz action stream (D-007).
+  command_hz: 50
+  # LowState_ publish rate is nominally 500 Hz on the G1 but was never observed here.
+  state_hz: 500
+  state_hz_status: UNMEASURED
+  # PD gains for the commanded joints. These are the SDK example's arm values; they have not been
+  # tuned on this robot with a hand attached.
+  kp: 60.0
+  kp_status: UNMEASURED
+  kd: 1.5
+  kd_status: UNMEASURED
+  # Seconds the arm_sdk weight takes to ramp 0 -> 1 on enable and 1 -> 0 on release (D-007).
+  weight_ramp_s: 1.0
+  weight_ramp_s_status: UNMEASURED
+
+# --- latency -----------------------------------------------------------------------------------
+# One-way command-to-observed-response latency of each actuation path, measured in Phase 1 with the
+# method named in `method`, and applied by runtime/clock.py `shift` (docs/clock.md). Zero is a
+# placeholder, not a measurement: every consumer must check `unmeasured("robot")` before trusting it.
+latency:
+  arm_ms: 0.0
+  arm_ms_status: UNMEASURED
+  hand_ms: 0.0
+  hand_ms_status: UNMEASURED
+  glove_ms: 0.0
+  glove_ms_status: UNMEASURED
+  pico_ms: 0.0
+  pico_ms_status: UNMEASURED
+  camera_top_ms: 0.0
+  camera_top_ms_status: UNMEASURED
+  camera_oblique_ms: 0.0
+  camera_oblique_ms_status: UNMEASURED
+  camera_palm_ms: 0.0
+  camera_palm_ms_status: UNMEASURED
+  method: >-
+    Phase 1, tools/hardware_checks/: step a single joint by a small amount inside the envelope and
+    cross-correlate the commanded step with the measured q; the lag at peak correlation is the
+    latency. Same method for the hand (pinch scalar step vs getJointPositionsAngle) and for the input
+    streams (shake test against a jointly visible event).

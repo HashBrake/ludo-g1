@@ -86,7 +86,7 @@ result: (opus, 2026-09-11T20:10+07:00, commit ac4fcc5)
   - New: H-002, H-003 in HARDWARE_NEEDED.md; Q-008, Q-009 in QUESTIONS.md. No blockers.
 
 ## T-003  Config files with UNMEASURED placeholders and a validated loader
-status: in_progress
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -114,6 +114,29 @@ notes: Facts from docs/sdks.md (T-002) to encode: G1 joint indices from unitree_
   address 0x78 (from the SDK example), joint names/order from pxdex.dh15 stubs; Orbbec Ego is UVC stereo (/dev/video4 left,
   /dev/video6 right), Brio UNMEASURED; G1 joint limits: take them from the G1 MJCF at ~/Teleopit/assets/robots/unitree_g1/
   g1_29dof.xml (read-only reference, T-012 vendors it) and cite the file. Placeholder envelope must be conservative: workspace box no larger than the table region in front of the robot, velocity limit low. Fable will review the numbers. Section 7: config in yaml, never constants in code.
+result: (opus, 2026-09-11T21:40+07:00, commit COMMIT_HASH)
+  - All six files load: `test_every_config_loads` over NAMES = (board, cameras, hand, robot, safety, training). PASS
+  - `config_hash` deterministic across two loads (all six, 64 hex chars), unchanged when key order or comments
+    change (unsorted / sorted / top level reversed -> one hash), changed when a value changes
+    (diffusion.chunk 16 -> 17). PASS. Hashes at this commit: board a05d0595, cameras 35cae829, hand 5b615a57,
+    robot 1ae6aa90, safety 6dc24062, training e5cde12f (first 8 of the sha256; full values in BUILD_LOG).
+  - `unmeasured("safety")` = 10 entries (workspace_box_m.min/.max/.margin_m, joint_limits_rad,
+    waist_yaw_clamp_rad, joint_velocity_limit_rad_s, command_rate_limit_hz, command_gap_reset_s,
+    watchdog_timeout_s, hand.pinch_rate_limit_per_s); `unmeasured("training")` = []. PASS.
+    Other counts: board 15, cameras 15, hand 12, robot 13.
+  - Missing required key: error is `config/safety.yaml: missing required key: 'workspace_box_m.max'`.
+    `test_each_required_key_is_individually_enforced` deletes each of the 94 required paths across the six
+    files in turn and asserts every deletion fails the load. PASS
+  - Gate: `.venv/bin/ruff check .` -> All checks passed; `.venv/bin/python -m pytest -q` -> 103 passed,
+    1 skipped (the pre-existing motion-marker autoskip). tests/test_config.py contributes 70 tests.
+  - safety.yaml numbers (all UNMEASURED, R3): box x 0.15..0.65, y -0.10..0.60, z -0.40..0.30 m in the pelvis
+    frame at the wrist point with 2 cm margin; per-joint limits = MJCF range tightened 5 deg each side (test
+    asserts that relation against robot.yaml); waist yaw clamp 0.6 rad; velocity 1.5 rad/s; command rate
+    60 Hz; gap reset 0.5 s; watchdog 1.0 s; session 7200 s default, 28800 s cap.
+  - Deviation: the topology keys are nested under `layout:` so that `layout_status` annotates an existing
+    key (the loader rejects a `_status` with no sibling). 48 track + 6 home cells is not achievable with
+    standard 52-cell Ludo ring geometry; the arm-tip cell is given to the home lane instead. Both recorded
+    in BUILD_LOG. No hardware touched, no motion command, no blockers, no new questions.
 
 ## T-004  runtime/clock.py: monotonic clock, stream alignment, latency compensation
 status: accepted

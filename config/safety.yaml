@@ -1,0 +1,92 @@
+# LUDO-G1 safety envelope (CLAUDE.md R1, R3). runtime/safety.py reads this file and refuses every
+# motion command that violates it; no other module may reimplement or bypass these numbers.
+#
+# ############################################################################################
+# # EVERY NUMBER IN THIS FILE IS AN UNMEASURED PLACEHOLDER.                                   #
+# # Tighten or loosen only by human commit, R3. Fable may propose, never apply. An agent that #
+# # needs a different value writes the proposal to agents/DECISIONS.md and stops.             #
+# ############################################################################################
+#
+# Placeholder convention (docs/config.md): the literal value UNMEASURED, or a numeric leaf with a
+# sibling `<key>_status: UNMEASURED`. Every such leaf is a Phase 1 measurement.
+
+# --- session gate (R1, CLAUDE.md 4.6) ------------------------------------------------------------
+session:
+  # Path is repo-relative. The file is git-ignored and is written ONLY by a human running
+  # tools/hardware_checks/enable_session.py. No agent creates, edits, copies or restores it.
+  file: hardware/session.enable
+  default_seconds: 7200
+  # A session file whose expires_at is further out than this is rejected: a typo must not grant a
+  # week-long motion window.
+  max_seconds: 28800
+  required_fields: [enabled_by, enabled_at, expires_at, checklist]
+  required_checklist_value: confirmed
+
+# --- workspace box -------------------------------------------------------------------------------
+# An axis-aligned box in the G1 pelvis (base) frame: +x forward out of the chest, +y to the robot's
+# left, +z up. The commanded wrist point must stay inside it. The box is meant to cover the table
+# region in front of and to the left of the robot (the left arm is the only arm used) and nothing
+# else: not the robot's own torso, not the operator's side of the table, not above head height.
+# The table height relative to the pelvis is unknown until the rig is measured, so the z span is a
+# guess and is the first thing Phase 1 replaces.
+workspace_box_m:
+  frame: g1_pelvis
+  min: [0.15, -0.10, -0.40]
+  max: [0.65, 0.60, 0.30]
+  min_status: UNMEASURED
+  max_status: UNMEASURED
+  # Applied to the wrist point (left_wrist_yaw_link origin). The hand and the horse stick out beyond
+  # it, so the box is drawn with this margin of slack already removed from the reachable volume.
+  point: left_wrist_yaw_link
+  margin_m: 0.02
+  margin_m_status: UNMEASURED
+
+# --- per-joint limits ----------------------------------------------------------------------------
+# The MJCF range of each joint (config/robot.yaml `limit_rad`) tightened by 5 degrees (0.0873 rad) on
+# each side, so a command can never ride the mechanical stop. Same joint names and order as
+# config/robot.yaml; runtime/safety.py cross-checks the two files and refuses to start if they differ.
+joint_limits_rad:
+  left_shoulder_pitch_joint: [-3.0019, 2.5831]
+  left_shoulder_roll_joint: [-1.5009, 2.1642]
+  left_shoulder_yaw_joint: [-2.5307, 2.5307]
+  left_elbow_joint: [-0.9599, 2.0071]
+  left_wrist_roll_joint: [-1.8849, 1.8849]
+  left_wrist_pitch_joint: [-1.5271, 1.5271]
+  left_wrist_yaw_joint: [-1.5271, 1.5271]
+  waist_yaw_joint: [-2.5307, 2.5307]
+joint_limits_rad_status: UNMEASURED
+
+# --- waist clamp ---------------------------------------------------------------------------------
+# The waist carries the whole upper body on a hip mount; a large yaw excursion is both unnecessary
+# for reaching a 600 mm board and the fastest way to swing the arm somewhere unexpected. This clamp
+# is applied on top of the joint limit above; the effective limit is the tighter of the two.
+waist_yaw_clamp_rad: 0.6
+waist_yaw_clamp_rad_status: UNMEASURED
+
+# --- rate and velocity ---------------------------------------------------------------------------
+# Low on purpose: a Ludo move is a slow pick-and-place and nothing in this project needs a fast arm.
+# Enforced per joint on the commanded target, against the previous accepted command and the elapsed
+# monotonic time (runtime/clock.py).
+joint_velocity_limit_rad_s: 1.5
+joint_velocity_limit_rad_s_status: UNMEASURED
+# Ceiling on how often a motion command may be accepted. Above this the command is rejected, not
+# queued: a runaway loop must not be able to saturate the DDS link.
+command_rate_limit_hz: 60
+command_rate_limit_hz_status: UNMEASURED
+# A command that arrives more than this long after the previous one starts a fresh velocity
+# reference instead of being compared against a stale target.
+command_gap_reset_s: 0.5
+command_gap_reset_s_status: UNMEASURED
+# If no motion command arrives for this long while a session is live, the driver releases the
+# arm_sdk weight and hands the arm back to the robot's own controller.
+watchdog_timeout_s: 1.0
+watchdog_timeout_s_status: UNMEASURED
+
+# --- hand ----------------------------------------------------------------------------------------
+# The policy and the teleop retargeting only ever produce the pinch scalar; the synergy in
+# config/hand.yaml turns it into DexH15 joint targets inside drivers/dexh15.py. Clamping the scalar
+# here means the hand envelope is one number, not fifteen.
+hand:
+  pinch_scalar_range: [0.0, 1.0]
+  pinch_rate_limit_per_s: 2.0
+  pinch_rate_limit_per_s_status: UNMEASURED

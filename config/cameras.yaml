@@ -1,0 +1,64 @@
+# LUDO-G1 camera configuration: the three observation streams of CLAUDE.md 5.3.
+#
+# Placeholder convention (docs/config.md): the literal value UNMEASURED, or a numeric leaf with a
+# sibling `<key>_status: UNMEASURED`. Nothing here was measured: the Brio and the DexH15 were not
+# connected during the SDK inventory (T-002, docs/sdks.md 8.1 and 5), and no stream was ever opened.
+#
+# `device` is a V4L2 selector. Prefer a stable /dev/v4l/by-id/... path over /dev/videoN: the node
+# numbers move when devices are replugged, and a policy that trains on `top` must never be fed
+# `oblique` because the enumeration order changed.
+
+defaults:
+  driver: opencv_v4l2       # cv2.VideoCapture(..., cv2.CAP_V4L2), docs/sdks.md 8.1
+  fourcc: MJPG              # raw YUYV will not hold 30 fps at these resolutions over USB
+  timestamp: runtime.clock.now_ns at the instant read() returns
+
+# --- top: Logitech Brio 4K, fixed above the table (board state, goal grounding, AprilTags) --------
+top:
+  device: UNMEASURED        # e.g. /dev/v4l/by-id/usb-046d_Brio_...-video-index0
+  resolution: [1920, 1080]
+  resolution_status: UNMEASURED
+  fps: 30
+  fps_status: UNMEASURED
+  fourcc: MJPG
+  fourcc_status: UNMEASURED
+  autofocus: false          # a refocus mid-episode changes the homography; fix focus and exposure
+  autofocus_status: UNMEASURED
+  # Pixel crop of the board region, taken from the full frame before the 640x480 resize that the
+  # policy sees (CLAUDE.md 5.3). Filled in by board/calibration.py (T-008) from the AprilTag corners.
+  crop: {x: 0, y: 0, w: 1920, h: 1080}
+  crop_status: UNMEASURED
+  # What the policy and the goal heatmaps are rendered at. Fixed by CLAUDE.md 5.3, not a measurement.
+  policy_resolution: [640, 480]
+
+# --- oblique: Orbbec Ego on the rig at chest height (parallax, replaces the missing head camera) --
+# D-009: depth is deferred. The Ego enumerates as a plain UVC stereo pair and pyorbbecsdk on PyPI is
+# unusable (docs/sdks.md 8.2), so `oblique` is the LEFT RGB stream over V4L2, exactly the 640x480 RGB
+# that CLAUDE.md 5.3 asks for. The right node is recorded here only so a later stereo-depth route
+# (D-009 option c) does not have to rediscover it.
+oblique:
+  device: UNMEASURED        # /dev/video4 during T-002 ("ORBBEC: Ego left"), but the number moves
+  device_right: UNMEASURED  # /dev/video6 during T-002 ("ORBBEC: Ego right"); unused today
+  usb_id: "2bc5:1201"       # ORBBEC EGO, enumerated in T-002
+  resolution: [640, 480]
+  resolution_status: UNMEASURED
+  fps: 30
+  fps_status: UNMEASURED
+  fourcc: MJPG
+  fourcc_status: UNMEASURED
+  policy_resolution: [640, 480]
+
+# --- palm: DexH15 built-in palm camera (close-in view during the grasp) ---------------------------
+# Two routes exist (docs/sdks.md 5): pxdex DexH15Camera.getFrame(), or the plain V4L2 node. The V4L2
+# route is the default because it keeps the palm camera on the same runtime/clock.py timestamping
+# path as the other two. Plugging the hand in adds two nodes and the FIRST is the stream.
+palm:
+  device: UNMEASURED        # the first of the two nodes the hand adds
+  resolution: [640, 480]    # the SDK example configures 640x480 @ 30 fps
+  resolution_status: UNMEASURED
+  fps: 30
+  fps_status: UNMEASURED
+  fourcc: MJPG
+  fourcc_status: UNMEASURED
+  # CLAUDE.md 5.3: the palm view is downscaled to 320x240 before it reaches the policy.
+  policy_resolution: [320, 240]
