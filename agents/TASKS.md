@@ -1214,10 +1214,10 @@ acceptance:
     and its status/comment (Fable checks that nothing was loosened)
 notes: T-021 (first real motion) now depends on this task. Also add `mock.pose_center_m` to the MockPose row in docs/drivers.md
   (left over from T-032).
-result: (opus, 2026-09-12T00:20+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-12T00:35+07:00, commit 275abc0)
   - `.venv/bin/python -m pytest tests/test_safety.py -q -s` -> 61 passed. `tests/test_teleop_loop.py` -> 23 passed.
     `tests/test_operator_ui.py` -> 14 passed. `tests/test_mock_drivers.py` -> 48 passed. Full suite through the
-    pre-commit hook -> FULL_SUITE. `.venv/bin/ruff check .` -> "All checks passed!". PASS
+    pre-commit hook -> 490 passed, 4 skipped in 696 s (465 passed before this task). `.venv/bin/ruff check .` -> "All checks passed!". PASS
   - `git diff --stat config/safety.yaml` -> `1 file changed, 8 insertions(+)`: only first_command_max_step_rad,
     its `_status: UNMEASURED` sibling and the R3 comment. Nothing loosened (the fresh-reference allowance went
     from joint_velocity_limit_rad_s * command_gap_reset_s = 0.75 rad to 0.05 rad). PASS

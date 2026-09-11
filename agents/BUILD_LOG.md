@@ -2673,11 +2673,12 @@ already is.
 ### Commands run, and what they measured
 
 ```
-.venv/bin/python -m pytest tests/test_safety.py -q -s
-.venv/bin/python -m pytest tests/test_teleop_loop.py -q -p no:randomly
-.venv/bin/python -m pytest tests/test_operator_ui.py -q -p no:randomly
-.venv/bin/ruff check .
-.venv/bin/python -m pytest tests/ -q          # the pre-commit gate runs this
+.venv/bin/python -m pytest tests/test_safety.py -q -s              # 61 passed
+.venv/bin/python -m pytest tests/test_teleop_loop.py -q            # 23 passed (14 before)
+.venv/bin/python -m pytest tests/test_operator_ui.py -q            # 14 passed (11 before)
+.venv/bin/python -m pytest tests/test_mock_drivers.py -q           # 48 passed
+.venv/bin/ruff check .                                             # All checks passed!
+.venv/bin/python -m pytest -q   # the pre-commit gate: 490 passed, 4 skipped in 696 s (465 before)
 ```
 
 | measurement | value |

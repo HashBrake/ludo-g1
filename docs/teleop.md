@@ -410,7 +410,8 @@ One tick:
 
 A `SafetyViolation` is counted by rule, logged and the tick continues; the guard is the limiter, not
 a crash. A refused tick sends nothing and records nothing, so the dataset can only ever hold commands
-the robot was actually given (R5).
+the robot was actually given (R5) — and a refusal on the **arm** disengages the clutch, so the loop
+goes back to holding and waits for the operator instead of pushing the same target again.
 
 The tick grid is `Recorder.next_grid_ns` when a recorder is attached — the recorder's grid is
 phase-locked to the board camera, so a command is issued at the instant the frame it is recorded
