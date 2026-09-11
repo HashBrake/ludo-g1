@@ -477,3 +477,103 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
 - No hardware, no motion command, no blockers, no scripted motion. No disagreement with the task as
   written.
 (T-009 cloud commit: 5540c10; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-005  runtime/safety.py: envelope, session gate, rate limit; enable_session.py  (opus, 2026-09-11T21:55+07:00)
+
+### What was built
+- `runtime/types.py`: `MotionCommand` (7 arm + waist yaw + pinch + a `clamped: tuple[str, ...]` report
+  field) and `RobotState` (the same three plus `ts_ns`). Frozen, `eq=False`, float64, input arrays copied
+  and made read-only, `joints` (8) / `to_action()` (9) helpers in `config/robot.yaml action_order`.
+- `runtime/safety.py`:
+  - `SessionGate(path=None)` -> path from `config/safety.yaml session.file`, resolved against the repo
+    root. `status(now=None) -> SessionStatus(valid, reason, enabled_by, expires_at)`, with `seconds_left`.
+    Fails closed on: no file, unreadable, unparsable line, duplicate key, any missing
+    `session.required_fields` entry, empty `enabled_by`, `checklist` != `session.required_checklist_value`,
+    a timestamp with no UTC offset, `expires_at <= enabled_at`, window > `session.max_seconds`,
+    `enabled_at` in the future, `expires_at` in the past. The file is `stat`ed on every call and re-parsed
+    only when it changed; expiry is re-judged against the wall clock every call (a session that runs out
+    mid-run stops the next command). Deliberately a strict 4-line parser, not yaml.
+  - `Envelope.from_config(fk, root=None)`: joint limits, waist clamp folded in as the tighter of clamp and
+    limit, box with `margin_m` applied inward, velocity, rate, gap-reset, watchdog, pinch range and slew.
+    Cross-checks `config/safety.yaml` against `config/robot.yaml` (same joint names in the same order; a
+    safety limit wider than the MJCF mechanical range is a `ConfigError`) as `config/safety.yaml` requires.
+  - `Envelope.check(cmd, state, now_ns)` in order: command rate (reject), finiteness (reject), joint and
+    waist limits (clamp, reported), pinch range (clamp) and pinch slew (clamp), joint velocity (reject),
+    workspace box on the *clamped* target via the injected `fk` (reject). The reference is recorded only
+    when every check passes. `reset()` drops it; `watchdog_timeout_s` is exposed, not implemented (driver).
+  - `Guard(gate, envelope, *, simulated=False)`, `admit(cmd, state, now_ns=None)`: gate first unless
+    simulated, then the envelope always. `Guard.from_config(...)` builds both.
+- `tools/hardware_checks/enable_session.py`: `sys.stdin.isatty()` check (exit 2, nothing written), name
+  prompt, the four 4.6 checklist items each requiring y/yes, atomic write (mkstemp + fsync + `os.replace`)
+  of exactly the four lines in order with Asia/Bangkok offsets and `session.default_seconds`. Exit 1 on any
+  refusal. Re-reads the file through the gate afterwards and reports the expiry.
+- `tests/conftest.py`: docstring updated (the autoskip now reports the gate's own reason); logic unchanged.
+- `tests/test_safety.py` (58 tests), `docs/safety.md`.
+
+### Commands run and measured results
+1. `.venv/bin/python -m pytest -q tests/test_safety.py` -> **58 passed** in 0.97 s.
+   - Acceptance 1 (gate): `test_guard_on_hardware_refuses_without_a_valid_session[absent|expired|
+     unconfirmed|unparsable]` all raise `SafetyViolation(rule="session_gate")` with `guard.admitted == 0`;
+     `test_guard_on_hardware_accepts_with_a_valid_session` admits with a session file written into
+     `tmp_path`. Plus `test_guard_on_hardware_stops_the_moment_the_session_expires` (same guard, file
+     replaced with an expired one mid-run -> next `admit` raises). PASS
+   - Acceptance 2 (simulated): `test_guard_simulated_skips_the_gate_but_never_the_envelope` -- admits with
+     no session file anywhere, still raises `workspace_box` for an out-of-box fk point, still clamps
+     `left_elbow_joint` to 2.0071 rad and reports `clamped == ("left_elbow_joint",)`, and
+     `guard.session_status().valid is False` (simulated fakes nothing). PASS
+   - Acceptance 3 (rate): `test_rate_limit_rejects_the_second_command_inside_one_period_and_accepts_after`
+     -- 60 Hz -> period 16 666 666 ns; a command at period-1 ns raises `command_rate`, one at exactly the
+     period is accepted. PASS
+   - Acceptance 4 (velocity): `test_velocity_limit_rejects_a_target_too_far_from_the_measured_state` --
+     fresh-reference allowance is 1.5 rad/s x 0.5 s = 0.75 rad; 0.675 rad accepted, 0.825 rad rejected with
+     `joint_velocity`. Also tested against the previous accepted command inside the gap, and the
+     gap > `command_gap_reset_s` fallback to the state. PASS
+2. Acceptance 5: `.venv/bin/python tools/hardware_checks/enable_session.py < /dev/null` -> exit **2**,
+   stderr "stdin is not a terminal ...", `ls hardware/` still holds only `README.md`. Asserted in
+   `test_enable_session_without_a_tty_exits_2_and_writes_nothing`, which compares an existence+mtime
+   snapshot of the real path rather than assuming it is absent.
+3. Acceptance 6: `grep -rn "session.enable" --include=*.py . | grep -v third_party` -> hits in exactly
+   `runtime/safety.py` (2), `tools/hardware_checks/enable_session.py` (2) and the tests
+   (`tests/test_safety.py` 19, `tests/test_scaffold.py` 5, `tests/test_config.py` 1). No `.venv` hits.
+   Guarded against regression by `test_only_safety_and_enable_session_name_the_session_file`.
+4. Interactive path exercised through a pty (answers: name, `yes`, `no`) -> prompts printed, exit **1**,
+   `'legs locked' not confirmed; nothing was written`, `hardware/` unchanged. The writing path itself was
+   never run against `hardware/session.enable`: `session_text` / `write_session` are tested into `tmp_path`
+   and the output is byte-compared to the CLAUDE.md 4.6 example
+   (`enabled_at: 2026-09-15T14:02:11+07:00`, `expires_at: 2026-09-15T16:02:11+07:00`) and then fed back
+   through `SessionGate` (valid).
+5. Gate: `.venv/bin/ruff check .` -> "All checks passed!", exit 0. `.venv/bin/python -m pytest -q` ->
+   **163 passed, 1 skipped**, exit 0. The skip is the motion-marker autoskip, now carrying the gate's real
+   reason: "no valid hardware session: cannot read session file
+   /home/alois/Desktop/ludo-g1/hardware/session.enable: No such file or directory" -- i.e. conftest is
+   wired to `SessionGate.status()` end to end.
+
+### Design notes Fable should look at
+- **Fresh velocity reference.** The task says "relative to state"; `config/safety.yaml` says "against the
+  previous accepted command"; `command_gap_reset_s` bridges them. Implemented: the reference is the
+  previous accepted command and the monotonic time since it, but when that is older than
+  `command_gap_reset_s` (or absent) the reference is the measured state *aged by exactly*
+  `command_gap_reset_s`. Using `now_ns - state.ts_ns` instead would make the first command of a stream
+  un-checkable (dt ~ 0 -> infinite implied speed) or wildly permissive (a stale state), so the allowance is
+  a deterministic step of `velocity_limit x gap_reset` = 0.75 rad from where the arm actually is.
+  `RobotState.ts_ns` is carried and recorded but is not used as that dt; say so if you want it used.
+- **Clamp vs reject.** Joint limits, waist clamp, pinch range and pinch slew clamp (and report through
+  `MotionCommand.clamped`); rate, non-finite, velocity, box and the session gate reject. Rationale in
+  `docs/safety.md`. Pinch slew clamps rather than rejecting on purpose: a fast finger should not drop an
+  arm command.
+- **No fk fails closed.** `Envelope.from_config()` with no `fk` builds, but every `check()` then raises
+  `workspace_box` ("no forward kinematics injected"). An `fk` that raises or returns anything but three
+  finite metres is the same rejection. This keeps T-011 as the only thing that can *open* the box check.
+- **Extra validation beyond the deliverable**, both from the comments in `config/safety.yaml`: the
+  name/order cross-check against `config/robot.yaml`, and the refusal to build when a safety limit is wider
+  than the mechanical range. Also a test asserting `runtime/safety.py` contains none of `os.environ`,
+  `getenv`, `LUDO_`, `dev_mode`, `force` -- the no-bypass property as a test, not just a promise.
+- `Guard.admit` calls `SessionGate.status()` on every command; that is one `os.stat` per command at 30 Hz
+  (re-read only when the file changes), which is the cost of R1 taking effect mid-run.
+
+### Not done / limits
+- No hardware was touched; no motion command was sent; `hardware/session.enable` was never created,
+  edited or read from (only `os.stat`ed by the gate's default path in two tests).
+- The real forward kinematics is T-011, so the box check has only ever run against mock fks.
+- `config/safety.yaml` was read, never edited. Nothing under `third_party/` touched. No blockers, no
+  scripted motion, no disagreement with the task as written.

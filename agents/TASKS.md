@@ -170,7 +170,7 @@ result: (opus, 2026-09-11T19:20+07:00, commit 956147a; branch wt/t004)
     noted in BUILD_LOG.
 
 ## T-005  runtime/safety.py: envelope, session gate, rate limit; enable_session.py
-status: in_progress
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -190,6 +190,31 @@ acceptance:
   - test: `enable_session.py` run with stdin redirected from /dev/null exits 2 and creates no file
   - the string "hardware/session.enable" is written by exactly one module (safety.py reads it, enable_session.py writes it): `grep -rn "session.enable" --include=*.py . | grep -v third_party` shows only those two files plus tests
 notes: R1 and R3 live here. Do not add any bypass flag, environment variable, or "dev mode" that skips the gate for hardware. `simulated=True` is only set by drivers/mock. Fable will grep for bypasses.
+
+result: (opus, 2026-09-11T21:55+07:00, commit COMMIT_HASH)
+  - acceptance 1 (session gate), `.venv/bin/python -m pytest -q tests/test_safety.py`: Guard(simulated=False)
+    raises SafetyViolation(rule="session_gate") for a missing, expired, `checklist: pending` and unparsable
+    file (4 parametrized cases, `guard.admitted == 0`), and admits with a valid file written into tmp_path.
+    A fifth test replaces a live file with an expired one mid-run: the next admit raises. PASS
+  - acceptance 2 (simulated): admits with no session file anywhere, still raises `workspace_box` for an
+    out-of-box mock-fk point, still clamps left_elbow_joint 99.0 -> 2.0071 rad and reports
+    clamped == ("left_elbow_joint",); session_status().valid stays False. PASS
+  - acceptance 3 (rate limit): 60 Hz -> period 16 666 666 ns; a 2nd command at period-1 ns raises
+    `command_rate`, one at exactly the period is accepted. PASS
+  - acceptance 4 (velocity limit): fresh-reference allowance 1.5 rad/s x 0.5 s = 0.75 rad; 0.675 rad from
+    the measured state accepted, 0.825 rad rejected with rule `joint_velocity`. Previous-command reference
+    and the gap-reset fallback tested too. PASS
+  - acceptance 5: `.venv/bin/python tools/hardware_checks/enable_session.py < /dev/null` -> exit 2,
+    "stdin is not a terminal", hardware/ unchanged (test compares an existence+mtime snapshot). PASS
+  - acceptance 6: `grep -rn "session.enable" --include=*.py . | grep -v third_party` -> runtime/safety.py,
+    tools/hardware_checks/enable_session.py, and tests only (test_safety, test_scaffold, test_config).
+    Regression-guarded by test_only_safety_and_enable_session_name_the_session_file. PASS
+  - gate: `.venv/bin/ruff check .` exit 0; `.venv/bin/python -m pytest -q` -> 163 passed, 1 skipped
+    (the motion autoskip, now carrying SessionGate's own reason), exit 0. 58 of those are tests/test_safety.py.
+  - design choices for review, detailed in BUILD_LOG: the fresh velocity reference is the measured state
+    aged by command_gap_reset_s; pinch range and slew clamp rather than reject; an Envelope without fk
+    fails closed; from_config additionally refuses a safety limit wider than the config/robot.yaml
+    mechanical range and a joint list that disagrees with config/robot.yaml.
 
 ## T-006  Mock drivers with the real driver interfaces
 status: todo
