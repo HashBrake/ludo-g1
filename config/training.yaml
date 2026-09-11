@@ -36,6 +36,20 @@ action:
   space: absolute_joint_targets
   hz: 30
 
+# --- the control loop (5.5): runtime/controller.py -------------------------------------------------
+# Design choices, not measurements, like everything else in this file.
+runtime:
+  # CLAUDE.md 5.5: "until the policy's own termination signal or a 20 s timeout".
+  primitive_timeout_s: 20.0
+  # How far from the observation instant a stream's nearest sample may be before runtime/clock.py
+  # refuses to build an observation. The cameras and the hand run at 30 Hz, so a nearest sample is
+  # inherently up to one 33.3 ms period old; 50 ms is that plus scheduling slack. This is NOT the
+  # recorder's skew budget (CLAUDE.md Phase 2 asks for < 10 ms p99 there, on latency-compensated
+  # streams); it is the live loop's tolerance for polling three free-running devices.
+  alignment_tolerance_ms: 50.0
+  # Heartbeat line rate to data/logs/controller_<session>.heartbeat (section 7).
+  heartbeat_s: 1.0
+
 # --- primary policy: Diffusion Policy (5.7) ------------------------------------------------------
 diffusion:
   base: lerobot_diffusion_policy

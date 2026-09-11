@@ -577,7 +577,7 @@ acceptance:
 notes: No code changes. Do not restate the brief.
 
 ## T-016  Mock end-to-end controller loop (runtime/controller.py on mocks)
-status: in_progress
+status: review
 priority: P1
 phase: 5
 owner: opus
@@ -605,6 +605,24 @@ acceptance:
   - a 60 s mock run (`.venv/bin/python -m runtime.controller --backend mock --seconds 60`) completes with heartbeats in
     data/logs/ and a printed summary of commands executed and outcomes (command and output in BUILD_LOG.md)
 notes: No learned policy exists yet; HoldPolicy exists only so the orchestration can be tested. No scripted trajectories anywhere.
+result:
+  commit: COMMIT_HASH
+  tests: 352 passed, 1 skipped (`.venv/bin/python -m pytest -q`; was 327+1). 25 new in tests/test_controller.py.
+  ruff: `.venv/bin/ruff check .` clean.
+  loop rate (fake clock, the criterion): policy_hz 9.98 Hz over a full 20.03 s MOVE (201 calls), action_hz 29.9;
+    asserted at 10.0 +/- 0.5. Guard: arm.admitted == hand.admitted == actions_sent (601), refused 0.
+  engine cycle: report() called once per command with Outcome(success=False, failure_mode="timeout_no_progress");
+    the stub then issued RECOVER and the loop executed it (test + the 60 s run: roll, recover, recover).
+  60 s mock run (`.venv/bin/python -m runtime.controller --backend mock --seconds 60`): elapsed 60.01 s,
+    3 commands (roll=1, recover=2), 0 success / 3 failure (timeout_no_progress), 598 policy calls = 9.96 Hz,
+    1793 actions = 29.88 Hz, 0 safety refusals, 0 alignment failures, heartbeat
+    data/logs/controller_20260911T204420.heartbeat with 60 lines (one per second). Full output in BUILD_LOG.md.
+  config: config/training.yaml gains a `runtime:` block (primitive_timeout_s 20.0, alignment_tolerance_ms 50.0,
+    heartbeat_s 1.0). unmeasured("training") is still [].
+  not met: (1) `grep -rn "hardware_checks" runtime/ board/ policy/` returns one pre-existing prose line,
+    runtime/safety.py:8 (not an import, and outside this task's file list). The import-only grep is empty and a
+    test asserts it. (2) runtime/controller.py is 340 lines (240 code, 52 docstring, 45 blank) against Fable's
+    "under 250" guidance. Both explained in BUILD_LOG.md.
 
 ## T-017  Teleop recorder to LeRobot v2 on mocks (D-011)
 status: todo

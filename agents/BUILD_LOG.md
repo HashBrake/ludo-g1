@@ -1247,3 +1247,118 @@ task fixed; this way only a number the task did not fix moved.
   the first collection session rather than after.
 - No blockers.
 (T-013 commit: 6628571; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-016  Mock end-to-end controller loop  (2026-09-12T01:55+07:00)
+
+The 10 Hz cycle of CLAUDE.md 5.5 over the mock drivers, the stub engine and two deliberate
+placeholders (`HoldPolicy`, `MockPerception`). Nothing learned exists yet; this is the orchestration
+the learned policy will drop into.
+
+### What was built
+- `runtime/policy_api.py` (192 lines): `Observation` (top/oblique/palm frames, 9-D state, 2-channel
+  goal, 3-way task one-hot, all shape-validated against `runtime.types.ACTION_DIM` and the `top`
+  frame), `ActionChunk` ((n, 9) + its own `hz`, frozen and read-only), the `Policy` Protocol
+  (`reset`/`act`/`done`) and `HoldPolicy`.
+- `runtime/goal.py` (136 lines): `GoalRenderer` — separable unit-peak gaussians of
+  `observation.goal_sigma_px` at `Cell.top_px`, the task one-hot from `observation.task_ids`, and the
+  documented placeholder pixel map for the uncalibrated case (counted in `placeholder_uses`, first use
+  logged). A cell of `None` (a ROLL) renders as zeros, not as a goal at the origin.
+- `board/perception.py` (93 lines): the `Perception` Protocol, `state_delta` and `MockPerception` with
+  four stated rules. It reads the engine's board state, not the table, and says so loudly.
+- `runtime/controller.py` (340 lines): `Controller`, `RunSummary`, `build()`, the CLI.
+- `tests/test_controller.py` (475 lines, 25 tests) and `docs/controller.md` (146 lines).
+- `config/training.yaml`: new `runtime:` block — `primitive_timeout_s: 20.0`,
+  `alignment_tolerance_ms: 50.0`, `heartbeat_s: 1.0`. No `_status` keys: none of it is a measurement,
+  and `config.unmeasured("training")` is still `[]` (tests/test_config.py:127 still passes).
+
+### Commands run and measured results
+```
+.venv/bin/ruff check .                                   -> All checks passed!
+.venv/bin/python -m pytest -q                            -> 352 passed, 1 skipped in 35.40s  (was 327+1)
+.venv/bin/python -m pytest tests/test_controller.py -q   -> 25 passed in 9.36s
+.venv/bin/python -m runtime.controller --backend mock --seconds 60
+```
+The 60 s run (session 20260911T204420, real clock, this laptop):
+```
+elapsed            60.01 s
+commands executed  3 (recover=2, roll=1)
+outcomes           0 success, 3 failure
+failure modes      timeout_no_progress=3
+stopped by         run_deadline=1, timeout=2
+policy calls       598 = 9.96 Hz
+actions sent       1793 = 29.88 Hz
+safety refusals    0
+alignment failures 0
+heartbeat          data/logs/controller_20260911T204420.heartbeat   (60 lines, one per second)
+```
+Loop rate **on the fake clock** (the acceptance criterion): `policy_hz = 9.98 Hz`, `action_hz = 29.9`
+over a full 20.03 s MOVE (201 policy calls, 601 actions), asserted at 10.0 +/- 0.5 and 30.0 +/- 1.5.
+Guard: `arm.guard.admitted == hand.guard.admitted == summary.actions_sent`, `refused == 0` — every
+action went through `Guard.admit` and none was refused. `engine.report` was called once per command
+with an `Outcome(success=False, failure_mode="timeout_no_progress")`, and the stub answered with a
+RECOVER which the loop then executed (asserted in
+`test_failure_makes_the_stub_issue_a_recover_which_is_executed`, and visible in the 60 s run above:
+roll, recover, recover).
+
+### Decisions inside the task, for review
+- **How 10 Hz, 30 Hz and "execute 8 of 16" are all true at once.** They cannot be literally
+  simultaneous: 8 actions at 30 Hz is 267 ms, not the 100 ms of a 10 Hz loop. The loop drives the
+  action index from the clock: the policy is re-queried every 100 ms and the chunk index advances at
+  30 Hz, capped at `diffusion.execute`. Nominally 3 entries of each chunk are played and the other 5
+  of the 8 are the margin for a late inference; entries 8..15 are never executed. That reading is the
+  only one that satisfies both the 10 Hz loop-rate criterion and the receding horizon, and it is what
+  Fable's guidance described. Documented in docs/controller.md "Rates".
+- **`alignment_tolerance_ms: 50`, not 10.** The cameras and the hand free-run at 30 Hz, so the nearest
+  sample to a policy instant is inherently up to 33.3 ms old. Phase 2's `< 10 ms p99` is a property of
+  recorded, latency-compensated episodes, not of live polling. Stated in the config comment and the doc.
+- **`sample()` is called at the policy tick, not every 30 Hz tick.** `observe()` is the only consumer,
+  and sampling right before it means every stream holds a sample no older than its own frame period.
+  Sampling at 30 Hz was pure waste (three synthetic frames per tick on the mocks).
+- **A `SafetyViolation` is counted, logged and survived**, per Fable's guidance: a loop that died on
+  the first envelope clamp would abandon the arm mid-primitive with the engine waiting for a report.
+  `summary.refused` makes it visible; a mock run showing anything but 0 is a finding.
+- **The goal channels are rendered once per `Command`, not once per observation** (`_goal_for` caches
+  on the frozen command). It is the same answer and it was 2.2 ms of the 100 ms budget.
+- **`run(max_commands=...)` bounds that call, not the controller's life.** First version compared
+  against the cumulative `RunSummary`, so a second `run()` on the same controller did nothing; a test
+  caught it. `RunSummary` still accumulates across runs and `elapsed_s` now sums them.
+- **`_bump` reads the clock *after* the step's work.** The first version bumped against the top-of-loop
+  timestamp, so a stalled iteration (the ~230 ms first policy call) left the next grid point already in
+  the past and fired a burst — which the 60 Hz rate limiter refused. Visible as one `safety_refused` in
+  an early smoke run; zero after the fix. This is why `refused` is a counter and not just a log line.
+- **`build()` refuses `HoldPolicy` on any backend but `mock`** (R2) in addition to `drivers.make`
+  refusing `backend="real"`. Two independent refusals, because one of them will be removed in Phase 1.
+
+### Not meeting the criteria, and why
+- **`grep -rn "hardware_checks" runtime/ board/ policy/` is not empty.** It returns exactly one line,
+  pre-existing and not mine: `runtime/safety.py:8`, prose in the module docstring naming
+  `tools/hardware_checks/enable_session.py` as the only writer of the session file. It is not an
+  import, and `runtime/safety.py` is outside the files this task let me touch. The criterion's intent
+  (audit checklist section 8, "`policy/` and `runtime/` import nothing from `tools/hardware_checks/`")
+  holds and is now asserted by `test_runtime_and_board_import_nothing_from_tools_hardware_checks`,
+  which checks every import line under `runtime/`, `board/` and `policy/` and additionally checks that
+  the four files added here contain the string nowhere at all:
+  `grep -rnE "^\s*(from|import)\s+.*hardware_checks" runtime/ board/ policy/` -> empty.
+  If Fable wants the literal grep to be empty, the one-line fix is in `runtime/safety.py`'s docstring
+  and I did not make it unasked.
+- **`runtime/controller.py` is 340 lines, not "under 250".** 240 of them are code; the rest are 52
+  lines of docstring, 45 blank and 3 comment. The file holds the loop, `RunSummary`, `build()` and the
+  CLI, and the task restricted me to four files, so there was nowhere to move the summary or the CLI
+  without creating a fifth. Cutting to 250 total meant deleting roughly every docstring in the file,
+  which the project's style (and every other module) argues against. Flagged rather than silently
+  ignored; if the guidance is firm, splitting `RunSummary` + `main()` into `runtime/run_report.py`
+  (~90 lines) brings the loop itself to ~250.
+
+### Notes
+- R1-R6 intact. No motion command reaches real hardware: only mock drivers exist and `--backend real`
+  returns exit 2 with the reason. `config/safety.yaml`, `runtime/config.py` REQUIRED_KEYS,
+  `third_party/`, `agents/DECISIONS.md`, `REVIEW.md`, `STATE.md` and `requirements.txt` untouched.
+  `hardware/session.enable` neither read into existence nor written.
+- Staged by name only; `drivers/cameras.py` and `tools/hardware_checks/stream_stats.py` belong to the
+  other builder's worktree and were not touched.
+- Open question for Fable, non-blocking: `MockPerception` fails a RECOVER by construction (a recovery
+  restores the board to what the engine already believes, so the delta is empty). That is honest for a
+  perception that cannot see the table, but it means a mock run can never show a successful recovery,
+  only that one was issued and executed. The real `board/perception.py` fixes it; until then, an eval
+  harness that wants a success path will need to inject its own `Perception`.
+- No blockers.
