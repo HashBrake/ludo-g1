@@ -191,7 +191,7 @@ acceptance:
   - the string "hardware/session.enable" is written by exactly one module (safety.py reads it, enable_session.py writes it): `grep -rn "session.enable" --include=*.py . | grep -v third_party` shows only those two files plus tests
 notes: R1 and R3 live here. Do not add any bypass flag, environment variable, or "dev mode" that skips the gate for hardware. `simulated=True` is only set by drivers/mock. Fable will grep for bypasses.
 
-result: (opus, 2026-09-11T21:55+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T21:55+07:00, commit 8c03733)
   - acceptance 1 (session gate), `.venv/bin/python -m pytest -q tests/test_safety.py`: Guard(simulated=False)
     raises SafetyViolation(rule="session_gate") for a missing, expired, `checklist: pending` and unparsable
     file (4 parametrized cases, `guard.admitted == 0`), and admits with a valid file written into tmp_path.

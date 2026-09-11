@@ -577,3 +577,4 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
 - The real forward kinematics is T-011, so the box check has only ever run against mock fks.
 - `config/safety.yaml` was read, never edited. Nothing under `third_party/` touched. No blockers, no
   scripted motion, no disagreement with the task as written.
+(T-005 commit: 8c03733; this line and the TASKS.md result hash are the only content of the follow-up commit.)
