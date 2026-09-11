@@ -4080,6 +4080,12 @@ builds the child environment as `os.environ` minus every `GIT_*` variable, and
   `config/hand.yaml`, and a dataset-disk target belongs in neither. It is documented next to the
   number with its source (CLAUDE.md 3.4, Q-002) and is a keyword argument of `disk_row`.
 
+### Commit and gate
+Work commit **22ef3c4** on branch `wt/t041`, through the full pre-commit gate (ruff + the whole
+suite, no `--no-verify`): **689 passed, 14 skipped in 579.82 s**. The 14 skips are the pre-existing
+absent-hardware and no-session skips of `tests/test_cameras.py`, `test_dexh15.py`, `test_g1_arm.py`,
+`test_pico.py`, `test_pxcap.py` and `test_scaffold.py`.
+
 ### Safety
 R1: no motion command exists in this code path -- the tool builds no `Guard`, imports no writer, and
 the five real drivers it opens have no write call at all. `hardware/session.enable` is never created,

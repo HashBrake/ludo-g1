@@ -1653,7 +1653,7 @@ deliverables:
 acceptance:
   - tests pass; running it on this laptop today prints the table with the expected FAIL/SKIP rows (output in BUILD_LOG.md)
 notes: Read-only, no session needed. T-021's session procedure starts with this tool.
-result: (opus, 2026-09-12T23:10+07:00, commit COMMIT_HASH; branch wt/t041)
+result: (opus, 2026-09-12T23:10+07:00, commit 22ef3c4; branch wt/t041)
   - `.venv/bin/python -m pytest tests/test_session_preflight.py -q` -> 29 passed in 4.87 s, exit 0. Both the PASS and
     the FAIL path of every row (session gate, e-stop, config key, device, calibration, disk, git), the exit-code rule
     on hand-built rows, the `*` marking, and the CLI (table, --json, --budget 0 -> 2). PASS
