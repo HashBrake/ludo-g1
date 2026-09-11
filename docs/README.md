@@ -17,6 +17,8 @@ the numbers that were measured for it; `CLAUDE.md` stays the source of truth for
 | [teleop.md](teleop.md) | `teleop/retarget.py`: controller 6-DoF pose to 8 arm/waist joint targets through a mink IK on the G1 MJCF, and glove thumb-index distance to the pinch scalar. |
 | [controller.md](controller.md) | `runtime/controller.py`: the 10 Hz engine-to-policy-to-safety-to-drivers cycle, action chunking to 30 Hz, perception verification and the outcome reported back to the engine. |
 | [cloud.md](cloud.md) | `cloud/greennode.sh`: push data and repo to the GPU VM, launch a detached training job with a heartbeat, pull checkpoints back; the local fake transport used until credentials exist. |
+| [policy.md](policy.md) | `policy/dataset.py`: the training dataset over recorded sessions, goal-channel rendering, action chunks, the augmentation rules of CLAUDE.md 5.7 and the held-out cell-pair split. |
+| [eval.md](eval.md) | `eval/protocol.py` and `eval/run_eval.py`: trial sets, success criteria per primitive, the failure-mode vocabulary of section 6.5 and the result JSON every reported success rate comes from (R5). |
 
 Not a module page: `agents/` holds the process files (task queue, decisions, build log, reviews,
 blockers, hardware requests, questions) described in CLAUDE.md section 4.3.

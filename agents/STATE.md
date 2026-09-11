@@ -1,12 +1,12 @@
 # STATE.md (Fable rewrites this every cycle)
 
-updated: 2026-09-11T21:57+07:00
+updated: 2026-09-11T22:23+07:00
 phase: 0 closed (audit D-014); Phase 1 tasks created (T-018..T-024); non-hardware Phase 2/3 work continues (T-025..T-027)
 milestone: Phase 1 read-only bring-up needs H-002 (robot LAN) and H-003 (plug in Brio, DexH15, glove); Phase 1 motion needs Q-004 answered and a human-enabled session
-last_accepted_commit: merge of wt/t026 (19 tasks accepted; suite green)
+last_accepted_commit: merge of wt/t028 (21 tasks accepted; 433 tests green)
 loop: running
 
-next three tasks: T-027 dataset loader (in progress), T-028 eval protocol (in progress, parallel), T-029 Diffusion Policy wrapper; Phase 1 read-only tasks T-018..T-020 the moment H-002/H-003 are done
+next three tasks: T-029 Diffusion Policy wrapper (in progress), T-032 mock teleop loop (in progress, parallel), T-030 ACT baseline; Phase 1 read-only tasks T-018..T-020 when H-002/H-003 are done
 
 what Alois should look at (ten-second version):
 - Phase 0 is done except two human-gated exit checks: Greennode real round trip (Q-001 credentials) and a Brio still of the board (H-001).

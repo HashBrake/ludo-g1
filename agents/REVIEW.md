@@ -148,3 +148,17 @@ TASKS.md line 674 (T-016 result block) still read COMMIT_HASH; set to 5fbb479.
 Re-ran in the worktree: 8 tests pass; overlay changes 3072/3072 px with peaks within 1 px of the stored centres. Viewed a
 rendered strip myself (episode 1, a ROLL: header, three frame rows without overlay as expected, legend, action/state
 curves). No driver or Guard reference in the tool. This is the section 8 audit viewer; first real use at the Phase 2 card audit.
+
+## T-027  ACCEPTED  (fable, 2026-09-11T22:23+07:00, commits 13b2806, 5f75b9b)
+Re-ran: ruff clean; 18 dataset tests pass with the benchmark 80 / 146 samples/s (workers 0 / 2) on mock frames; both opencv
+wheels at 4.12.0.88 and the GUI build active (getBuildInformation shows QT5); --dry-run reports no changes; training.yaml
+format lerobot_v3; DeprecationWarnings filtered to zero; policy/ imports nothing from eval/. Design calls accepted: pad the
+tail with a mask, chunk default from config, strict pair membership for the split with (None, None) for ROLL episodes.
+The two-wheel state is now stable by construction (identical versions); the repair line in docs/setup.md stays as a repair.
+
+## T-028  ACCEPTED  (fable, 2026-09-11T22:23+07:00, commits 6628491, cde6d20, merged)
+Re-ran in the worktree: 23 eval tests pass; the acceptance command prints `success 0/20 (0.0%)` with all 20 under
+timeout_no_progress and writes the JSON; `--backend real` exits 2 refusing to deploy HoldPolicy (R2). FailureMode lives in
+board/perception.py and eval imports it, so runtime never depends on eval/. Engine-level recovery only for the sequence
+kind is what CLAUDE.md Phase 4 asks. Fable fixes in this merge: eval/results/*.json git-ignored (results are committed
+with `git add -f` only when accepted as evidence, R5), and docs/README.md rows for policy.md and eval.md.

@@ -6,6 +6,10 @@ difference into an :class:`~engine.interface.Outcome` with one of the labelled f
 CLAUDE.md 6.5. Verifying the world instead of trusting the policy is required by R5 and is what makes
 the engine's recovery loop possible at all.
 
+That vocabulary is :class:`FailureMode`, and it lives here -- in the module that *produces* the
+strings -- rather than in ``eval/``, which imports it. One definition, so that a failure the robot
+had and a failure the eval JSON counts can never become two spellings of the same thing.
+
 **The real implementation does not exist yet.** It detects horses and the die in the Brio frame
 (``board/perception.py`` per CLAUDE.md 5.1, "placeholder until the engine team delivers") and needs
 both the calibration of T-008 and the engine team's real cell ids. :class:`MockPerception` stands in
@@ -19,14 +23,54 @@ answer for a robot that did not move, and it is the expected result of every moc
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from engine.interface import Command, Outcome, Primitive
 
-__all__ = ["MockPerception", "Perception", "state_delta"]
+__all__ = ["NO_PROGRESS", "FailureMode", "MockPerception", "Perception", "state_delta"]
+
+
+class FailureMode(Enum):
+    """The labelled failure vocabulary of CLAUDE.md 6.5, defined once for the whole project.
+
+    Every failure the system must recover from has exactly one string here, perception is what
+    produces them, and ``eval/protocol.py`` imports this enum so that a counted eval result and a
+    reported :class:`~engine.interface.Outcome` can never drift apart into two spellings of the same
+    failure. The four strings named in 5.5 keep their spelling exactly.
+
+    ============================  ==================================================================
+    member                        the case of 6.5 it labels
+    ============================  ==================================================================
+    ``HORSE_FELL``                horse falls over at the source or the destination
+    ``MISSED_CELL``               horse placed between cells, or missing the magnet
+    ``GRASP_FAILED``              the grasp closed on nothing
+    ``WRONG_HORSE``               the grasp took the wrong horse (an adjacent cell)
+    ``DIE_OUT_OF_BOWL``           the die landed outside the bowl (a human replaces it)
+    ``DIE_GRASP_FAILED``          the die grasp failed
+    ``TIMEOUT_NO_PROGRESS``       the policy stalled and the watchdog ended the primitive
+    ============================  ==================================================================
+    """
+
+    HORSE_FELL = "horse_fell"
+    MISSED_CELL = "missed_cell"
+    GRASP_FAILED = "grasp_failed"
+    WRONG_HORSE = "wrong_horse"
+    DIE_OUT_OF_BOWL = "die_out_of_bowl"
+    DIE_GRASP_FAILED = "die_grasp_failed"
+    TIMEOUT_NO_PROGRESS = "timeout_no_progress"
+
+    @classmethod
+    def parse(cls, value: str | None) -> FailureMode | None:
+        """The member spelled ``value``, or ``None`` if it is not one of 6.5's strings."""
+        try:
+            return cls(value)
+        except ValueError:
+            return None
+
 
 #: What ``failure_mode`` a mock run reports when the board did not change at all (6.5, "policy stalls").
-NO_PROGRESS = "timeout_no_progress"
+NO_PROGRESS = FailureMode.TIMEOUT_NO_PROGRESS.value
 
 
 def state_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
@@ -87,7 +131,9 @@ class MockPerception:
             return Outcome(success=False, observed_state_delta={}, failure_mode=NO_PROGRESS)
         if command.primitive is Primitive.MOVE and command.dst is not None and command.horse_id is not None:
             if (after.get("horses") or {}).get(command.horse_id) != command.dst.id:
-                return Outcome(success=False, observed_state_delta=delta, failure_mode="missed_cell")
+                return Outcome(success=False, observed_state_delta=delta,
+                               failure_mode=FailureMode.MISSED_CELL.value)
         if command.primitive is Primitive.ROLL and "die" not in delta:
-            return Outcome(success=False, observed_state_delta=delta, failure_mode="die_out_of_bowl")
+            return Outcome(success=False, observed_state_delta=delta,
+                           failure_mode=FailureMode.DIE_OUT_OF_BOWL.value)
         return Outcome(success=True, observed_state_delta=delta, failure_mode=None)

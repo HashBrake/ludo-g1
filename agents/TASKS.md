@@ -950,7 +950,7 @@ result:
     imports runtime.goal / engine.interface / teleop.recorder, which are first-party, not dependencies.
 
 ## T-027  policy/dataset.py: loader, goal rendering, augmentation on the mock dataset
-status: review
+status: accepted
 priority: P1
 phase: 3
 owner: opus
@@ -989,7 +989,7 @@ result: policy/dataset.py (LudoDataset + split_cell_pairs), tests/test_dataset.p
   commit: 13b2806
 
 ## T-028  Eval protocol and runner on mocks
-status: in_progress
+status: accepted
 priority: P1
 phase: 3
 owner: opus
@@ -1012,9 +1012,41 @@ acceptance:
   - tests pass; `.venv/bin/python -m eval.run_eval --backend mock --kind move --n 20 --policy hold` writes the JSON and prints
     "0/20" (command and output in BUILD_LOG.md)
 notes: R5: every success rate the project ever reports comes from this JSON. Keep the JSON schema in docs/eval.md.
+result:
+  commit: 6628491
+  eval/protocol.py (428 lines) + eval/run_eval.py (245) + tests/test_eval.py (23 tests) + docs/eval.md (177)
+    + eval/results/.gitkeep; board/perception.py gained the 6.5 Enum `FailureMode` (defined there, imported by
+    eval/protocol.py, so the deployed runtime path does not depend on eval/; behaviour identical, NO_PROGRESS
+    is now FailureMode.TIMEOUT_NO_PROGRESS.value).
+  protocol: Trial(index, primitive, src, dst, horse_id, seed, perturbed, perturbation);
+    make_trials(kind, n, held_out_pairs, seed) over move / roll / recover / sequence; SuccessCriterion+judge()
+    state success as required Outcome fields (MOVE: horse seen on dst in observed_state_delta; ROLL: a new die;
+    RECOVER: a clean Outcome only, D-013); result schema (blank_row/record_execution/summarise/write_result/
+    print_result), AttributedEngine, script_pairs(), RESULTS_DIR.
+  runner: one Controller over mock drivers + the stub scripted with the trial commands, played one command at a
+    time; the RunSummary difference per command is that command's measurement. Engine-level recovery is ON for
+    kind=sequence only (max_reissues=2) and OFF for the per-primitive kinds, so each of those trials is exactly
+    one attempt; a RECOVER the engine injects is charged to the trial in progress as engine_retries and never
+    becomes a trial. `--policy hold` -> HoldPolicy (refused off mocks, R2); `--policy bundle PATH` raises
+    NotImplementedError naming T-029; `--backend real` exits 2 before any driver is built. Fake clock on mocks
+    unless --realtime.
+  acceptance (`.venv/bin/python -m eval.run_eval --backend mock --kind move --n 20 --policy hold`, 8.5 s wall):
+    printed `success 0/20 (0.0%)` then `timeout_no_progress 20`; wrote
+    eval/results/20260911T221321_move-hold.json with 20 trial rows, summary {success 0, n 20, rate 0.0,
+    by_failure_mode {timeout_no_progress: 20}, engine_retries 0, safety_refusals 0, duration_s 400.66},
+    git_commit + config hashes for safety/robot/board/training + policy {tag hold, checkpoint null}.
+    Row 0: duration_s 20.033, policy_calls 200, actions_sent 601, safety_refusals 0, stopped_by "timeout".
+    0/20 is correct by construction: HoldPolicy commands no motion (R2) and MockPerception sees only the
+    engine's own board state, so every primitive times out. No capability is claimed from this run.
+  also measured: kind=sequence n=20 with recovery on -> 20 trials, 0/20, 2 engine_retries each (40 total),
+    1201.98 s of loop time in 21.3 s wall; roll and recover n=4 -> 0/4 each; sequence n=19 refused.
+  tests: `.venv/bin/python -m pytest tests/test_eval.py -q` 23 passed in 6.4 s (runs use a config/ copy with
+    primitive_timeout_s 1.0 - a shorter fake clock, the same loop); suite 433 passed, 4 skipped in 85.7 s;
+    ruff `check .` clean; committed through the pre-commit gate, no --no-verify (D-013).
+  note: docs/README.md has no row for eval.md - outside this task's touch list, left for Fable.
 
 ## T-029  Diffusion Policy wrapper with goal channels, smoke-train, export, inference timing
-status: todo
+status: in_progress
 priority: P1
 phase: 3
 owner: opus
@@ -1070,3 +1102,27 @@ acceptance:
   - local-transport test passes; the exact remote command is in docs/cloud.md; the real run waits for Q-001 and is listed in
     STATE.md as the Phase 3 gate
 notes: No credentials in git.
+
+## T-032  Teleop loop on mocks: pose and glove in, IK, Guard, arm and hand out, recorder and UI attached
+status: in_progress
+priority: P1
+phase: 2
+owner: opus
+depends_on: T-013, T-017, T-025
+hardware: none
+deliverables:
+  - teleop/loop.py: `TeleopLoop(pose_driver, glove_driver, arm, hand, cameras, engine, recorder, ui, clock)` running at the
+    30 Hz grid the recorder hands out (Recorder.next_grid_ns): read the wrist pose (PoseDriver) and the glove (GloveDriver),
+    transform with teleop.retarget.pico_to_g1_base, solve teleop.retarget.ArmIK from the arm's measured state, build the
+    MotionCommand (8 joints + pinch_from_glove), send through arm.send_targets and hand.send_pinch (which admit via the
+    Guard), hand the admitted command to the recorder as the action, and feed the operator UI; a SafetyViolation is counted,
+    logged and the tick continues; a `--backend mock --seconds N` CLI
+  - tests/test_teleop_loop.py on mocks with a fake clock: 30 s run holds 30 Hz +/- 0.5 measured on the fake clock; the mock arm
+    state follows the IK target (steady-state error under 0.02 rad after the lag settles, print it); a recorded episode's
+    action rows equal the admitted commands; an out-of-box pose from the mock pose driver produces Guard refusals and no state
+    change; IK solve time per tick measured (mean, p99)
+  - docs/teleop.md updated with the loop and the Phase 2 real wiring still missing (T-020, T-021)
+acceptance:
+  - tests pass with the printed rate, error and timings; full suite green; ruff clean
+notes: No hardware; the real pose/glove/arm/hand drivers arrive in Phase 1 and slot into the same constructor. This is the
+  path that will produce every training episode, so keep it small and obviously correct (under 250 lines).

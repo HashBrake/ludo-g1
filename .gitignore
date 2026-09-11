@@ -20,3 +20,6 @@ third_party/**/*.tar.gz
 
 # secrets never live in the repo
 .env
+
+# eval result files are committed only when Fable accepts them as evidence (git add -f); R5
+eval/results/*.json
