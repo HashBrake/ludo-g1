@@ -5,7 +5,7 @@ Conventions for every task: Python 3.10, run everything through `.venv/bin/pytho
 under docs/. Never touch third_party/ contents, config/safety.yaml (after T-003 creates it), or hardware/session.enable.
 
 ## T-001  Repo scaffold, Python environment, pre-commit CI
-status: todo
+status: in_progress
 priority: P0
 phase: 0
 owner: opus
