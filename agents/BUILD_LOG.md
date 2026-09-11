@@ -807,3 +807,4 @@ Commands and measured results (all on `.venv/bin/python`, mujoco 3.13.0, no hard
   link offsets are Unitree's published numbers; whether this robot matches them is a Phase 1
   measurement and is not claimed here.
 - No blockers.
+(T-011 commit: d9596d9; this line and the TASKS.md result hash are the only content of the follow-up commit.)

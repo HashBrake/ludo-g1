@@ -351,7 +351,7 @@ deliverables:
 acceptance:
   - tests pass; `Guard.admit` with the real fk rejects a target whose wrist would be outside config/safety.yaml's box (test)
 notes: Use the MJCF vendored by T-012 (third_party/unitree_g1_mjcf/), loaded with mujoco; joint order from config/robot.yaml. The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
-result: (opus, 2026-09-11T19:47+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T19:47+07:00, commit d9596d9)
   - Implementation: mujoco on third_party/unitree_g1_mjcf/g1_29dof.xml (the T-012 vendored MJCF), joint
     order and qpos addresses from config/robot.yaml, base pinned to identity so positions are in the
     g1_pelvis frame, mj_kinematics only. runtime/fk.py, 119 lines.
