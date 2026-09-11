@@ -2155,3 +2155,110 @@ The full-resolution strip was rendered and looked at (scratchpad, not committed:
 and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
 pre-commit gate — no `--no-verify`, per D-013 item 1. Amending could not be used to fold the hash in:
 the amend changes the hash it is trying to record.)
+
+## T-028  Eval protocol and runner on mocks  (2026-09-11T22:20+07:00)
+
+### What was built
+- **`eval/protocol.py` (428 lines, new).** What a trial *is* and what a run records.
+  `Trial(index, primitive, src, dst, horse_id, seed, perturbed, perturbation)` with `command()`,
+  `pair` and `to_dict()`; `make_trials(kind, n, held_out_pairs, seed)` over the four kinds of
+  CLAUDE.md section 6 — `move` (seeded shuffle of the held-out pair list, reshuffled per lap so 20
+  trials over 10 pairs is each pair exactly twice and never twice in a row), `roll` (bowl, `src = dst
+  = None`), `recover` (seeded random cells, one of the four 6.5 perturbations per trial, in turn),
+  `sequence` (`engine/scripts/eval_20_moves.yaml`, `n` must be 20). `SuccessCriterion` +
+  `CRITERIA` + `judge()`: the success criteria as **required Outcome fields** — MOVE needs the horse
+  seen on `dst` in `observed_state_delta`, ROLL a new `die`, RECOVER only a clean Outcome (D-013).
+  Also the result schema (`blank_row`, `record_execution`, `summarise`, `write_result`,
+  `print_result`), `AttributedEngine` (below), `script_pairs()` and `RESULTS_DIR`.
+- **`board/perception.py` (+56 lines).** The 6.5 vocabulary as an `Enum`, `FailureMode`, with the
+  seven strings of section 6.5 and `parse()`. It is defined **here**, in the module that produces the
+  strings, and imported by `eval/protocol.py` (the task allowed either direction): `board/` is on the
+  deployed runtime path and `eval/` is analysis tooling, so the dependency points eval -> board.
+  Behaviour is byte-identical — `NO_PROGRESS` is now `FailureMode.TIMEOUT_NO_PROGRESS.value` and the
+  two literals in `verify()` are enum values. One definition, no second spelling.
+- **`eval/run_eval.py` (245 lines, new).** `run_trials()` builds one `Controller` over mock drivers,
+  the stub engine scripted with the trial commands, and the injected policy, then plays one command
+  at a time (`controller.run(max_commands=1)`); the difference in the `RunSummary` across each
+  command is that command's measurement. `make_policy(spec, backend)`: `hold` -> `HoldPolicy`,
+  refused on any backend but mock exactly as `runtime.controller.build` refuses it (R2); `bundle
+  PATH` raises `NotImplementedError` naming T-029. `--backend real` never reaches a driver: the
+  policy check refuses first, exit 2. `FakeClock` (mock default, `--realtime` to opt out).
+- **`tests/test_eval.py` (305 lines, 23 tests, new).** All on mocks with `HoldPolicy`; none marked
+  `motion`. Runs use a copy of `config/` with `primitive_timeout_s: 1.0` (`fast_config`), which
+  shortens the fake clock, not the loop; the 20 s acceptance run is the CLI command below.
+- **`docs/eval.md` (177 lines, new).** Trial kinds, the success-criteria table, the failure-mode
+  table, the full JSON schema (top level and per trial), the recovery/retry rule, the clock, the
+  refusals and the CLI flags.
+- **`eval/results/.gitkeep`.** The directory is tracked; results are not staged by a run (Fable
+  commits a result when it is a number the project stands behind).
+
+### Design decisions inside the task
+- **Engine-level recovery is on for `kind="sequence"` only** (`max_reissues=2`); `move`/`roll`/
+  `recover` run with `max_reissues=0`, so each trial is exactly one attempt — which is what a
+  per-primitive success rate means (Phase 4: "evaluate each primitive separately, 20 trials each").
+  Phase 4's "20-move sequence ... at most 3 engine-level retries" is the `sequence` kind.
+- **Retries are attributed, never counted as trials.** `AttributedEngine` matches each command the
+  stub hands out against the trial command objects by identity: a RECOVER the engine invented, or a
+  re-issue, is charged to the trial in progress as one `engine_retries`, and only an execution of the
+  trial's *own* command decides the trial. Without this a 20-trial `sequence` eval would report 60.
+- **`success` vs `reported_success`.** Each row carries `judge()`'s verdict *and* `Outcome.success`.
+  They differ only when perception claims a success the criterion saw no evidence for; the success
+  rate is computed from `judge()` alone (R5).
+- **Held-out pairs are an argument.** `policy/dataset.py` is not imported (T-027 is in flight in the
+  main tree). The CLI defaults `--kind move` to `protocol.script_pairs()`, the ten distinct pairs of
+  `eval_20_moves.yaml`, and `--pairs SRC:DST ...` overrides; the test asserts against its own fixture
+  `HELD_OUT` list and that no trial touches the `TRAIN_PAIRS` fixture.
+
+### Commands run, and what they measured
+
+```
+.venv/bin/ruff check .                                  -> All checks passed!
+.venv/bin/python -m pytest -q                           -> 433 passed, 4 skipped, 85.70 s
+.venv/bin/python -m pytest tests/test_eval.py -q        -> 23 passed, 6.36 s
+.venv/bin/python -m eval.run_eval --backend mock --kind move --n 20 --policy hold
+```
+
+The acceptance command, verbatim output (8.5 s wall; the `goal_placeholder_px` warning is the known
+uncalibrated-board fallback of `docs/controller.md`):
+
+```
+success 0/20 (0.0%)
+failure modes
+  timeout_no_progress    20
+written /home/alois/Desktop/ludo-g1-wt-t028/eval/results/20260911T221321_move-hold.json
+```
+
+| | |
+|---|---|
+| acceptance: JSON written, trial rows | `20260911T221321_move-hold.json`, `len(trials) == 20` |
+| acceptance: printed rate | `success 0/20 (0.0%)`, then the one-row failure-mode table |
+| summary block | `success 0, n 20, rate 0.0, by_failure_mode {"timeout_no_progress": 20}, engine_retries 0, safety_refusals 0, duration_s 400.66` |
+| every failure labelled (6.5) | 20/20 under `timeout_no_progress`; 0 `unlabelled` |
+| per trial (row 0) | `duration_s 20.033`, `policy_calls 200`, `actions_sent 601`, `safety_refusals 0`, `engine_retries 0`, `stopped_by "timeout"` |
+| provenance recorded | `git_commit 986c15dd…`, `config_hashes` for safety/robot/board/training, `policy {"tag": "hold", "checkpoint": null, "checkpoint_sha256": null}` |
+| pairs covered | the 10 distinct pairs of `eval_20_moves.yaml`, each exactly twice |
+| fake clock cost | 400.7 s of loop time in 8.5 s of wall time (~47x); `--realtime` would take 400 s |
+| `--kind sequence --n 20` (recovery on) | 20 trials, 0/20, `engine_retries` 2 per trial, 40 total, 1201.98 s loop time in 21.3 s wall |
+| `--kind roll --n 4`, `--kind recover --n 4` | 0/4 each, all `timeout_no_progress` |
+| `--backend real` | exit 2, `cannot run this evaluation: … backend='real' needs one, and HoldPolicy is a test double that must never be deployed (R2)`; no JSON written |
+| `--policy bundle x.pt` | exit 2, message names T-029 and `policy/export.py` |
+| `--kind sequence --n 19` | exit 2, "has 20 commands; n=19 would be a different evaluation" |
+| suite before / after | 408 -> 433 passed (23 new, +2 camera tests that were skipped at worktree setup and passed here because the Orbbec node was free; skips 6 -> 4) |
+
+### Notes / deviations
+- **The 0/20 is the expected and correct result, not a finding.** `HoldPolicy` commands no motion
+  (R2) and `MockPerception` reads the engine's own board state, so nothing changes and every
+  primitive times out. The mock runner measures the orchestration; the first non-zero success rate
+  needs T-029 and the robot. `docs/eval.md` says this in its first paragraph so no reader can quote
+  a number from here as a capability.
+- `eval/run_eval.py` is 245 lines, under the 250 the task named. It got there by moving the result
+  schema and the report writer/printer into `eval/protocol.py` (D-013 guideline 2: move to a sibling,
+  do not cut docstrings), which also puts the whole JSON format in the file docs/eval.md pins.
+- Logging is configured at WARNING in `run_eval.main`: the loop emits a `run_start`/`run_end` pair
+  per command and 60 of them would bury the printed result. Documented in docs/eval.md.
+- `docs/README.md` (the docs index) has no row for `eval.md`; that file is outside this task's touch
+  list, so the row is left for Fable to add.
+- R1-R6 intact: no motion command anywhere (mock drivers only, `simulated=True` guards), no scripted
+  motion and no literal joint target in `eval/`, `config/safety.yaml` untouched, nothing under
+  `third_party/` touched, `hardware/session.enable` never created or read for writing. Committed
+  through the full pre-commit gate, no `--no-verify` (D-013 item 1).

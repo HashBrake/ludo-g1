@@ -971,7 +971,7 @@ notes: torch CPU is on the laptop per D-011. Real training runs on Greennode (Q-
   HuggingFace datasets DeprecationWarning noise reported by T-017 (log the count before and after).
 
 ## T-028  Eval protocol and runner on mocks
-status: in_progress
+status: review
 priority: P1
 phase: 3
 owner: opus
@@ -994,6 +994,38 @@ acceptance:
   - tests pass; `.venv/bin/python -m eval.run_eval --backend mock --kind move --n 20 --policy hold` writes the JSON and prints
     "0/20" (command and output in BUILD_LOG.md)
 notes: R5: every success rate the project ever reports comes from this JSON. Keep the JSON schema in docs/eval.md.
+result:
+  commit: COMMIT_HASH
+  eval/protocol.py (428 lines) + eval/run_eval.py (245) + tests/test_eval.py (23 tests) + docs/eval.md (177)
+    + eval/results/.gitkeep; board/perception.py gained the 6.5 Enum `FailureMode` (defined there, imported by
+    eval/protocol.py, so the deployed runtime path does not depend on eval/; behaviour identical, NO_PROGRESS
+    is now FailureMode.TIMEOUT_NO_PROGRESS.value).
+  protocol: Trial(index, primitive, src, dst, horse_id, seed, perturbed, perturbation);
+    make_trials(kind, n, held_out_pairs, seed) over move / roll / recover / sequence; SuccessCriterion+judge()
+    state success as required Outcome fields (MOVE: horse seen on dst in observed_state_delta; ROLL: a new die;
+    RECOVER: a clean Outcome only, D-013); result schema (blank_row/record_execution/summarise/write_result/
+    print_result), AttributedEngine, script_pairs(), RESULTS_DIR.
+  runner: one Controller over mock drivers + the stub scripted with the trial commands, played one command at a
+    time; the RunSummary difference per command is that command's measurement. Engine-level recovery is ON for
+    kind=sequence only (max_reissues=2) and OFF for the per-primitive kinds, so each of those trials is exactly
+    one attempt; a RECOVER the engine injects is charged to the trial in progress as engine_retries and never
+    becomes a trial. `--policy hold` -> HoldPolicy (refused off mocks, R2); `--policy bundle PATH` raises
+    NotImplementedError naming T-029; `--backend real` exits 2 before any driver is built. Fake clock on mocks
+    unless --realtime.
+  acceptance (`.venv/bin/python -m eval.run_eval --backend mock --kind move --n 20 --policy hold`, 8.5 s wall):
+    printed `success 0/20 (0.0%)` then `timeout_no_progress 20`; wrote
+    eval/results/20260911T221321_move-hold.json with 20 trial rows, summary {success 0, n 20, rate 0.0,
+    by_failure_mode {timeout_no_progress: 20}, engine_retries 0, safety_refusals 0, duration_s 400.66},
+    git_commit + config hashes for safety/robot/board/training + policy {tag hold, checkpoint null}.
+    Row 0: duration_s 20.033, policy_calls 200, actions_sent 601, safety_refusals 0, stopped_by "timeout".
+    0/20 is correct by construction: HoldPolicy commands no motion (R2) and MockPerception sees only the
+    engine's own board state, so every primitive times out. No capability is claimed from this run.
+  also measured: kind=sequence n=20 with recovery on -> 20 trials, 0/20, 2 engine_retries each (40 total),
+    1201.98 s of loop time in 21.3 s wall; roll and recover n=4 -> 0/4 each; sequence n=19 refused.
+  tests: `.venv/bin/python -m pytest tests/test_eval.py -q` 23 passed in 6.4 s (runs use a config/ copy with
+    primitive_timeout_s 1.0 - a shorter fake clock, the same loop); suite 433 passed, 4 skipped in 85.7 s;
+    ruff `check .` clean; committed through the pre-commit gate, no --no-verify (D-013).
+  note: docs/README.md has no row for eval.md - outside this task's touch list, left for Fable.
 
 ## T-029  Diffusion Policy wrapper with goal channels, smoke-train, export, inference timing
 status: todo
