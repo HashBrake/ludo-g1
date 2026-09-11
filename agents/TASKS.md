@@ -1577,7 +1577,7 @@ result: (opus, 2026-09-12T05:10+07:00, commit 54be930)
     the pre-commit hook -> 596 passed, 10 skipped in 311 s (586 passed before this task). PASS
 
 ## T-039  Network engine client for the real game engine (contract of CLAUDE.md 5.5 over a socket)
-status: review
+status: accepted
 priority: P2
 phase: 5
 owner: opus
@@ -1621,7 +1621,7 @@ result: (opus, 2026-09-12T07:10+07:00, commit 775ea5e)
     task's touch list for the training.yaml branch; it sits exactly where the existing `runtime:`/`recorder:` blocks do.
 
 ## T-038  Board perception from the top camera on synthetic images (placeholder until the engine team delivers)
-status: todo
+status: in_progress
 priority: P1
 phase: 2
 owner: opus

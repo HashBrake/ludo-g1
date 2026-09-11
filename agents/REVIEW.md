@@ -264,3 +264,11 @@ Re-ran tests/test_train.py: the crash run dies at step 5 with --fault-at-step, l
 copy, and the resume reproduces the straight run to 0.0; the disk guard refuses 293 M parameters at a mocked 7.74 GB free;
 the estimate is 1.10x a real file. atomic_save via os.replace. The estimate print in main() recomputed from the record is
 fine. Q-002 is now quantified: the full diffusion run needs 10.3 GB free on this laptop; Greennode or diffusion_small first.
+
+## T-039  ACCEPTED  (fable, 2026-09-12T06:30+07:00, commits 775ea5e, 6417531)
+Re-ran: ruff clean; 43 engine-net tests pass (parity with the in-process stub over 50 commands, dropped server ->
+EngineUnavailable, silent socket bounded by its timeout); my own controller run against `engine.serve_stub` on
+127.0.0.1:5561 exits 0 at 9.7 Hz policy rate. TCP JSON-lines is the right fallback since pyzmq is not installed and no
+dependency may be added; zmq:// accepted as a synonym is fine. The engine block living in config/training.yaml is
+accepted for now (the six-file NAMES pin is deliberate); it moves to config/engine.yaml when the real engine's URL is
+known. The builder's --no-verify slip was undone and redone through the gate before the report; logged, no further action.
