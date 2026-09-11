@@ -5,7 +5,7 @@ Conventions for every task: Python 3.10, run everything through `.venv/bin/pytho
 under docs/. Never touch third_party/ contents, config/safety.yaml (after T-003 creates it), or hardware/session.enable.
 
 ## T-001  Repo scaffold, Python environment, pre-commit CI
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -602,7 +602,7 @@ result:
     every branch of both scripts was executed by hand and quoted in BUILD_LOG.md. Flagged there for review.
 
 ## T-015  Phase 0 report
-status: review
+status: accepted
 priority: P1
 phase: 0
 owner: opus
@@ -690,7 +690,7 @@ result:
     "under 250" guidance. Both explained in BUILD_LOG.md.
 
 ## T-017  Teleop recorder to LeRobot v2 on mocks (D-011)
-status: review
+status: accepted
 priority: P1
 phase: 2
 owner: opus
@@ -733,3 +733,195 @@ result:
     so `uv pip install --reinstall-package opencv-python -r requirements.txt` is now part of the install recipe
     and the choice is Fable's. (3) teleop/recorder.py is 421 lines against the "under 300" guidance; the file
     list did not allow the sibling module D-013 suggests. All three explained in BUILD_LOG.md.
+
+## T-018  G1 arm driver, read-only state stream (rt/lowstate) and 10-minute stream stats
+status: todo
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-006, T-010
+hardware: read-only
+deliverables:
+  - drivers/g1_arm.py: `G1Arm` implementing ArmDriver: `read_state()` from a ChannelSubscriber on rt/lowstate (unitree_sdk2py, DDS
+    interface from config/robot.yaml), stamped with runtime.clock at callback time, exposing the 7 arm + waist yaw joints in
+    action_order plus the full 29-joint q/dq for the dataset; `send_targets` present but raising NotImplementedError until T-021
+    (no publisher is created in this task); `probe()` returns state rate and the robot's mode_machine
+  - tools/hardware_checks/stream_stats.py extended with `--stream arm` (reuse the camera stats code path)
+  - tests marked readonly that skip without a LowState within 3 s, naming the interface
+  - docs/drivers.md updated with the DDS setup (interface, IPs, the one-time nmcli profile from H-002)
+acceptance:
+  - with the LAN down: full suite green, readonly tests skipped with the interface name in the reason
+  - with the LAN up (H-002): `stream_stats.py --stream arm --seconds 600` output in BUILD_LOG.md: rate within 5% of the SDK's
+    500 Hz (or whatever the SDK delivers; record it), drop count, jitter p50/p99; 10 minutes, per CLAUDE.md Phase 1
+notes: No publisher, no motion. If the robot is in a mode where rt/lowstate is silent, record it and stop.
+
+## T-019  DexH15 driver, read-only state and palm camera, 10-minute stream stats
+status: todo
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-006
+hardware: read-only
+deliverables:
+  - drivers/dexh15.py: `DexH15` implementing HandDriver: opens the Modbus serial device from config/hand.yaml, reads joint angles
+    (getJointPositionsAngle), motor positions and tactile summary, never calls enableMotor or any set* in this task;
+    `palm_frame()` through pxdex DexH15Camera at the resolution in config/cameras.yaml; `send_pinch` raises NotImplementedError
+    until T-022
+  - stream_stats.py `--stream hand` and `--camera palm --backend real`
+  - readonly tests that skip without the device
+  - config/hand.yaml joint names and order corrected from the live device's getJointPositionsAngle length and the SDK stubs
+acceptance:
+  - with the hand present (H-003): 10-minute stats for hand state and palm camera in BUILD_LOG.md; achieved joint read rate
+    recorded (A3 verdict updated in docs/sdks.md)
+  - without: suite green, tests skipped with the device path in the reason
+notes: The motors stay disabled. A `grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py` must show only the
+  NotImplementedError stub for send_pinch.
+
+## T-020  Glove and controller pose drivers, read-only, 10-minute stream stats
+status: todo
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-006, T-013
+hardware: read-only
+deliverables:
+  - drivers/pxcap.py: `PxCap` implementing GloveDriver through the route T-002 found usable (pxhandsdk if the deb is installed
+    by then per Q-005, else the bundled runtime's Python); 17 encoder angles + host timestamp, restamped with runtime.clock;
+    thumb-index distance and pinch scalar via teleop.retarget.pinch_from_glove
+  - drivers/pico.py: `Pico` implementing PoseDriver through pico_bridge (PicoBridge.latest_frame().controllers.left.pose),
+    position m, quaternion xyzw, transformed by teleop.retarget.pico_to_g1_base
+  - stream_stats.py `--stream glove` and `--stream pose`
+  - readonly tests that skip without the devices
+acceptance:
+  - with the devices: 10-minute stats for both streams in BUILD_LOG.md; glove rate (A4 verdict updated), controller pose rate
+  - without: suite green, tests skipped naming the device
+notes: The headset must run the PicoBridge app and reach this laptop; the network path from the lab's prior setup is in
+  third_party/g1_pico_teleop/README.md section 3.3 (robot NAT). Record what was needed in docs/drivers.md.
+
+## T-021  G1 arm write path over rt/arm_sdk with ramped weight; actuation latency measurement
+status: todo
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-018, T-011
+hardware: motion
+deliverables:
+  - drivers/g1_arm.py `send_targets(cmd)`: Guard.from_config(simulated=False).admit, then LowCmd_ on rt/arm_sdk with only the
+    8 commanded slots set (kp/kd from config/robot.yaml, UNMEASURED placeholders from the SDK example), CRC, publish at 50 Hz
+    with zero-order hold; `enable()` ramps motor_cmd[29].q from 0 to 1 over config `arm_sdk_ramp_s`, `release()` ramps back and
+    is also triggered by the watchdog (config/safety.yaml watchdog_timeout_s) when no command arrives (D-007)
+  - tools/hardware_checks/arm_latency.py: with a valid session, commands a 0.05 rad step on one wrist joint from the current
+    state (inside the envelope, through the Guard) and measures the time from publish to the first state change > 0.01 rad;
+    20 repetitions; writes p50/p99 to BUILD_LOG.md and proposes the value for config/robot.yaml `latency.arm_ms`
+  - tests: motion-marked test of the step (skipped without session); unit tests of the ramp and watchdog on a fake publisher
+acceptance:
+  - unit tests pass without hardware; `grep -rn "rt/lowcmd" drivers/ runtime/ policy/` empty
+  - with a session: BUILD_LOG.md states what moved, the envelope in force (config hashes), the observed outcome, and the
+    latency numbers; H-004 (enable a session) written before the run with the exact steps
+notes: The first motion on this project. The step is tiny and inside the envelope; the human holds the e-stop (Q-004 must be
+  answered first: the session checklist names it). Scripted motion lives only in tools/hardware_checks/ (R2).
+
+## T-022  DexH15 write path, pinch synergy definition and bench test
+status: todo
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-019
+hardware: motion
+deliverables:
+  - drivers/dexh15.py `send_pinch(scalar)`: Guard admit, then synergy expansion from config/hand.yaml, setJointPositionsAngle
+    for the pinch fingers only (partial command, U2), idle fingers set once to the curled pose on enable
+  - tools/hardware_checks/hand_synergy.py: interactive tool to record open and closed poses on a horse and on the die, write
+    them to config/hand.yaml (pinch.open_pose/closed_pose, curled pose) with `_status: MEASURED` and the date
+  - tools/hardware_checks/pinch_bench.py: 10 grasp-and-hold trials each on a horse and on the die (human places the object in
+    the hand's pinch zone; the tool closes, lifts nothing, waits 5 s, opens; the human records hold/slip), results to BUILD_LOG.md
+  - hand latency measurement (glove pinch step to DexH15 joint response) to config/robot.yaml `latency.hand_ms`
+acceptance:
+  - at least 9 of 10 holds on each object, recorded per trial in BUILD_LOG.md (CLAUDE.md Phase 1 Verify)
+  - hand latency p50/p99 recorded with the command
+notes: The hand is off the arm or the arm is idle for this bench; still a motion task (DexH15 actuators), session required.
+
+## T-023  Reachable-cell map with waist yaw
+status: todo
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-021, T-020, T-008
+hardware: motion
+deliverables:
+  - tools/hardware_checks/reach_map.py: the operator teleoperates (T-020 drivers + T-013 IK, through the Guard) to each cell
+    the game uses; the tool shows the target cell on the Brio feed, records success/failure per cell and the joint pose,
+    writes `reachable: true|false` per cell into config/board.yaml with a MEASURED status
+  - a DECISIONS proposal from Fable if any used cell is unreachable (board offset or layout change)
+acceptance:
+  - every cell in config/board.yaml has a reachable flag and a pose or a failure note; unreachable list in BUILD_LOG.md
+notes: Requires a calibrated board (H-001) and the teleop chain working end to end; this is also the first real teleop trial.
+
+## T-024  Envelope boundary and waist clamp test with video evidence
+status: todo
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-021
+hardware: motion
+deliverables:
+  - tools/hardware_checks/envelope_test.py: drives the wrist slowly towards each face of the workspace box and towards the waist
+    clamp under teleop; logs the Guard rejections with the fk position at rejection; the human films it
+acceptance:
+  - six box faces and both waist directions each show a rejection within margin_m of the configured face; video path and log
+    excerpt in BUILD_LOG.md
+notes: After this passes, Fable proposes the measured envelope values for config/safety.yaml and Alois commits them (R3).
+
+## T-025  Teleop operator UI on mocks
+status: in_progress
+priority: P1
+phase: 2
+owner: opus
+depends_on: T-016, T-017
+hardware: none
+deliverables:
+  - teleop/operator_ui.py: OpenCV window showing the `top` feed with the stub engine's src/dst cells drawn (runtime/goal.py),
+    the current primitive and episode state, and keys: start, stop, mark success, mark perturbed, abort; drives Recorder
+    (T-017); a headless mode for tests that renders frames to arrays without a window
+  - tests/test_operator_ui.py on mocks in headless mode: key events change episode state; the rendered frame contains the two
+    goal markers at the expected pixels
+acceptance:
+  - tests pass; a 30 s headless mock session records 2 episodes with correct metadata (command in BUILD_LOG.md)
+notes: No hardware. The real teleop loop (input drivers -> IK -> Guard -> arm) is wired in Phase 2 after T-020/T-021.
+
+## T-026  Dataset viewer: frame strips for Fable's audits
+status: in_progress
+priority: P1
+phase: 2
+owner: opus
+depends_on: T-017
+hardware: none
+deliverables:
+  - tools/dataset_view.py: for a session under data/raw/, renders per-episode frame strips (top with goal heatmap overlay,
+    oblique, palm at 8 evenly spaced times) plus the action and state curves, to PNG under data/raw/<session>/strips/;
+    prints the dataset card summary
+acceptance:
+  - runs on a mock session recorded by tests (tmp_path) and produces one PNG per episode; test asserts image size and that the
+    goal overlay pixels differ from the raw frame
+notes: Section 8 audit tool; keep it dependency-free beyond opencv and numpy.
+
+## T-027  policy/dataset.py: loader, goal rendering, augmentation on the mock dataset
+status: todo
+priority: P1
+phase: 3
+owner: opus
+depends_on: T-017
+hardware: none
+deliverables:
+  - policy/dataset.py: a torch Dataset over one or more LeRobot sessions yielding the observation dict of CLAUDE.md 5.3 (goal
+    heatmaps rendered from stored cell ids via runtime/goal.py, task one-hot) and 16-step action chunks; augmentation per 5.7
+    (color jitter, small crops on oblique/palm only, goal heatmap blur; never geometric augmentation on top); held-out cell-pair
+    split helper for eval/protocol.py
+  - tests on a mock session: shapes, dtype, chunk alignment, top frame never geometrically altered (pixel check on the
+    un-jittered channel), split reproducible by seed
+acceptance:
+  - tests pass; a 1000-sample iteration benchmark (samples/s) in BUILD_LOG.md
+notes: torch CPU is on the laptop per D-011. Real training runs on Greennode (Q-001). Also in this task: apply D-015
+  (config/training.yaml dataset.format: lerobot_v3) and D-016 (requirements.txt opencv-python==4.12.0.88, drop the reinstall
+  recipe from docs/setup.md and requirements comments, re-resolve), and add a pyproject filterwarnings entry that silences the
+  HuggingFace datasets DeprecationWarning noise reported by T-017 (log the count before and after).

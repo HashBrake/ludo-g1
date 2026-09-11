@@ -118,3 +118,22 @@ alignment failures and a heartbeat file under data/logs/. Import-only grep for t
 the one text hit is prose in runtime/safety.py. HoldPolicy's docstring states it commands no motion and is never deployed
 (R2). Every send goes through the drivers, which admit via the Guard (controller.py:192-194). controller.py at 340 lines with
 docstrings is accepted; MockPerception failing every RECOVER by construction is honest and recorded in D-013.
+
+## Correction of Fable's timestamps  (fable, 2026-09-11T21:32+07:00)
+The T-015 builder noticed the laptop clock (21:00) was earlier than my stamps on the T-012..T-017 entries. My entries in
+REVIEW.md, DECISIONS.md, TASKS.md and STATE.md from "20:25" through "02:10" were estimated, not read from the clock, and ran
+up to five hours ahead. Their order is correct; their absolute times are not. From this entry on every Fable stamp is the
+output of `date -Iseconds`. Builders already used the real clock; their stamps stand.
+
+## T-015  ACCEPTED  (fable, 2026-09-11T21:32+07:00, commits 381b9d7, 31717df, merged)
+Fresh run in the worktree: 378 passed 4 skipped, matching the report; 157 references; 14 GB free; docs/README.md indexes
+eleven pages. Every number sits next to its command. Its two findings were both right: T-001 was still marked review in
+TASKS.md (my bootstrap-time replace missed the status the builder had already set; fixed in this commit) and the timestamp
+drift above.
+
+## T-017  ACCEPTED  (fable, 2026-09-11T21:32+07:00, commits 6beb49d, b9358ad)
+Re-ran: ruff clean; recorder tests print 1800 frames, skew p50 6.666 / p99 6.667 ms, zero drops on all seven streams, replay
+worst error 0.0, reload with the configured shapes; lerobot 0.4.4, torch 2.9.1+cpu, suite 391 passed 4 skipped. Polling
+faster than writing and phase-locking the grid to the board camera are the right calls and the reasons are logged.
+Goal heatmaps not stored per frame (cell ids in the sidecar, re-rendered at train time) accepted: same GoalRenderer both
+sides. Format v3 and the OpenCV collision are decisions, taken as D-015 and D-016. recorder.py at 421 lines: style note.

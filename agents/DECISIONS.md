@@ -106,3 +106,30 @@ dummy job, Q-001; real board still, H-001) stay open without blocking. To keep t
 3. MockPerception fails every RECOVER because a recovery restores the engine's own belief (empty delta). A mock run can show
    that recoveries are issued and executed, never that they succeed; the first real success rate for RECOVER comes from
    Phase 4 eval on the robot, as the brief already says.
+
+## D-014  Phase 0 audit (CLAUDE.md section 8)  (2026-09-12T21:32+07:00)
+Safety: hardware/session.enable git-ignored and absent from history (`git log --all -- hardware/session.enable` empty);
+config/safety.yaml has one commit (its creation in T-003, values reviewed in REVIEW.md T-003); every motion path constructs
+Guard.from_config (grep in REVIEW.md T-005/T-006); the one motion-marked test is skipped without a session.
+Learned-only: no import of tools/ from runtime/, drivers/, policy/, board/, teleop/, engine/ (grep, plus the test added in
+T-016); no literal joint arrays outside tools/ and tests/ (regex scan); HoldPolicy is the only "policy" and commands no motion.
+Data/Training/Evaluation: not applicable yet (no dataset, no checkpoint); T-017 produces the first mock dataset and gets the
+data audit at review.
+Process: STATE.md rewritten every cycle; H-001..H-003 each have steps and a post-check; three or more non-hardware tasks in
+todo after this entry (T-025, T-026, T-027 plus Phase 1 read-only tasks).
+Phase 0 exit checks (section 6): tests on mocks green; safety.py rejects without a session (tests/test_safety.py);
+docs/sdks.md covers all eight devices with state-read and target-write references; Greennode dummy round trip passed in
+local transport only, the real one waits for Q-001 credentials. Phase 0 is closed with that single human-gated item open.
+Phase 1 cannot start motion until Q-004 (e-stop path) is answered and a session is enabled; its read-only tasks (T-018,
+T-019, T-020) can run as soon as H-002 and H-003 are done.
+
+## D-015  Dataset format is LeRobot v3.0  (2026-09-11T21:32+07:00)
+No installable lerobot release writes v2 on Python 3.10; lerobot 0.4.4 (the last 3.10-compatible release) writes v3.0.
+CLAUDE.md 5.6 "LeRobot v2" is superseded by v3.0; the observation, action and metadata content of 5.3/5.6 is unchanged.
+T-027 updates config/training.yaml dataset.format to lerobot_v3 and policy/dataset.py reads v3.
+
+## D-016  OpenCV: two distributions pinned to one identical version  (2026-09-11T21:32+07:00)
+lerobot requires opencv-python-headless; unitree_sdk2py requires opencv-python; both own site-packages/cv2. A reinstall
+step after every install is fragile. Decision: pin both to the same version (opencv-python==4.12.0.88 to match the headless
+pin lerobot resolves) so a fresh install writes identical files whichever comes last, and remove the reinstall recipe.
+Supersedes D-008's choice of 5.0. Never uninstall either one. Applied by T-027 (the next task that touches requirements).
