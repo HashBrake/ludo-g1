@@ -212,7 +212,7 @@ acceptance:
 notes: Interfaces are the contract for the real drivers in Phase 1; keep them minimal, no features nobody asked for.
 
 ## T-007  Engine contract and scripted stub engine
-status: in_progress
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -229,6 +229,17 @@ acceptance:
   - test: every Command's src/dst are cells that exist in config/board.yaml
   - test: eval_20_moves.yaml loads and yields exactly 20 MOVE commands with >= 10 distinct (src, dst) pairs
 notes: This is orchestration, allowed under R2 (CLAUDE.md 5.5). The real engine will replace stub.py; keep interface.py untouched by the stub's internals.
+result: (opus, 2026-09-11T22:55+07:00, commit COMMIT_HASH, branch wt/t007)
+  - engine/interface.py is CLAUDE.md 5.5 field for field; added only type hints, docstrings, frozen=True and ABC (5.1). Optional[X] spelled X | None (ruff UP045).
+  - engine/cells.py: load_cells() -> 88 Cells from config/board.yaml (48 track + 4 x (6 home + 4 base)); top_px None unless a calibration mapping is passed; load_layout() reads the topology.
+  - engine/stub.py 297 lines. Random mode: 4 colours x 4 horses, only the robot's colour emits commands, ROLL then MOVE, enter-from-base on a 1 or a 6 (documented choice), capture emitted as two MOVEs (captured horse out first). Script mode hands out the script then None.
+  - A1 same seed -> identical 200 commands: `len(a)=200  a==b: True  a!=c: True` (seed 7 twice vs seed 8). test_same_seed_gives_an_identical_sequence_of_200_commands.
+  - A2 recover then re-issue, third next_command is a different turn: test_two_failed_reissues_give_the_turn_up_and_the_game_moves_on asserts RECOVER at the failing cell, the original again, then a new turn's ROLL; failures[0] = attempts 3, failure_modes x3.
+  - A3 every src/dst exists in config/board.yaml: 0 unknown cells over 1000 commands (seed 7) and over 300 commands with a forced failure every 7th (so RECOVERs are covered). Mix over 1000: roll 491 / move 509, 60 enter-from-base, 42 capture-clears, 23 into-home.
+  - A4 eval_20_moves.yaml: 20 commands, all MOVE, 10 distinct (src, dst) pairs, next_command() None after.
+  - Gate: `.venv/bin/ruff check .` clean; `.venv/bin/python -m pytest -q` -> 135 passed, 1 skipped (30 new tests).
+  - Two design calls for review (detail in BUILD_LOG): (a) ROLL carries src=dst=None because no bowl cell exists in config/board.yaml and die.bowl_centre_mm is UNMEASURED -- optional bowl_cell= argument takes a measured one; (b) random mode deals a fresh board when a colour is home, since a finished board otherwise emits only ROLLs forever (measured: 888 roll / 112 move before, 491 / 509 after).
+  - Not mine, reported: tests/test_greennode_local.py::test_greennode_local_round_trip flakes ~1 in 6 full-suite runs on a `state=starting` vs `running` race in T-009's shell test.
 
 ## T-008  Board calibration from AprilTags and a Brio still
 status: todo
