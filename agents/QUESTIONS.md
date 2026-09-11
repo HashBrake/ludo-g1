@@ -57,3 +57,12 @@ reproducible and `uv pip install -r requirements.txt --dry-run` reports "no chan
 config/robot.yaml `teleop.rest_pose_rad` is all zeros (UNMEASURED). It is the IK posture target, so it decides which elbow
 configuration the arm settles into over the board. Phase 1 should pick it on the rig with the table in place (elbow low and
 outboard, away from the operator side). Assumption meanwhile: zeros; nothing downstream depends on the value yet.
+
+## Q-011  Jetson Orin NX for inference  (fable, 2026-09-11T23:16+07:00)  OPEN
+D-019: the laptop CPU runs the diffusion policy at 0.8 s per inference against a 100 ms budget. Is the Orin NX 16 GB free for
+this project (it hosted the teleop relay before), and which JetPack is on it? Assumption meanwhile: it is available; the
+export bundle from T-029 is the artefact that would move there; the port task is written only after Q-011 is answered.
+
+## Q-002 update  (fable, 2026-09-11T23:16+07:00)
+/home now has 12 GB free. One diffusion checkpoint plus its bundle is 2.3 GB (T-029). Even smoke training on this laptop
+is now disk-limited; an external SSD or a second partition for data/ is needed before Phase 2 recording.

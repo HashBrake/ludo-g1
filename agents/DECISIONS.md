@@ -139,3 +139,20 @@ With Phase 0 closed and every Phase 1 task gated on H-002/H-003/Q-004, the loop 
 T-028 eval protocol and runner, T-029 Diffusion Policy wrapper + train/export, T-030 ACT baseline, T-031 real Greennode
 launch. All run on the mock dataset; none claims a success rate (R5: HoldPolicy scores 0/20 by construction and the eval
 JSON says so). Real training and evaluation still require Q-001, a real dataset (Phase 2 on hardware) and the robot.
+
+## D-018  No teleop engage without a clutch; first-command step cap in the envelope  (2026-09-11T23:16+07:00)
+T-032 measured that the first command of a teleop stream steps 0.443 rad in one 33 ms tick and is admitted, because the
+velocity rule ages a fresh reference by command_gap_reset_s (0.5 s) and allows 0.75 rad. On the robot that is a lurch at
+the moment the operator starts. Two changes, both tightenings: (1) runtime/safety.py gains a first-command step cap
+(config/safety.yaml first_command_max_step_rad, placeholder 0.05 rad); (2) teleop/loop.py gains a clutch that holds the
+measured state until the IK target is within tolerance and then blends in. T-033, P0, and T-021 depends on it. Alternatives
+rejected: shrinking command_gap_reset_s alone (a long pause would still permit the same jump on resume); relying on the
+operator to start near the rest pose (not a safety mechanism).
+
+## D-019  Inference budget: the laptop CPU cannot run the diffusion policy at 10 Hz  (2026-09-11T23:16+07:00)
+T-029 measured DDIM 10 at 804 ms median and DDIM 5 at 498 ms on this laptop (torch CPU, 293 M parameters, three ResNet-18
+encoders at 240x320). CLAUDE.md 5.8's ladder is: DDIM 5, then ACT, then the Orin NX. DDIM 5 is 5x over budget, so the
+decision is: (1) T-030 measures ACT on the same inputs (a single forward pass); (2) inference on the Jetson Orin NX 16 GB is
+the expected landing and needs its JetPack/torch state confirmed (Q-011); (3) in parallel, a smaller configuration
+(shared encoder, 120x160 inputs, fewer UNet channels) is measured in T-035 as a fallback that keeps the laptop viable.
+No policy is chosen until Phase 3 eval numbers exist (R5). Training stays on Greennode (Q-001).

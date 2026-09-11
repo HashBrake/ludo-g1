@@ -804,7 +804,7 @@ status: todo
 priority: P0
 phase: 1
 owner: opus
-depends_on: T-018, T-011
+depends_on: T-018, T-011, T-033
 hardware: motion
 deliverables:
   - drivers/g1_arm.py `send_targets(cmd)`: Guard.from_config(simulated=False).admit, then LowCmd_ on rt/arm_sdk with only the
@@ -1046,7 +1046,7 @@ result:
   note: docs/README.md has no row for eval.md - outside this task's touch list, left for Fable.
 
 ## T-029  Diffusion Policy wrapper with goal channels, smoke-train, export, inference timing
-status: review
+status: accepted
 priority: P1
 phase: 3
 owner: opus
@@ -1106,7 +1106,7 @@ result:
     lines in docs/eval.md with it.
 
 ## T-030  ACT baseline wrapper, same inputs
-status: todo
+status: in_progress
 priority: P2
 phase: 3
 owner: opus
@@ -1139,7 +1139,7 @@ acceptance:
 notes: No credentials in git.
 
 ## T-032  Teleop loop on mocks: pose and glove in, IK, Guard, arm and hand out, recorder and UI attached
-status: in_progress
+status: accepted
 priority: P1
 phase: 2
 owner: opus
@@ -1161,3 +1161,92 @@ acceptance:
   - tests pass with the printed rate, error and timings; full suite green; ruff clean
 notes: No hardware; the real pose/glove/arm/hand drivers arrive in Phase 1 and slot into the same constructor. This is the
   path that will produce every training episode, so keep it small and obviously correct (under 250 lines).
+result: (opus, 2026-09-13T14:40+07:00, commit db2b922)
+  - `.venv/bin/python -m pytest tests/test_teleop_loop.py -q` -> 14 passed. `.venv/bin/python -m pytest -q` ->
+    465 passed, 4 skipped (451 before). `.venv/bin/ruff check .` -> "All checks passed!". PASS
+  - 30 s run on mocks, fake clock: 901 ticks in 30.033 s = 30.000 Hz (budget 30 +/- 0.5), 901 admitted,
+    0 refused, printed by the test. PASS
+  - arm follows the IK target: |state - last admitted target| = 0.00274 rad, worst of the 8 joints, mock arm
+    tau 0.08 s (budget < 0.02 rad), printed. PASS
+  - ArmIK.solve per tick: mean 0.598 ms, p99 1.028 ms over 901 ticks (one 30 Hz period is 33.3 ms), printed. PASS
+  - out-of-box pose (the shipped mock circle, centred on the pelvis), 2 s: 61 ticks, 0 admitted, 61 refused
+    (workspace_box 37, joint_velocity 24), arm state still exactly the zero rest pose, guard.admitted == 0,
+    0 frames recorded. PASS
+  - recorded episode (3 s, recorder + operator UI): every `action` row is a command the guard admitted, in the
+    order it admitted them; 0 refused commands recorded. PASS
+  - `python -m teleop.loop --backend mock --seconds N` runs and prints rate, sends, frames, refusals by rule and
+    the IK timings; `--backend real` exits 2 from drivers.make. PASS
+  - teleop/loop.py is 248 lines (notes asked for under 250). PASS
+  - deviation logged in BUILD_LOG: the loop passes `GloveSample.pinch` through instead of calling
+    `pinch_from_glove`, because the tip-to-tip distance that function needs is the Phase 1 glove driver's to
+    compute (docs/teleop.md, T-020); `config/robot.yaml` gained `mock.pose_center_m` (default [0,0,0], no
+    behaviour change) so the one mock pose driver can be placed inside or outside the box.
+  - finding logged in BUILD_LOG: teleop has no clutch, so the first command of a session steps 0.443 rad in one
+    tick (allowed only by the command_gap_reset_s reference) or is refused 61 ticks running; proposed as a
+    follow-up task to be accepted before the first Phase 1 motion session.
+
+## T-033  Clutch and first-command step cap before any hardware motion (D-018)
+status: in_progress
+priority: P0
+phase: 1
+owner: opus
+depends_on: T-032, T-005
+hardware: none
+deliverables:
+  - runtime/safety.py: a new rule `first_command_step`: when the velocity reference is "fresh" (no accepted command within
+    command_gap_reset_s), the per-joint |target - measured state| must not exceed config/safety.yaml `first_command_max_step_rad`
+    (new key, placeholder 0.05 rad with `_status: UNMEASURED` and the R3 comment; this is a tightening, allowed for an agent);
+    SafetyViolation names the rule and the worst joint; the velocity rule is unchanged for subsequent commands
+  - teleop/loop.py: a clutch. States disengaged -> engaging -> engaged. Disengaged: every tick sends the arm's own measured
+    state as the target (a hold, no motion) and the IK still runs so the operator sees the error. Engaging (operator key from
+    config/training.yaml operator_ui.keys, `e`): only allowed when the IK target is within `clutch_engage_tolerance_rad` (new
+    key in config/robot.yaml teleop block, placeholder 0.05 rad, UNMEASURED) of the measured state on every joint; then blends
+    target = state + alpha*(ik - state) with alpha ramping 0 -> 1 over `clutch_ramp_s` (placeholder 1.0 s). Engaged: full IK.
+    Any Guard refusal for the arm while engaged disengages (the operator re-engages deliberately). The UI shows the clutch
+    state and the per-joint distance to engage.
+  - tests: the T-032 "engage steps 0.443 rad" measurement now fails at the Guard with rule first_command_step (test asserts
+    the rule name and that the arm did not move); a clutch engage from rest on the mock circle passes only after the mock pose
+    is moved within tolerance (test drives the pose there), and the first admitted command after engage is under
+    first_command_max_step_rad on every joint (print it); a refusal while engaged disengages (test)
+  - docs/safety.md and docs/teleop.md updated
+acceptance:
+  - tests pass with the printed numbers; full suite green; ruff clean; `git diff config/safety.yaml` shows only the added key
+    and its status/comment (Fable checks that nothing was loosened)
+notes: T-021 (first real motion) now depends on this task. Also add `mock.pose_center_m` to the MockPose row in docs/drivers.md
+  (left over from T-032).
+
+## T-034  Observation history in the dataset (n_obs_steps frames per sample)
+status: todo
+priority: P1
+phase: 3
+owner: opus
+depends_on: T-029
+hardware: none
+deliverables:
+  - policy/dataset.py: samples carry `n_obs_steps` observation frames (from config/training.yaml diffusion.obs_history, ACT
+    obs_history) using lerobot delta_timestamps on the observation keys, padded at episode start with the first frame and a
+    mask; goal channels rendered once per episode and repeated; the policy wrappers consume the history instead of repeating
+    one frame (T-029 finding 2)
+  - tests: shapes (n_obs_steps, C, H, W), start-of-episode padding, benchmark re-run (samples/s before and after)
+acceptance:
+  - tests pass; policy/diffusion.py smoke test still passes with the history input; numbers in BUILD_LOG.md
+notes: Before any real training run.
+
+## T-035  Training loop completeness and a smaller inference configuration
+status: todo
+priority: P1
+phase: 3
+owner: opus
+depends_on: T-034
+hardware: none
+deliverables:
+  - policy/train.py: EMA of weights (used for eval/export), LR warmup + cosine, a held-out validation split by cell pairs
+    (policy.dataset.split_cell_pairs) with validation loss every N steps written to loss.csv (section 8 wants the curves saved),
+    checkpoint of the EMA weights, resume from checkpoint
+  - a `diffusion_small` config block: shared encoder across cameras, 120x160 inputs, reduced UNet width; latency measured
+    with the T-029 adapter at DDIM 10 and 5 on this laptop CPU (D-019 fallback)
+  - tests: EMA changes the exported weights; warmup schedule values at steps 0, warmup, end; validation split disjoint from
+    train pairs; small-config latency printed
+acceptance:
+  - tests pass with printed numbers; BUILD_LOG.md has the small-config latency next to the T-029 numbers
+notes: No hardware. Disk: keep checkpoints under tmp_path in tests and delete smoke weights after measuring (Q-002).

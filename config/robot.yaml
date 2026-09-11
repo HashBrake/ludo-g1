@@ -152,6 +152,13 @@ mock:
   # deterministic, repeatable path.
   pose_cycle_s: 8.0
   pose_radius_m: 0.1
+  # Centre of that circle, in the pico frame, metres. Zero is the pico frame's origin, which under
+  # the placeholder identity `teleop.pico_to_pelvis` is the pelvis itself: a wrist pose the arm
+  # cannot reach and one that is outside config/safety.yaml's workspace box, which is what
+  # tests/test_teleop_loop.py drives the guard with. A run that has to stay inside the box gives the
+  # mock a centre inside it through a config copy (the same test does). A design choice about a
+  # synthetic stream, not a measurement, so it carries no status key.
+  pose_center_m: [0.0, 0.0, 0.0]
 
 # --- teleop retargeting (teleop/retarget.py, T-013, D-006) ---------------------------------------
 # The operator's left hand reaches the robot through two maps: the Pico controller's 6-DoF pose is

@@ -162,3 +162,18 @@ timeout_no_progress and writes the JSON; `--backend real` exits 2 refusing to de
 board/perception.py and eval imports it, so runtime never depends on eval/. Engine-level recovery only for the sequence
 kind is what CLAUDE.md Phase 4 asks. Fable fixes in this merge: eval/results/*.json git-ignored (results are committed
 with `git add -f` only when accepted as evidence, R5), and docs/README.md rows for policy.md and eval.md.
+
+## T-032  ACCEPTED  (fable, 2026-09-11T23:16+07:00, commits db2b922, 295b729, merged)
+Re-ran in the worktree: 14 tests pass; 901 ticks in 30.033 s = 30.000 Hz, tracking error 0.00274 rad, IK mean 0.37 ms /
+p99 0.69 ms, out-of-box pose 61/61 refused with the arm unmoved. Every send goes through arm.send_targets/hand.send_pinch
+(loop.py:154-160). Pinch passthrough accepted (the distance conversion belongs to the glove driver). The clutch finding is
+correct and serious for hardware: D-018 and T-033 (P0) follow; T-021 now depends on T-033. The builder disclosed and
+repaired a hook-skipping commit by amending through the gate; the merged commit is the gated one.
+
+## T-029  ACCEPTED  (fable, 2026-09-11T23:16+07:00, commits f743667, 4572414)
+Re-ran: ruff clean; the diffusion tests pass with the smoke loss falling 0.951 -> 0.770 over 30 steps (fixed probe -16.9%);
+requirements unchanged (--dry-run: no changes), so lerobot is wrapped, not patched; adaptation route (1x1 conv 5->3 plus
+task one-hot on the state) is the only one 0.4.4 permits and a test pins why. Export round trip identical to 1e-5. Latency
+DDIM 10 median 804 ms and DDIM 5 median 498 ms on this CPU: recorded, not a defect of the task; D-019 decides what follows.
+Its four findings become: D-019 (inference budget), T-034 (observation history in the dataset), T-035 (EMA, warmup,
+validation curves), Q-002 escalated (12 GB free; one checkpoint plus bundle is 2.3 GB). tests/test_eval.py edit accepted.
