@@ -243,7 +243,7 @@ acceptance:
   - the script refuses to run in remote mode when ~/.config/ludo-g1/env is missing, with a message pointing to QUESTIONS.md Q-001
   - no credential strings in git (`git grep -i -E "password|secret|token" cloud/` empty)
 notes: The real one-minute dummy job round trip is the Phase 0 exit check and waits for Q-001. Record the command in docs/cloud.md so it can be run the moment credentials exist.
-result: (opus, 2026-09-11T19:12+07:00, commit COMMIT_HASH; branch wt/t009)
+result: (opus, 2026-09-11T19:12+07:00, commit 5540c10; branch wt/t009)
   - acceptance 1 (local-mode round trip), `bash tests/test_greennode_local.sh` -> exit 0, 18/18 checks.
     The chain is the literal acceptance form, no extra flags: `GREENNODE_TRANSPORT=local cloud/greennode.sh up`
     -> `... train cloud/dummy_job.py --seconds 1 --note ...` -> `... down`, producing

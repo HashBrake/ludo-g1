@@ -384,3 +384,4 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
   same step; a `tools/` helper for it would be a reasonable small task.
 - No hardware, no motion command, no blockers, no scripted motion. No disagreement with the task as
   written.
+(T-009 cloud commit: 5540c10; this line and the TASKS.md result hash are the only content of the follow-up commit.)
