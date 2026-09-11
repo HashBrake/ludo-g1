@@ -969,3 +969,86 @@ notes: torch CPU is on the laptop per D-011. Real training runs on Greennode (Q-
   (config/training.yaml dataset.format: lerobot_v3) and D-016 (requirements.txt opencv-python==4.12.0.88, drop the reinstall
   recipe from docs/setup.md and requirements comments, re-resolve), and add a pyproject filterwarnings entry that silences the
   HuggingFace datasets DeprecationWarning noise reported by T-017 (log the count before and after).
+
+## T-028  Eval protocol and runner on mocks
+status: in_progress
+priority: P1
+phase: 3
+owner: opus
+depends_on: T-016, T-007
+hardware: none
+deliverables:
+  - eval/protocol.py: `Trial` (primitive, src, dst, seed, perturbed), `make_trials(kind, n, held_out_pairs, seed)` producing the
+    20-trial sets CLAUDE.md Phase 3/4 name (move on held-out cell pairs, roll, recover, and the 20-move scripted sequence from
+    engine/scripts/eval_20_moves.yaml), success criteria per primitive expressed as required Outcome fields, and the failure-mode
+    vocabulary of section 6.5 as an Enum used by perception and eval alike
+  - eval/run_eval.py: runs N trials through runtime/controller.py with an injected policy, backend mock or real (real refuses
+    without a valid session, through the drivers), writes eval/results/<timestamp>_<tag>.json with per-trial outcome,
+    failure_mode, duration, safety refusals, config hashes, git commit, policy checkpoint hash; prints the success rate with
+    the trial count and a per-failure-mode table
+  - tests/test_eval.py on mocks with HoldPolicy: 20 mock MOVE trials produce a JSON with 20 entries, success rate 0/20 (HoldPolicy
+    moves nothing) and every failure counted under a section 6.5 mode; trial sets reproducible by seed; held-out pairs never
+    appear in the training-pair helper from policy/dataset.py (once T-027 lands; otherwise assert against a fixture list)
+  - docs/eval.md
+acceptance:
+  - tests pass; `.venv/bin/python -m eval.run_eval --backend mock --kind move --n 20 --policy hold` writes the JSON and prints
+    "0/20" (command and output in BUILD_LOG.md)
+notes: R5: every success rate the project ever reports comes from this JSON. Keep the JSON schema in docs/eval.md.
+
+## T-029  Diffusion Policy wrapper with goal channels, smoke-train, export, inference timing
+status: todo
+priority: P1
+phase: 3
+owner: opus
+depends_on: T-027
+hardware: none
+deliverables:
+  - policy/diffusion.py: LeRobot 0.4.4 DiffusionPolicy configured for three cameras (ResNet-18 encoders), the 9-D state, the
+    two goal heatmap channels concatenated to `top` (5-channel input; adapt the first conv), task one-hot appended to the state,
+    chunk 16, DDIM 10 at inference; `DiffusionAdapter` implementing runtime.policy_api.Policy (receding horizon, execute 8 of 16)
+  - policy/train.py: entry point (config from config/training.yaml, dataset sessions list, seed, steps, device) that logs the
+    config hash and a dataset manifest hash (sha256 over the sessions' meta files) at start, saves checkpoints and a loss curve
+    CSV under data/checkpoints/<run>/; a `--smoke` mode of 30 steps on the mock dataset on CPU
+  - policy/export.py: checkpoint -> inference bundle (TorchScript if the model traces, else state_dict + config with a loader);
+    the adapter loads the bundle
+  - tests/test_diffusion.py: forward pass shapes; 30-step smoke train on a mock session with loss at step 30 below loss at step 1
+    (print both); export round trip gives identical actions on one observation (1e-5); adapter act() latency on this laptop CPU
+    at DDIM 10 printed (mean of 20 calls)
+acceptance:
+  - tests pass; smoke-train and export commands with their output in BUILD_LOG.md; inference latency recorded and compared to
+    the 100 ms budget (CLAUDE.md 5.8 fallback ladder noted if above)
+notes: Real training happens on Greennode (Q-001). No hardware. Keep the LeRobot modifications in policy/ (wrap, do not
+  patch the package).
+
+## T-030  ACT baseline wrapper, same inputs
+status: todo
+priority: P2
+phase: 3
+owner: opus
+depends_on: T-029
+hardware: none
+deliverables:
+  - policy/act.py: LeRobot ACTPolicy with the same observation adaptation as T-029, chunk 32, temporal ensembling in
+    `ACTAdapter`; train.py `--policy act` path; export path
+  - tests/test_act.py mirroring test_diffusion.py (shapes, 30-step smoke train, export round trip, latency)
+acceptance:
+  - tests pass with the printed numbers; BUILD_LOG.md commands
+notes: CLAUDE.md 5.7: ACT is trained on every dataset the diffusion model is trained on. train.py must make that a one-flag
+  change.
+
+## T-031  Greennode training launch for real: train.py inside the pinned image, manifest and checkpoint round trip
+status: todo
+priority: P2
+phase: 3
+owner: opus
+depends_on: T-029, T-009
+hardware: none
+deliverables:
+  - cloud/Dockerfile updated with the lerobot/torch pins from requirements.txt (GPU image tag chosen and recorded); cloud/
+    greennode.sh `train` wired to policy/train.py with the dataset manifest and config hashes echoed into the job log
+  - local-transport end-to-end test: `up`, `train policy/train.py --smoke`, `down` yields a checkpoint under data/checkpoints/
+    with the two hashes in its run.json (test)
+acceptance:
+  - local-transport test passes; the exact remote command is in docs/cloud.md; the real run waits for Q-001 and is listed in
+    STATE.md as the Phase 3 gate
+notes: No credentials in git.

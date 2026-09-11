@@ -133,3 +133,9 @@ lerobot requires opencv-python-headless; unitree_sdk2py requires opencv-python; 
 step after every install is fragile. Decision: pin both to the same version (opencv-python==4.12.0.88 to match the headless
 pin lerobot resolves) so a fresh install writes identical files whichever comes last, and remove the reinstall recipe.
 Supersedes D-008's choice of 5.0. Never uninstall either one. Applied by T-027 (the next task that touches requirements).
+
+## D-017  Phase 3 preparation queued as non-hardware work  (2026-09-11T21:57+07:00)
+With Phase 0 closed and every Phase 1 task gated on H-002/H-003/Q-004, the loop needs non-hardware work (4.5 step 4). Added
+T-028 eval protocol and runner, T-029 Diffusion Policy wrapper + train/export, T-030 ACT baseline, T-031 real Greennode
+launch. All run on the mock dataset; none claims a success rate (R5: HoldPolicy scores 0/20 by construction and the eval
+JSON says so). Real training and evaluation still require Q-001, a real dataset (Phase 2 on hardware) and the robot.
