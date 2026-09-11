@@ -3136,3 +3136,7 @@ no `--no-verify`, per D-013 item 1.)
   untouched, `hardware/session.enable` neither created nor read, nothing under `third_party/` or in the
   installed lerobot package modified (wrapped only; the history is lerobot's own `delta_timestamps`). Committed
   through the full pre-commit gate, no `--no-verify` (D-013 item 1).
+
+(T-034 commit: 72259ca, which holds all of the code, tests, config comments and docs of this task; its pre-commit
+run was ruff clean and `519 passed, 4 skipped in 761.37s`. This line and the TASKS.md `result:` hash are the only
+content of the follow-up commit, which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)

@@ -1331,7 +1331,7 @@ acceptance:
   - tests pass; policy/diffusion.py smoke test still passes with the history input; numbers in BUILD_LOG.md
 notes: Before any real training run.
 
-result: (opus, 2026-09-12T02:05+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-12T02:05+07:00, commit 72259ca)
   - policy/dataset.py: `n_obs_steps` (default 1, explicit per policy). Above 1 the three camera keys and
     observation.state carry lerobot delta_timestamps [-(S-1)/fps ... 0], so a sample is (S, 5, h, w) / (S, 3, h, w)
     / (S, 9) oldest first, plus a new `obs_mask` (S,) that is 0 where lerobot clamped to the episode's first frame.
