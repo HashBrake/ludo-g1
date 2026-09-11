@@ -490,7 +490,7 @@ result:
     `uv pip install --reinstall-package opencv-python -r requirements.txt`. See agents/BUILD_LOG.md T-012.
 
 ## T-013  Controller-pose to 8-DoF arm IK prototype (pulled forward from Phase 2, non-hardware)
-status: review
+status: accepted
 priority: P1
 phase: 2
 owner: opus
@@ -556,3 +556,74 @@ acceptance:
     output in BUILD_LOG.md), and `bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke` leaves `git worktree list` with main only
   - `git status` in main is clean afterwards
 notes: Nothing under third_party/ is modified; the symlinks live only in the worktree and are git-ignored there.
+
+## T-015  Phase 0 report
+status: todo
+priority: P1
+phase: 0
+owner: opus
+depends_on: T-010, T-014
+hardware: none
+deliverables:
+  - agents/BUILD_LOG.md: a "Phase 0 report" section (CLAUDE.md section 6) with: per-device SDK status table (from docs/sdks.md,
+    one line each), verdict table for A1..A7 and U1..U6 (from DECISIONS D-002 with later corrections D-006, D-009, D-010), test
+    count and runtime of the full suite, the list of every UNMEASURED key per config file (`runtime.config.unmeasured`), the
+    status of the four Phase 0 exit checks (tests on mocks; safety.py rejects without session; Greennode round trip; docs/sdks.md
+    coverage) with the command for each, and the open human items (H-001..H-003, Q-001..Q-010) in one table
+  - docs/README.md: one page index of docs/ with one sentence per module page
+acceptance:
+  - every number in the report is next to the command that produced it (spot-checked by Fable)
+  - `.venv/bin/python -m pytest -q` count in the report equals a fresh run at review time
+notes: No code changes. Do not restate the brief.
+
+## T-016  Mock end-to-end controller loop (runtime/controller.py on mocks)
+status: in_progress
+priority: P1
+phase: 5
+owner: opus
+depends_on: T-006, T-007, T-013
+hardware: none
+deliverables:
+  - runtime/policy_api.py: `Policy` Protocol: `reset(command)`, `act(observation) -> ActionChunk` (16 actions x 9 dims at 30 Hz
+    per CLAUDE.md 5.2/5.3), `done(observation) -> bool`; `Observation` dataclass (top, oblique, palm frames, state, goal heatmaps,
+    task_id one-hot) and `ActionChunk`; a `HoldPolicy` test double that returns the current state as every action (it commands
+    no motion at all; this is a placeholder for tests, never deployed, and says so in its docstring; R2)
+  - runtime/goal.py: render the two goal heatmap channels (source, target) onto the `top` image frame from Cell.top_px with a
+    gaussian of configurable sigma (config/training.yaml), and the task_id one-hot
+  - board/perception.py: `Perception` Protocol with `verify(command, before, after) -> Outcome` and a `MockPerception` that
+    reads the mock engine board state (placeholder until the engine team delivers)
+  - runtime/controller.py: the 10 Hz loop of CLAUDE.md 5.5: `cmd = engine.next_command()`, policy.reset, loop: build observation
+    from drivers (aligned via runtime.clock), policy.act every 100 ms, execute 8 of 16 actions at 30 Hz through the arm and hand
+    drivers (which admit through the Guard), stop on policy.done or the 20 s timeout, then perception.verify and engine.report;
+    heartbeat to data/logs/ every second; structlog throughout
+  - tests/test_controller.py on mocks with a fake clock: one MOVE command runs to timeout with HoldPolicy, the loop rate is
+    10 Hz +/- 0.5 (measured on the fake clock), every action went through Guard.admit (count), engine.report was called with an
+    Outcome; a RECOVER after a failed Outcome is issued by the stub and executed
+  - docs/controller.md
+acceptance:
+  - tests pass; `grep -rn "hardware_checks" runtime/ board/ policy/` empty
+  - a 60 s mock run (`.venv/bin/python -m runtime.controller --backend mock --seconds 60`) completes with heartbeats in
+    data/logs/ and a printed summary of commands executed and outcomes (command and output in BUILD_LOG.md)
+notes: No learned policy exists yet; HoldPolicy exists only so the orchestration can be tested. No scripted trajectories anywhere.
+
+## T-017  Teleop recorder to LeRobot v2 on mocks (D-011)
+status: todo
+priority: P1
+phase: 2
+owner: opus
+depends_on: T-006, T-016
+hardware: none
+deliverables:
+  - requirements.txt: lerobot (pinned release) and torch CPU wheel pinned; resolved versions in docs/setup.md
+  - teleop/recorder.py: `Recorder(session_id)` that opens a LeRobotDataset under data/raw/<session_id>/ with the observation and
+    action features of CLAUDE.md 5.3 at 30 Hz (frames from the camera drivers, state from arm+hand drivers, action = the teleop
+    target admitted by the Guard, raw glove and DexH15 joints stored as extra features), aligned with runtime.clock.align and
+    shifted by the latency values in config/robot.yaml; episode metadata per 5.6; `start_episode(command)`, `mark_success`,
+    `mark_perturbed`, `stop_episode`; a dataset card README.md per session with stream rates, dropped frames, skew p50/p99
+  - tests/test_recorder.py on mocks with a fake clock: a 60 s mock episode has all streams, skew p99 < 10 ms, zero dropped
+    frames; replaying the recorded actions through the mock arm reproduces the recorded joint targets within 1e-6; the dataset
+    loads back with LeRobotDataset and has the expected feature keys and frame count
+  - docs/teleop.md updated
+acceptance:
+  - the three tests above pass with the printed skew and frame counts; full suite green; ruff clean
+notes: The operator UI and the real Pico/glove input are separate tasks. Never write outside data/raw/ (git-ignored).

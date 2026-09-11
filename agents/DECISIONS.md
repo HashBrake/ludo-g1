@@ -86,3 +86,14 @@ The G1 all-zero pose puts the left wrist at [0.20, 0.15, 0.10] m in the pelvis f
 arm points forward at zero, it does not hang. Wrist roll and wrist yaw do not move the wrist point, so the box currently
 constrains 6 of 8 joints. Phase 1 adds a second checked point (the DexH15 fingertip pinch point, tool offset measured on the
 hand) rather than widening the box. config/safety.yaml is unchanged; Fable proposes, a human applies (R3).
+
+## D-011  Recorder writes LeRobot v2 through the lerobot package; torch CPU comes to the laptop now  (2026-09-12T00:40+07:00)
+The Phase 2 recorder (T-017) uses LeRobotDataset.create / add_frame / save_episode from a pinned lerobot release rather than
+hand-writing parquet and mp4, so the format matches what policy/train.py will load. That pulls torch (CPU wheel) onto the
+laptop, which Phase 3 inference needs anyway. Alternative rejected: hand-rolled v2 layout (format drift risk, no benefit).
+Both pins go into requirements.txt in T-017 with the resolved versions recorded in docs/setup.md.
+
+## D-012  Phase 0 wrap-up and early non-hardware Phase 2/5 work queued  (2026-09-12T00:40+07:00)
+Every Phase 0 task except T-010 (running) and T-014 is accepted; the two Phase 0 exit checks that need a human (Greennode
+dummy job, Q-001; real board still, H-001) stay open without blocking. To keep the loop stocked with non-hardware work
+(section 4.5 step 4) while those wait: T-015 Phase 0 report, T-016 mock end-to-end controller loop, T-017 recorder on mocks.

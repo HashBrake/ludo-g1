@@ -87,3 +87,12 @@ and tilted case rms 0.23 px, worst cell 0.054 px, per BUILD_LOG). config/board.y
 guidance required (family, size, ids, inset, all `_status: UNMEASURED`). brio_still.py only opens VideoCapture read-only.
 Criterion 3 (real still) stays open under H-001, correctly. calibration.py is 481 lines, larger than I would like but every
 part is used; noted as a style guideline, not a defect.
+
+## T-013  ACCEPTED  (fable, 2026-09-12T00:40+07:00, commits 6628571, bdb35bb)
+Re-ran: ruff clean; 30 retarget tests pass with the printed pass rate 100% (50/50), position median 0.30 mm, orientation
+median 0.09 deg; warm solve mean 0.62 ms, cold 3.85 ms (criterion: mean < 5 ms). git diff touches no driver or safety file.
+Deviation accepted: `teleop.ik.step_dt_s: 0.1` is a solver trust region; the command-level velocity limit stays in
+runtime/safety.py against measured state, which is where R3 wants it. The `teleop.ik` settings block in config/robot.yaml
+is what section 7 asks for (no constants in code). Warm p99 of 9 ms is noted for Phase 2 (30 Hz budget is 33 ms; fine).
+Style note, not a defect: retarget.py is 318 lines against a 200-line guidance; the extra is docstrings and the detailed
+result type. Rest-pose choice raised as Q-010.

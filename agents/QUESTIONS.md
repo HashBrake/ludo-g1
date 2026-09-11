@@ -52,3 +52,8 @@ same `cv2/` directory is a packaging hazard. Options: drop the headless pin and 
 install unitree_sdk2py with `--no-deps` and pin its real deps by hand.
 Assumption meanwhile: both stay pinned in requirements.txt exactly as uv resolved them (the environment is
 reproducible and `uv pip install -r requirements.txt --dry-run` reports "no changes"); Fable decides.
+
+## Q-010  Teleop rest pose and elbow configuration  (fable, 2026-09-12T00:40+07:00)  OPEN
+config/robot.yaml `teleop.rest_pose_rad` is all zeros (UNMEASURED). It is the IK posture target, so it decides which elbow
+configuration the arm settles into over the board. Phase 1 should pick it on the rig with the table in place (elbow low and
+outboard, away from the operator side). Assumption meanwhile: zeros; nothing downstream depends on the value yet.
