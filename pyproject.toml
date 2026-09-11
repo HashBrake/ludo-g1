@@ -1,0 +1,25 @@
+[project]
+name = "ludo_g1"
+version = "0.0.1"
+description = "Learned manipulation policy for a Unitree G1 playing co ca ngua (Ludo)"
+requires-python = "==3.10.*"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+# third_party/ is vendored and never modified in place (CLAUDE.md section 7); .venv/ is not our code.
+extend-exclude = ["third_party", ".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+norecursedirs = ["third_party", ".venv", "data", ".git", "*.egg-info"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+  "motion: test sends motion commands to real hardware; requires a valid hardware session (R1)",
+  "readonly: test reads from real hardware (cameras, state) but sends no motion command",
+]

@@ -5,7 +5,7 @@ Conventions for every task: Python 3.10, run everything through `.venv/bin/pytho
 under docs/. Never touch third_party/ contents, config/safety.yaml (after T-003 creates it), or hardware/session.enable.
 
 ## T-001  Repo scaffold, Python environment, pre-commit CI
-status: in_progress
+status: review
 priority: P0
 phase: 0
 owner: opus
@@ -25,6 +25,15 @@ acceptance:
   - hook proof: a scratch commit containing a file with a ruff error is rejected by the hook; the command and its output are in BUILD_LOG.md; the scratch file is not left in the tree
   - `git status` clean after the commit; `.venv/` and `data/` untracked
 notes: Keep it minimal (section 7). Do not add torch, lerobot, mujoco yet; T-002 decides what the SDKs need.
+result: (opus, 2026-09-11T18:45+07:00, commit COMMIT_HASH)
+  - `.venv/bin/python --version` -> Python 3.10.20 (uv-managed CPython; system python3 is 3.10.12). PASS
+  - `.venv/bin/ruff check .` -> "All checks passed!", exit 0. PASS
+  - `.venv/bin/python -m pytest -q` -> 15 passed, 1 skipped ("no session gate yet"), exit 0. PASS
+  - hook proof: ruff-error scratch file rejected (exit 1, HEAD unchanged); failing-test scratch file rejected at
+    the pytest stage (exit 1, HEAD unchanged); missing-.venv guard rejected with the uv command. Full output in
+    agents/BUILD_LOG.md. Both scratch files removed; `git ls-files | grep -i scratch` empty. PASS
+  - `git status --short` empty after the commit; `.venv/` and `data/` untracked (git-ignored). PASS
+  - deviation logged in BUILD_LOG: venv interpreter is uv-managed 3.10.20, not /usr/bin/python3 3.10.12.
 
 ## T-002  SDK inventory and assumption verification: docs/sdks.md
 status: todo
