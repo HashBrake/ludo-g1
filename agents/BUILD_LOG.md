@@ -1116,3 +1116,139 @@ a 0.707 px systematic bias would otherwise slide under the 1.0 px acceptance bou
 - The `tests/test_greennode_local.py` flake reported under T-007 did not reproduce in the runs here.
 - No blockers. The only unmet criterion is acceptance 3, which needs H-001 and a Brio.
 (T-008 commit: 63d998f; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-010  Real camera driver over V4L2, with device discovery and a stream check  (opus, 2026-09-11T23:55+07:00)
+
+Built the real `CameraDriver`: one class for all three streams, frames stamped on arrival and
+delivered at the policy resolution, plus the read-only tool that measures what a stream actually did.
+Ran it against the Orbbec Ego, which is attached. **The Brio is still absent** (acceptance 3).
+
+### What changed
+- `drivers/cameras.py`. `V4L2Camera(name)` reads `config/cameras.yaml`, opens the node with
+  `cv2.CAP_V4L2` (fourcc set *before* the resolution, or the driver caps the request at what raw
+  YUYV can carry over USB), and `grab()` stamps with `runtime.clock.now_ns()` on the line after
+  `cap.read()` returns, then crops (`<name>.crop`, when the stream has one) and resizes with
+  `INTER_AREA` to `policy_resolution` -- exactly the shape `MockCamera` emits, so the two backends
+  are interchangeable downstream. `probe()` reads back the *negotiated* width/height/fps/fourcc from
+  the open handle without consuming a frame. Colour stays OpenCV BGR, matching `cv2.imread`, which is
+  what `board/calibration.py` already consumes.
+  Device selection is three steps: explicit `device=`, then `<name>.device` from the config, then
+  **discovery by `<name>.usb_id`** -- the lowest-numbered `VIDEO_CAPTURE` node with that USB
+  vendor:product, returned through its `/dev/v4l/by-id/` link when udev made one. Enumeration is
+  sysfs plus one `VIDIOC_QUERYCAP` on an `O_RDONLY|O_NONBLOCK` handle; it never streams. Every "there
+  is no camera" case -- unconfigured, absent, busy, silent, closed -- is one `CameraUnavailable`.
+  `depth=True` raises `NotImplementedError` naming `pyorbbecsdk` (D-009). There is no write call on
+  the class and a test asserts it (`send_targets`/`send_pinch`/`admit` all absent): a camera is a
+  sensor, R1 has nothing to gate here.
+- `drivers/__init__.py`: the `real` branch now builds a `V4L2Camera` for `top`/`oblique`/`palm` and
+  still raises `NotImplementedError` for `arm`/`hand`/`glove`/`pose`. Nothing else changed.
+- `tools/hardware_checks/stream_stats.py`. `--backend mock|real --camera top|oblique|palm --seconds N`
+  (+ `--device`, `--warmup`, `--json`). Reports achieved fps `(n-1)/span` from the driver timestamps,
+  drops (gaps > 1.5 nominal periods, and how many frames those gaps swallowed) and inter-frame jitter
+  `|interval - period|` at p50/p99/max in ms, plus the interval percentiles and what `probe()` says.
+  Exit 3 = no camera, 2 = usage, 0 = statistics produced. Read-only; no session needed.
+- `tests/test_cameras.py`, 32 tests: 24 hardware-free (device resolution and discovery against a
+  temporary `cameras.yaml` and a synthetic node list; statistics against synthetic timestamp trains
+  where the answer is exact; two subprocess runs of the tool), 8 marked `readonly`.
+- `config/cameras.yaml`: added `usb_id: UNMEASURED` to `top` and `palm` (discovery off for those
+  streams until someone reads their ids) and a comment on the existing, real `oblique.usb_id`
+  explaining that it is now the discovery key. No existing value changed; `config.unmeasured("cameras")`
+  is unchanged, so `test_camera_devices_are_all_unresolved` still holds for all three streams.
+- `docs/drivers.md`: new "Real cameras" section (discovery order, no-depth rule, CameraUnavailable,
+  the readonly convention, the tool); the protocol table and the factory section updated.
+
+### Commands and measured results
+- `.venv/bin/ruff check .` -> "All checks passed!", exit 0.
+- `.venv/bin/python -m pytest -q` (Ego attached) -> **323 passed, 4 skipped** in 50.69 s. The 4 skips
+  are the 3 `top` readonly tests (Brio absent) and the pre-existing motion-marker skip.
+- **Acceptance 1, no camera attached.** Proved by re-running the whole suite with a throwaway pytest
+  plugin in the scratchpad that sets `drivers.cameras.list_video_nodes = lambda: []`, i.e. an empty
+  `/dev`: `PYTHONPATH=<scratch> .venv/bin/python -m pytest -q -p nocam` -> **318 passed, 9 skipped, 0
+  failed**. Every camera skip names the device or the config key, e.g.
+  `no real oblique camera: oblique: no VIDEO_CAPTURE node with usb id 2bc5:1201
+  (config/cameras.yaml oblique.usb_id); is the camera plugged in? ...` and
+  `no real top camera: top: config/cameras.yaml top.device is UNMEASURED and top.usb_id gives nothing
+  to discover with; ...`. PASS
+- **Acceptance 2.** `.venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5`
+  -> 150 frames in 4.97 s, **fps 30.00**, **drops 0**, jitter p50/p99 0.00/0.00 ms. Asserted in
+  `test_stream_stats_on_the_mock_reports_30_hz_and_no_drops` (runs the CLI in a subprocess with
+  `--json` and checks |fps - 30| <= 1 and drops == 0). PASS
+- **Acceptance 3: NOT MET, no Brio.** `list_devices.py` shows only the laptop's own
+  `174f:11b4` webcam (`/dev/video0..3`) and the Ego (`2bc5:1201`, `/dev/video4..7`); no Logitech id.
+  Unchanged since T-002; H-001 still stands.
+
+### Bonus: 10 s of real stats on the Orbbec Ego (`oblique`)
+`.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --camera oblique --seconds 10 --warmup 15`
+
+```
+device       /dev/v4l/by-id/usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0 'ORBBEC: Ego left' (via usb_id 2bc5:1201)
+negotiated   1600x1200 @ 30 fps MJPG
+policy size  640x480
+frames       300 in 9.97 s (warmup 15 discarded)
+fps          30.00  (expected 30)
+drops        0 gaps > 1.5 periods, 0 frames missed
+interval ms  p50 33.32  p99 35.72  max 36.48
+jitter ms    p50 0.22  p99 2.94  max 3.44
+```
+
+An earlier identical run gave fps 30.00, 0 drops, jitter p50 0.23 / p99 1.44 / max 2.43 ms. So the
+`oblique` path holds 30 Hz with no drops, and the worst single-frame jitter seen is ~3.4 ms, i.e.
+about a tenth of a period -- comfortably inside the 10 ms p99 skew budget T-016 has to meet, before
+any alignment. Frames are real imagery, not a black stream (mean 81.4, std 46.7 over a 640x480x3
+frame). The right stream also works when asked for explicitly (`--device /dev/video6`,
+'ORBBEC: Ego right', same 1600x1200@30).
+
+### One measurement Fable should see: the Ego ignores the requested resolution
+`config/cameras.yaml` `oblique.resolution` is `[640, 480]` (UNMEASURED). The device does not offer
+it. Asking for 320x240, 640x480, 1280x720 or 1600x1200 in MJPG all return **1600x1200 @ 30**:
+
+```
+asked 640x480  -> got 1600x1200 @ 30   asked 1280x720  -> got 1600x1200 @ 30
+asked 1600x1200-> got 1600x1200 @ 30   asked 320x240   -> got 1600x1200 @ 30
+```
+
+This costs nothing today -- 1600x1200 is 4:3, the same aspect as 640x480, so the `INTER_AREA`
+downscale in the driver is a clean 2.5x with no distortion or crop -- but it means the USB link
+carries 1600x1200 MJPG per frame for a 640x480 observation, and it means `oblique.resolution` is a
+request the device overrules. I did **not** write the measured value into the config: `resolution` is
+the requested capture size, its `_status` is UNMEASURED, and turning a placeholder into a measurement
+is a Phase 1 act, not a T-010 one. Fable's call.
+
+### Deviations and disagreements
+- **I had to touch `tests/test_mock_drivers.py`, which was not on my allowed file list.**
+  `test_factory_refuses_the_real_backend_for_every_device` parametrises over all of `DEVICES` and
+  asserts `NotImplementedError`; wiring the camera branch of `make(..., backend="real")`, which the
+  task explicitly instructs, makes that assertion false for `top`/`oblique`/`palm` and turns the suite
+  red, so the pre-commit hook would refuse the commit. Minimal change: the parametrisation now runs
+  over the four actuated devices and the test is renamed
+  `test_factory_refuses_the_real_backend_for_every_actuated_device`, with a comment pointing at T-010
+  and `tests/test_cameras.py`. No assertion was weakened; camera-factory behaviour is covered in
+  `tests/test_cameras.py` (`test_the_factory_builds_a_real_camera`, readonly, and
+  `test_the_factory_reports_an_absent_camera_as_unavailable`, hardware-free).
+- `test_mocks_import_nothing_from_tools_hardware_checks` scans every file under `drivers/` for the
+  substring `hardware_checks`. My first draft of `drivers/cameras.py` named
+  `tools/hardware_checks/list_devices.py` in three *error message strings* -- prose, not an import --
+  and tripped it. The strings now say "run the read-only device inventory (list_devices.py)"; the
+  rule stands untouched, and the driver imports `cv2`, `numpy`, `runtime.clock`, `runtime.config`
+  and nothing else (R2 intact).
+- **Discovery by `usb_id` is an addition to the task's stated selector rule** ("by-id path preferred
+  over index"). The config's by-id path is still preferred over anything discovered; discovery only
+  runs while `device` is the UNMEASURED placeholder, and it can only match the vendor:product the
+  config itself declares, so it cannot open the wrong camera. Without it the `readonly` tests could
+  never run against the Ego that is sitting on the desk, since pinning a real by-id path into
+  `oblique.device` would contradict `test_camera_devices_are_all_unresolved` and its "no device
+  selector may look like a real one". If Fable prefers the config-only route, deleting `find_node`
+  and step 3 of `resolve_device` is a ten-line change.
+- The task's "Orbbec via pyorbbecsdk ... else a clear NotImplementedError naming the missing package"
+  is implemented as the task's own note directs: per D-009 the Orbbec route is UVC via OpenCV, and the
+  `NotImplementedError` naming `pyorbbecsdk` fires only on a depth request (`depth=True`).
+
+### Notes
+- No motion command exists anywhere in this change; `hardware/session.enable` was never created and
+  no test here is marked `motion`. Opening a camera is a read (R1).
+- Same worktree environment step as T-007/T-008/T-009: `_internal/` and `pxcap_pro_local` under
+  `third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/` recreated as symlinks into the main tree so
+  `tests/test_docs_sdks.py` can see the git-ignored payload. Nothing under `third_party/` staged or
+  modified. That is now the fourth time by hand; a `tools/` helper is overdue.
+- The 5 s mock acceptance test adds ~5 s of wall clock to `pytest -q`; it is a real-clock rate
+  measurement and cannot be shortened without weakening the criterion.

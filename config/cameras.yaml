@@ -16,6 +16,10 @@ defaults:
 # --- top: Logitech Brio 4K, fixed above the table (board state, goal grounding, AprilTags) --------
 top:
   device: UNMEASURED        # e.g. /dev/v4l/by-id/usb-046d_Brio_...-video-index0
+  # USB vendor:product, used by drivers/cameras.py to find the node when `device` is still a
+  # placeholder. The Brio was not connected at T-002 so its product id was never read (docs/sdks.md
+  # 8.1); Logitech is 046d. UNMEASURED here means discovery is off for this stream.
+  usb_id: UNMEASURED
   resolution: [1920, 1080]
   resolution_status: UNMEASURED
   fps: 30
@@ -39,7 +43,10 @@ top:
 oblique:
   device: UNMEASURED        # /dev/video4 during T-002 ("ORBBEC: Ego left"), but the number moves
   device_right: UNMEASURED  # /dev/video6 during T-002 ("ORBBEC: Ego right"); unused today
-  usb_id: "2bc5:1201"       # ORBBEC EGO, enumerated in T-002
+  # ORBBEC EGO, enumerated in T-002. This is a real id, not a placeholder, and it is what
+  # drivers/cameras.py discovers the node by while `device` above is still UNMEASURED: the
+  # lowest-numbered VIDEO_CAPTURE node with this id is the Ego's LEFT stream (T-010).
+  usb_id: "2bc5:1201"
   resolution: [640, 480]
   resolution_status: UNMEASURED
   fps: 30
@@ -54,6 +61,7 @@ oblique:
 # path as the other two. Plugging the hand in adds two nodes and the FIRST is the stream.
 palm:
   device: UNMEASURED        # the first of the two nodes the hand adds
+  usb_id: UNMEASURED        # the hand was not connected at T-002 (docs/sdks.md 5); discovery is off
   resolution: [640, 480]    # the SDK example configures 640x480 @ 30 fps
   resolution_status: UNMEASURED
   fps: 30

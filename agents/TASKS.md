@@ -378,7 +378,7 @@ result: (opus, 2026-09-11T19:12+07:00, commit 5540c10; branch wt/t009)
     it survives the ssh connection dropping.
 
 ## T-010  Real camera driver (Brio, Orbbec) read-only with device discovery
-status: in_progress
+status: review
 priority: P1
 phase: 0
 owner: opus
@@ -395,6 +395,28 @@ acceptance:
   - `stream_stats.py --backend mock --seconds 5` reports 30 Hz +/- 1 and 0 drops (test)
   - if a Brio is attached at run time: 10 s of real stats recorded in BUILD_LOG.md
 notes: Read-only; no session needed. Do not touch the palm camera here (it comes with the DexH15 driver in Phase 1).
+result: (opus, 2026-09-11T23:55+07:00, commit COMMIT_HASH)
+  - Acceptance 1, no camera attached: whole suite re-run with drivers.cameras.list_video_nodes stubbed to []
+    (throwaway pytest plugin in the scratchpad) -> 318 passed, 9 skipped, 0 failed. Every camera skip is a
+    `readonly` test and names the device or the config key, e.g. "no real oblique camera: ... no VIDEO_CAPTURE
+    node with usb id 2bc5:1201 (config/cameras.yaml oblique.usb_id)". PASS
+  - Acceptance 2: `.venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5` ->
+    150 frames in 4.97 s, fps 30.00, drops 0, jitter p50/p99 0.00/0.00 ms. Asserted in
+    test_stream_stats_on_the_mock_reports_30_hz_and_no_drops (subprocess + --json, |fps-30| <= 1, drops == 0). PASS
+  - Acceptance 3: NOT MET, no Brio attached (list_devices.py: only 174f:11b4 laptop webcam and 2bc5:1201 Ego;
+    no Logitech id). Unchanged since T-002; H-001 still stands.
+  - Bonus, Orbbec Ego 10 s at `oblique`: device /dev/v4l/by-id/usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0
+    'ORBBEC: Ego left' found by usb_id discovery; negotiated 1600x1200 @ 30 MJPG, delivered at 640x480;
+    300 frames in 9.97 s, fps 30.00, 0 drops, interval p50/p99 33.32/35.72 ms, jitter p50/p99/max
+    0.22/2.94/3.44 ms. Frames are real imagery (mean 81.4, std 46.7).
+  - Finding: the Ego overrules the requested resolution -- 320x240, 640x480, 1280x720 and 1600x1200 all
+    negotiate 1600x1200 @ 30 MJPG. `oblique.resolution` left as the UNMEASURED placeholder it was; Fable's call.
+  - `.venv/bin/ruff check .` -> "All checks passed!"; `.venv/bin/python -m pytest -q` with the Ego attached ->
+    323 passed, 4 skipped (3 `top` readonly + the motion marker). 32 new tests in tests/test_cameras.py.
+  - Deviation: tests/test_mock_drivers.py was edited (not on the allowed file list) -- its
+    test_factory_refuses_the_real_backend_for_every_device asserted NotImplementedError for all of DEVICES,
+    which the task's own camera wiring of make(..., backend="real") makes false. Parametrisation narrowed to the
+    four actuated devices and renamed; no assertion weakened. Full rationale in agents/BUILD_LOG.md.
 
 ## T-011  Left-arm forward kinematics for the workspace box
 status: accepted

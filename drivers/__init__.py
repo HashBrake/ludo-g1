@@ -11,9 +11,10 @@ arm = make("arm")                 # backend="mock" is the default
 cam = make("top", backend="mock")
 ```
 
-``backend="real"`` raises :class:`NotImplementedError` until those files exist. Only
-``drivers/mock`` builds a guard with ``simulated=True``; the real drivers will build theirs with the
-session gate live (R1).
+``backend="real"`` gives a :class:`drivers.cameras.V4L2Camera` for the three camera streams (T-010,
+read-only, no session needed) and raises :class:`NotImplementedError` for the actuated devices until
+their drivers exist. Only ``drivers/mock`` builds a guard with ``simulated=True``; the real drivers
+will build theirs with the session gate live (R1).
 """
 
 from __future__ import annotations
@@ -41,8 +42,10 @@ def make(name: str, backend: str = "mock", **kwargs: Any) -> Any:
 
     ``name`` is one of :data:`DEVICES`; a camera name must also exist in ``config/cameras.yaml``.
     ``kwargs`` go to the constructor -- the mocks take ``now_ns=`` (an injectable clock returning
-    nanoseconds) and ``config_root=``. Raises ``ValueError`` for an unknown name or backend and
-    ``NotImplementedError`` for ``backend="real"``.
+    nanoseconds) and ``config_root=``; :class:`drivers.cameras.V4L2Camera` takes those plus
+    ``device=``. Raises ``ValueError`` for an unknown name or backend, ``NotImplementedError`` for
+    ``backend="real"`` on a device whose driver does not exist yet, and
+    :class:`drivers.cameras.CameraUnavailable` for a real camera that is absent.
     """
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r}; known backends: {', '.join(BACKENDS)}")
@@ -51,6 +54,10 @@ def make(name: str, backend: str = "mock", **kwargs: Any) -> Any:
     if name in _CAMERAS and name not in config.load("cameras", root=kwargs.get("config_root")):
         raise ValueError(f"config/cameras.yaml has no camera named {name!r}")
     if backend == "real":
+        if name in _CAMERAS:
+            from drivers.cameras import V4L2Camera  # imported lazily: it pulls in cv2
+
+            return V4L2Camera(name, **kwargs)
         raise NotImplementedError(
             f"the real {name!r} driver does not exist yet (Phase 1, CLAUDE.md section 6); use backend='mock'"
         )

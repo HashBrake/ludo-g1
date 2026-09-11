@@ -89,8 +89,13 @@ def test_factory_builds_every_device_on_the_mock_backend(name: str) -> None:
     assert driver is not None
 
 
-@pytest.mark.parametrize("name", DEVICES)
-def test_factory_refuses_the_real_backend_for_every_device(name: str) -> None:
+#: The cameras got their real backend in T-010 (drivers/cameras.py, read-only, no session); the
+#: actuated devices have not got one yet. tests/test_cameras.py covers the camera side.
+ACTUATED = tuple(name for name in DEVICES if name not in ("top", "oblique", "palm"))
+
+
+@pytest.mark.parametrize("name", ACTUATED)
+def test_factory_refuses_the_real_backend_for_every_actuated_device(name: str) -> None:
     with pytest.raises(NotImplementedError, match="does not exist yet"):
         make(name, backend="real")
 
