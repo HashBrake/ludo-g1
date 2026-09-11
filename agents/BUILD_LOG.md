@@ -808,3 +808,107 @@ Commands and measured results (all on `.venv/bin/python`, mujoco 3.13.0, no hard
   measurement and is not claimed here.
 - No blockers.
 (T-011 commit: d9596d9; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+## T-007  Engine contract and scripted stub engine  (opus, 2026-09-11T22:55+07:00)
+
+Branch `wt/t007` in the worktree `/home/alois/Desktop/ludo-g1-wt-t007`. Files added:
+`engine/interface.py`, `engine/cells.py`, `engine/stub.py`, `engine/scripts/eval_20_moves.yaml`,
+`tests/test_engine_stub.py`, `docs/engine.md`. Nothing else touched; no hardware, no motion command.
+
+### What was built
+1. **`engine/interface.py`** -- CLAUDE.md 5.5 field for field: `Primitive` (`move`/`roll`/`recover`),
+   `Cell(id, board_xy_mm, top_px)`, `Command(primitive, src, dst, horse_id)`,
+   `Outcome(success, observed_state_delta, failure_mode)`, `EngineClient(next_command, report,
+   board_state)`. Additions, and only these: type annotations, docstrings, `frozen=True` on the three
+   dataclasses, and `ABC`/`@abstractmethod` on `EngineClient` (CLAUDE.md 5.1 calls for an "abstract
+   EngineClient"). 5.5's `Optional[X]` is spelled `X | None` -- the identical type, and the only
+   spelling ruff's `UP045` accepts under this project's lint rules (section 7). The stub imports from
+   this file and nothing in this file knows the stub exists.
+2. **`engine/cells.py`** -- `load_cells()` builds the 88 `Cell`s from `config/board.yaml` (48 track +
+   4 x (6 home + 4 base)), `load_layout()` reads the topology (colours, starts, home entries, lengths).
+   `top_px` is `None` for every cell unless a calibration mapping is passed
+   (`load_cells(top_px={...})`), because the Brio pixel of a cell is a property of where the camera is,
+   not of the board; `board/calibration.py` (T-008) is what will supply it. An id in `top_px` that the
+   board config does not define is an error, so a calibration of a different board cannot pass silently.
+3. **`engine/stub.py`** (297 lines) -- `StubEngine(seed, script=None, *, cells, layout, robot_color,
+   max_reissues, bowl_cell)`. Random mode plays 4 colours x 4 horses; only the robot's colour (default
+   `R`) produces commands and the other three are simulated internally, so `board_state()` keeps moving
+   without the robot being asked to touch another player's piece. A turn is ROLL then, if legal, one
+   MOVE. Enter-from-base on a **1 or a 6** (`ENTER_ROLLS`; the co ca ngua variant admits both -- this is
+   the one rules choice the task left open, made in one constant and documented in `docs/engine.md`).
+   Progress 0..47 track / 48..53 home lane, overshoot illegal. A capture is emitted as **two** MOVEs --
+   the captured horse out to its base first, then ours onto the cell just cleared -- because the robot
+   has to clear that horse with its own arm; 5.5 says MOVE "covers enter-from-base and capture", so both
+   are ordinary MOVEs. Script mode hands out exactly the scripted commands, then `None`.
+4. **`engine/scripts/eval_20_moves.yaml`** -- 20 MOVE commands over 10 distinct `(src, dst)` pairs, each
+   pair twice (two samples per pair for a per-pair success rate), reordered on the second pass so no
+   pair runs back to back. Covers an enter-from-base, hops on each arm, the 80 mm arm-tip step, a home
+   entry and a move inside the home lane. `load_script()` resolves cell **ids** against
+   `config/board.yaml`, so a script can never address a cell that does not exist.
+5. **`docs/engine.md`**, **`tests/test_engine_stub.py`** (30 tests).
+
+### Acceptance, each run and measured
+Commands: `.venv/bin/python -m pytest tests/test_engine_stub.py -q` -> `30 passed` (2.4 s), and the
+measurement script below (stdout quoted verbatim).
+
+1. *same seed -> identical command sequence over 200 commands*
+   `test_same_seed_gives_an_identical_sequence_of_200_commands`, `test_different_seeds_diverge`.
+   Measured: `A1 determinism: len(a)=200  a==b: True  a!=c: True` (seed 7 twice, vs seed 8).
+2. *after a failed report, RECOVER at the failing cell, then the original again; after two failures the
+   third next_command is a different turn*
+   `test_failure_yields_recover_at_the_failing_cell_then_the_original_command`,
+   `test_two_failed_reissues_give_the_turn_up_and_the_game_moves_on` (asserts the criterion literally:
+   after failure 2, next_command #1 is the RECOVER, #2 is the original for the last time, #3 is a new
+   turn -- a ROLL, `board_state()["turn"]` incremented, one entry in `engine.failures` with
+   `attempts: 3` and `failure_modes: ["missed_cell"] x 3`),
+   `test_a_failed_recover_counts_against_the_command_it_protects`.
+3. *every Command's src/dst are cells that exist in config/board.yaml*
+   `test_every_command_addresses_a_cell_that_exists_in_board_yaml` (300 commands with a forced failure
+   every 7th, so RECOVER commands are covered too), `test_every_move_addresses_two_cells_and_a_horse`,
+   `test_board_state_stays_consistent_across_a_game`. Measured over 1000 commands of seed 7:
+   `{'roll': 491, 'move': 509} enter-from-base: 60 capture-clears: 42 into-home: 23`,
+   `A3 unknown-cell commands in 1000: 0 | cells in board.yaml: 88`, and
+   `A3 with a failure every 7th command, 300 cmds, unknown cells: 0`.
+4. *eval_20_moves.yaml loads and yields exactly 20 MOVE commands with >= 10 distinct (src, dst) pairs*
+   `test_eval_20_moves_yields_exactly_twenty_moves_over_ten_distinct_pairs`. Measured:
+   `A4 eval_20_moves: 20 commands, all MOVE: True, distinct pairs: 10, then next_command(): None`.
+
+Gate: `.venv/bin/ruff check .` -> "All checks passed!"; `.venv/bin/python -m pytest -q` ->
+`135 passed, 1 skipped` (the skip is the pre-existing motion autoskip "no session gate yet").
+
+### Two design calls worth Fable's attention
+- **A ROLL addresses no cell.** Fable's guidance says a failed ROLL should be recovered at "the bowl
+  cell". There is no such cell: `config/board.yaml` defines none and `die.bowl_centre_mm` is UNMEASURED,
+  and inventing coordinates would drop a goal heatmap somewhere real on the board. Acceptance 3 also
+  requires every addressed cell to exist in the board config. So ROLL (and any RECOVER after one)
+  carries `src = dst = None` by default, and `StubEngine(bowl_cell=Cell("bowl", (x, y), None))` takes a
+  measured bowl when there is one -- tested (`test_roll_addresses_the_bowl_when_one_is_supplied`). One
+  line to change when the board config grows a bowl cell.
+- **A finished board is dealt again.** Not in the task; found by measurement. A horse in the home lane
+  can never leave it, so once a colour is home the generator produced nothing but ROLLs forever: seed 7
+  gave `{'roll': 888, 'move': 112}` over 1000 commands, everything home by ~turn 250. `winner()` now
+  detects it and random mode deals a fresh board (`board_state()["game"]` counts the deals) **without
+  resetting the RNG**, so the stream stays pinned to the seed. After the fix the same 1000 commands are
+  `{'roll': 491, 'move': 509}`. The alternative -- `next_command()` returning `None` at the end of one
+  game -- was rejected because games run 128-336 commands (10 seeds measured), which is below the 200 of
+  acceptance 1 and far below a collection session's few hundred episodes. Pinned by
+  `test_a_finished_game_is_dealt_again_so_a_collection_run_never_stalls`.
+
+### Notes
+- `next_command()` raises `RuntimeError` if the previous command was not reported, and `report()` raises
+  with nothing outstanding. An engine that tolerated a missing report would let `runtime/controller.py`
+  lose an execution and still produce a plausible-looking dataset.
+- No scripted motion, no import of `tools/hardware_checks/`, nothing under `third_party/`,
+  `config/safety.yaml` and `config/board.yaml` untouched. R1-R6 intact; retries are orchestration (R2).
+- Same worktree environment step as T-009: `_internal/` under
+  `third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/` recreated as a real directory of symlinks into the
+  main tree so `tests/test_docs_sdks.py` can see the git-ignored payload. Nothing staged, nothing
+  modified under `third_party/`. A `tools/` helper for this is still worth a small task.
+- **Pre-existing flake, not mine:** `tests/test_greennode_local.py::test_greennode_local_round_trip`
+  fails intermittently (1 of 6 full-suite runs; 1 of 15 runs of that test alone) on
+  `FAIL - status shows the detached job running`, with the job reported as
+  `state=starting` rather than `running` -- a race between `train --detach` returning and the job's
+  heartbeat reaching `running`. It reproduces on a clean tree with none of T-007's files. T-009 is not
+  mine to edit, so it is reported here rather than fixed; a `state=(starting|running)` match, or polling
+  the heartbeat for a moment, would close it.
+- No disagreement with the task as written beyond the two design calls above. No blockers.
+(T-007 commit: 5cab3e6; this line and the TASKS.md result hash are the only content of the follow-up commit.)

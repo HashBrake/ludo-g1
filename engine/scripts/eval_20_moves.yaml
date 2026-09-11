@@ -1,0 +1,42 @@
+# Deterministic MOVE sequence for on-robot evaluation (CLAUDE.md 6, eval/protocol.py).
+#
+# 20 MOVE commands over 10 distinct (src, dst) cell pairs, each pair executed twice so that a per-pair
+# success rate has two samples. The pairs span what the game actually asks of the arm: one
+# enter-from-base, short and long hops along each of the four arms of the cross, one home-lane entry
+# and one move inside the home lane.
+#
+# Cell ids are resolved against config/board.yaml by engine.stub.load_script, which fails loudly on an
+# id that does not exist. The layout there is UNMEASURED and owned by the engine team; when it is
+# replaced this script is re-derived, not patched.
+#
+#   from engine.stub import StubEngine, load_script
+#   engine = StubEngine(seed=0, script=load_script("eval_20_moves"))
+#
+# The stub does not check these moves against the rules of the game: an eval sequence is a fixed set
+# of pick-and-place problems, not a game.
+
+name: eval_20_moves
+description: 20 MOVE commands across 10 distinct cell pairs, each pair twice, for on-robot eval.
+commands:
+  # --- first pass over the ten pairs ---
+  - {primitive: move, src: R-base-0, dst: track-12, horse_id: R0}   # enter from base onto R's start
+  - {primitive: move, src: track-12, dst: track-17, horse_id: R0}   # down the near-right lane
+  - {primitive: move, src: track-17, dst: track-22, horse_id: R1}   # across the corner of the cross
+  - {primitive: move, src: track-22, dst: track-24, horse_id: R1}   # the 80 mm step at an arm tip
+  - {primitive: move, src: track-0,  dst: track-5,  horse_id: R2}   # far edge, long hop
+  - {primitive: move, src: track-5,  dst: track-9,  horse_id: R2}   # around the far-left corner
+  - {primitive: move, src: track-30, dst: track-35, horse_id: R3}   # near-right arm, away from base
+  - {primitive: move, src: track-44, dst: track-47, horse_id: R3}   # near edge, short hop
+  - {primitive: move, src: track-11, dst: R-home-0, horse_id: R0}   # home entry
+  - {primitive: move, src: R-home-0, dst: R-home-3, horse_id: R0}   # inside the home lane
+  # --- second pass, reordered so that no pair is run back to back ---
+  - {primitive: move, src: track-30, dst: track-35, horse_id: R3}
+  - {primitive: move, src: R-base-0, dst: track-12, horse_id: R0}
+  - {primitive: move, src: track-11, dst: R-home-0, horse_id: R0}
+  - {primitive: move, src: track-5,  dst: track-9,  horse_id: R2}
+  - {primitive: move, src: track-22, dst: track-24, horse_id: R1}
+  - {primitive: move, src: R-home-0, dst: R-home-3, horse_id: R0}
+  - {primitive: move, src: track-0,  dst: track-5,  horse_id: R2}
+  - {primitive: move, src: track-44, dst: track-47, horse_id: R3}
+  - {primitive: move, src: track-12, dst: track-17, horse_id: R0}
+  - {primitive: move, src: track-17, dst: track-22, horse_id: R1}

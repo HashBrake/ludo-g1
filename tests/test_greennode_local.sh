@@ -116,7 +116,12 @@ gn train --detach cloud/dummy_job.py --seconds 5 > "$TMP/detach.log" 2>&1 \
 elapsed=$(( $(date +%s) - start ))
 [ "$elapsed" -lt 5 ] && check 0 "train --detach returned in ${elapsed}s, before the 5 s job finished" \
   || check 1 "train --detach returned in ${elapsed}s, expected < 5"
-gn status "$GREENNODE_JOB_ID" > "$TMP/status2.log" 2>&1 || true
+# The wrapper writes state=starting before the job pid exists; poll briefly so a slow fork is not a failure.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  gn status "$GREENNODE_JOB_ID" > "$TMP/status2.log" 2>&1 || true
+  grep -q "state=running" "$TMP/status2.log" && break
+  sleep 0.3
+done
 grep -q "state=running" "$TMP/status2.log" && check 0 "status shows the detached job running" \
   || check 1 "status shows the detached job running: $(cat "$TMP/status2.log")"
 # Let it finish so the temporary directory is not removed under a live job.
