@@ -6,6 +6,12 @@
 .venv/bin/python -m eval.run_eval --policy bundle data/checkpoints/<run>/bundle --backend mock
 ```
 
+**The bundle carries the EMA weights by default** (T-035): ``policy/train.py`` keeps an exponential
+moving average of the parameters beside the live ones and stores it as ``ema_state_dict``, and that
+is what an evaluated policy should be. ``--raw`` exports the last step's parameters instead, and
+``bundle.json`` says which through ``weights_source`` -- a success rate belongs to one of the two,
+never to "the run".
+
 A bundle is what an adapter loads and what an eval result names, so it has to stand on its own: the
 architecture (:class:`~policy.diffusion.PolicySpec` or :class:`~policy.act.ACTSpec`), the weights,
 the normalisation statistics, and the provenance of the checkpoint it came from. Both models of
@@ -48,7 +54,8 @@ from policy.diffusion import BUNDLE_FILE, WEIGHTS_FILE, DiffusionAdapter, GoalDi
 from policy.train import git_commit
 from runtime.policy_api import GOAL_CHANNELS, Policy
 
-__all__ = ["BUNDLE_FORMAT", "BUNDLE_FORMATS", "TORCHSCRIPT_FILE", "TRACE_TOLERANCE", "export", "main", "open_bundle"]
+__all__ = ["BUNDLE_FORMAT", "BUNDLE_FORMATS", "EMA_WEIGHTS", "RAW_WEIGHTS", "TORCHSCRIPT_FILE", "TRACE_TOLERANCE",
+           "WEIGHT_SOURCES", "export", "main", "open_bundle"]
 
 #: Version tag in ``bundle.json``; a loader that does not know the tag refuses the bundle.
 BUNDLE_FORMAT = "ludo-g1/diffusion-bundle/1"
@@ -56,6 +63,10 @@ BUNDLE_FORMAT = "ludo-g1/diffusion-bundle/1"
 #: field and is a diffusion bundle by definition, which is why "diffusion" is also the default below.
 BUNDLE_FORMATS: dict[str, str] = {"diffusion": BUNDLE_FORMAT, "act": "ludo-g1/act-bundle/1"}
 TORCHSCRIPT_FILE = "model.ts"
+#: The two sets of weights a checkpoint holds (T-035): the EMA of the run, or the last step's raw
+#: parameters. ``export`` defaults to the average; ``--raw`` asks for the other.
+EMA_WEIGHTS, RAW_WEIGHTS = "ema", "raw"
+WEIGHT_SOURCES: tuple[str, ...] = (EMA_WEIGHTS, RAW_WEIGHTS)
 #: How far the traced graph may differ from the eager model on the example inputs before it is
 #: discarded. Float32 accumulation over a 10-step DDIM loop, not a model difference.
 TRACE_TOLERANCE = 1e-4
@@ -135,12 +146,23 @@ def open_bundle(bundle: Path | str, **kwargs) -> Policy:
     return adapters[kind](manifest_path, **kwargs)
 
 
-def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: bool = True) -> dict:
-    """Write the bundle for ``checkpoint`` (a run directory or a ``checkpoint.pt``) and return its manifest."""
+def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: bool = True,
+           weights: str = EMA_WEIGHTS) -> dict:
+    """Write the bundle for ``checkpoint`` (a run directory or a ``checkpoint.pt``) and return its manifest.
+
+    ``weights`` chooses which set of weights the bundle carries: ``"ema"`` (the default) is the
+    exponential moving average ``policy/train.py`` keeps beside the live parameters, ``"raw"`` the
+    parameters the last optimiser step left. The average is the default because it is what a
+    diffusion policy is evaluated with upstream and what the schedule of T-035 exists to produce; a
+    checkpoint written before EMA existed has no ``ema_state_dict`` and falls back to the raw
+    weights, which ``bundle.json`` records in ``weights_source``.
+    """
     path = Path(checkpoint)
     file = path / "checkpoint.pt" if path.is_dir() else path
     if not file.is_file():
         raise FileNotFoundError(f"{file} is not a training checkpoint (policy/train.py writes one)")
+    if weights not in WEIGHT_SOURCES:
+        raise ValueError(f"weights must be one of {sorted(WEIGHT_SOURCES)}, got {weights!r}")
     payload = torch.load(file, map_location="cpu", weights_only=True)
     kind = str(payload.get("policy", "diffusion"))
     if kind not in BUNDLE_FORMATS:
@@ -149,8 +171,9 @@ def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: 
     spec = (ACTSpec if is_act else PolicySpec).from_dict(payload["spec"])
     if spec.goal_channels != GOAL_CHANNELS:
         raise ValueError(f"checkpoint declares {spec.goal_channels} goal channels, the observation has {GOAL_CHANNELS}")
+    source = weights if (weights == RAW_WEIGHTS or payload.get("ema_state_dict")) else RAW_WEIGHTS
     model = (GoalACTPolicy if is_act else GoalDiffusionPolicy)(spec)
-    model.load_state_dict(payload["state_dict"])
+    model.load_state_dict(payload["state_dict" if source == RAW_WEIGHTS else "ema_state_dict"])
     model.eval()
 
     directory = Path(file.parent / "bundle" if out_dir is None else out_dir)
@@ -186,6 +209,9 @@ def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: 
         # The adapter loads the state_dict, always: a traced diffusion loop is pinned to one batch
         # size, one image size and one DDIM step count (see the module docstring).
         "torchscript_used_at_inference": False,
+        # Which set of weights this bundle carries (T-035): the EMA of the training run, or the raw
+        # parameters of its last step. A success rate belongs to one of them, not to "the run".
+        "weights_source": source,
         "trace_error": trace_error,
         "checkpoint": str(file),
         "checkpoint_sha256": _sha256(file),
@@ -202,12 +228,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoint", required=True, help="run directory or checkpoint.pt")
     parser.add_argument("--out", default=None, help="bundle directory (default <run>/bundle)")
     parser.add_argument("--no-trace", action="store_true", help="skip the TorchScript attempt")
+    parser.add_argument("--raw", action="store_true",
+                        help="export the last step's weights instead of the training run's EMA of them")
     args = parser.parse_args(argv)
 
-    manifest = export(args.checkpoint, args.out, trace=not args.no_trace)
+    manifest = export(args.checkpoint, args.out, trace=not args.no_trace,
+                      weights=RAW_WEIGHTS if args.raw else EMA_WEIGHTS)
     directory = Path(args.out) if args.out else Path(manifest["checkpoint"]).parent / "bundle"
     adapter = open_bundle(directory)
-    print(f"bundle {directory} ({manifest['policy']})")
+    print(f"bundle {directory} ({manifest['policy']}, {manifest['weights_source']} weights)")
     print(f"  spec: {adapter!r}")
     if manifest["torchscript"]:
         print(f"  torchscript: {manifest['torchscript']} (traced, max diff vs eager "

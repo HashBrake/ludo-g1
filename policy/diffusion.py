@@ -88,6 +88,7 @@ from policy._shared import (
     benchmark,
     dataset_stats,
     observation_frame,
+    set_torch_threads,
     synthetic_observation,
     with_steps,
 )
@@ -109,6 +110,7 @@ __all__ = [
     "benchmark",
     "dataset_stats",
     "main",
+    "set_torch_threads",
 ]
 
 
@@ -156,10 +158,21 @@ class PolicySpec:
         return self.state_dim + self.task_dim
 
     @classmethod
-    def from_config(cls, config_root: Path | str | None = None, **overrides: Any) -> PolicySpec:
-        """Build the spec from ``config/training.yaml``; ``overrides`` are for tests, not for runs."""
+    def from_config(
+        cls, config_root: Path | str | None = None, *, block: str = "diffusion", **overrides: Any
+    ) -> PolicySpec:
+        """Build the spec from ``config/training.yaml``; ``overrides`` are for tests, not for runs.
+
+        ``block`` names which block of the file describes the architecture: ``diffusion`` (5.7) or
+        ``diffusion_small``, the smaller fallback configuration of D-019 (one shared encoder, 120x160
+        inputs, a quarter-width U-Net). Both build the same class and run through the same wrapper --
+        the block is the *only* difference -- so the two are comparable and the run record says which
+        one produced a checkpoint (``policy/train.py --config-block``).
+        """
         training = config.load("training", root=config_root)
-        block = training["diffusion"]
+        if block not in training:
+            raise config.ConfigError(f"config/training.yaml has no {block!r} block")
+        block = training[block]
         spec = cls(
             image_hw=tuple(block["encoder_image_hw"]),
             state_dim=int(training["observation"]["state_dim"]),
@@ -338,6 +351,8 @@ class DiffusionAdapter:
             spec = replace(spec, inference_steps=int(inference_steps))
         self.spec = spec
         self.device = torch.device(device)
+        #: The thread pool of D-020, sized before the model is built (once per process).
+        self.torch_threads = set_torch_threads()
         weights = torch.load(self.path / WEIGHTS_FILE, map_location=self.device, weights_only=True)
         self.model = GoalDiffusionPolicy(spec, device=str(self.device))
         self.model.load_state_dict(weights["state_dict"])

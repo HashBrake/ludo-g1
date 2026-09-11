@@ -211,7 +211,8 @@ def test_smoke_train_reduces_the_loss(run, spec, batch, capsys) -> None:
     assert run["loss_last"] < run["loss_first"], "training loss at step 30 was not below step 1"
 
     rows = (Path(run["checkpoint"]).parent / "loss.csv").read_text(encoding="utf-8").splitlines()
-    assert rows[0] == "step,loss,elapsed_s" and len(rows) == STEPS + 1
+    # the curve gained a validation and a learning-rate column in T-035; tests/test_train.py owns them
+    assert rows[0] == "step,loss,val_loss,lr,elapsed_s" and len(rows) == STEPS + 1
     record = json.loads((Path(run["checkpoint"]).parent / "run.json").read_text(encoding="utf-8"))
     assert record["dataset_manifest_sha256"] == run["dataset_manifest_sha256"]
     assert len(record["config_hashes"]["training"]) == 64 and record["frames"] == run["frames"]
@@ -234,6 +235,7 @@ def test_export_writes_a_self_contained_bundle(bundle, capsys) -> None:
     # the adapter must not depend on it either way.
     assert (manifest["torchscript"] is None) != (manifest["trace_error"] is None)
     assert manifest["torchscript_used_at_inference"] is False
+    assert manifest["weights_source"] == "ema"  # T-035: a bundle carries the run's averaged weights
     if manifest["torchscript"]:
         assert (directory / manifest["torchscript"]).is_file()
         assert manifest["torchscript_max_diff"] <= 1e-4
@@ -250,10 +252,11 @@ def test_export_round_trip_gives_identical_actions(bundle, run, spec) -> None:
         chunks.append(adapter.act(obs).actions)
     assert np.allclose(chunks[0], chunks[1], atol=1e-5)
 
-    # and the bundle is the checkpoint: the same weights produce the same actions out of train()
+    # and the bundle is the checkpoint: the same weights produce the same actions out of train().
+    # "the same weights" are the EMA of the run since T-035, which is what the bundle carries.
     checkpoint = torch.load(run["checkpoint"], map_location="cpu", weights_only=True)
     model = GoalDiffusionPolicy(spec)
-    model.load_state_dict(checkpoint["state_dict"])
+    model.load_state_dict(checkpoint["ema_state_dict"])
     model.eval()
     noise = torch.randn((1, spec.chunk, spec.action_dim), generator=torch.Generator().manual_seed(7))
     adapter = DiffusionAdapter(directory, seed=7)

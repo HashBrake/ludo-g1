@@ -236,8 +236,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json-logs", action="store_true", help="JSON log lines instead of key=value")
     args = parser.parse_args(argv)
 
+    from policy._shared import set_torch_threads
     from runtime.log import configure
 
+    # D-020: torch's thread pool is a configured value, applied once, at process start -- before any
+    # bundle is opened, because oversubscription costs an adapter seconds per call on this laptop.
+    set_torch_threads()
     # WARNING, not INFO: one run line per command would bury the result the run exists to print.
     configure(level=logging.WARNING, json=args.json_logs)
     try:

@@ -3244,3 +3244,164 @@ R2: no scripted motion, no literal joint target; `drivers/` still imports nothin
 `tools/hardware_checks/`. R3: no guard is built because there is no command path to guard;
 `config/safety.yaml` untouched. `hardware/session.enable` neither created, edited nor read. Nothing
 under `third_party/` touched. Committed through the full pre-commit gate, no `--no-verify` (D-013).
+
+## T-035  Training loop completeness, a smaller inference configuration, and the thread table  (opus, 2026-09-12T04:35+07:00)
+
+### What I changed
+
+- **`policy/train.py`** (285 -> 611 lines). The loop of T-029 gained the four things it was missing:
+  - `EMA` — an exponential moving average of the **parameters** at `<policy>.ema_decay`, updated after
+    every optimiser step, stored in the checkpoint as `ema_state_dict` (+ `ema_step`). The decay ramps
+    as `min(decay, (1 + n) / (10 + n))`: at 0.9999 the plain recursion has a 10 000-step time constant,
+    so without the ramp the "average" of any run shorter than that is the initialisation, and every
+    smoke run would export noise. Buffers (the `Normalizer` statistics, the encoders' BatchNorm running
+    statistics) are the live ones — they are already running averages of the data.
+  - `lr_multiplier` / `warmup_for` — linear warmup (`1/warmup` at the first step, 1.0 at `warmup - 1`)
+    then a cosine to `lr_min_ratio` at the run's last step, index `total - 1`. The warmup is clamped to
+    a tenth of the run, so the configured 500 steps do not swallow a 30-step `--smoke`. The applied
+    factor is a new `lr` column of `loss.csv`.
+  - a **validation split by cell pair** — `--val-fraction` (default `dataset.val_fraction` = 0.1, 0 for
+    `--smoke`) through `policy.dataset.split_cell_pairs`; ROLL episodes keep their explicit
+    `(None, None)` and stay in training (T-027). The loss over `val_batches` fixed batches every
+    `val_every` steps is the new `val_loss` column; the pass runs at a fixed seed and restores the RNG,
+    so two validation losses differ by the model and not by the diffusion draw. A split that would
+    leave no training frames is refused with the fraction in the message.
+  - **resume** — `--stop-after N` runs N steps of the run and checkpoints; `--resume checkpoint.pt`
+    restores weights, optimiser, EMA, step, loss history and RNG state. `--steps` stays the horizon the
+    schedule is computed against, so a run taken in slices *is* the run. The batch stream is a new
+    `_StepSampler`: epoch *e*'s permutation is `default_rng([seed, e])` and the resume point is
+    arithmetic (`start_step * batch_size` indices in), so nothing is replayed and
+    `DataLoader(shuffle=True)`'s dependence on the global RNG is gone.
+  - `--config-block NAME` builds the spec and every default from another block of `config/training.yaml`
+    (`diffusion_small`), and `run.json`/the run name record which block produced the checkpoint.
+- **`policy/_shared.py`**: `set_torch_threads()` — `compute.torch_threads` applied **once per process**,
+  idempotent (the first call wins, so a second adapter never resizes a running pool and a DataLoader
+  worker keeps its own count of 1). Called by `policy/train.py` and `eval/run_eval.py` at the start of
+  `main` and by both adapters' constructors before the model is built (D-020).
+- **`policy/export.py`**: `weights="ema"` by default, `--raw` for the last step's parameters, and
+  `bundle.json` records which in a new `weights_source` field. A pre-T-035 checkpoint has no
+  `ema_state_dict` and exports raw, which the manifest says.
+- **`policy/diffusion.py` / `policy/act.py`**: `from_config(block=...)` on both specs (the trainer must
+  be able to ask either model the same question), and `adapter.torch_threads`.
+- **`config/training.yaml`**: `compute.torch_threads: 8` (measured, see below — no `UNMEASURED` tag, so
+  `unmeasured("training")` stays empty as the file's own header requires); schedule keys
+  (`warmup_steps`, `lr_min_ratio`, `val_every`, `val_batches`, and `ema_decay` for `act`) on both policy
+  blocks; a new `diffusion_small` block. `REQUIRED_KEYS` untouched.
+- **`tests/test_train.py`** (new, 15 tests, 59 s) and the header/round-trip lines of `tests/test_diffusion.py`,
+  `tests/test_act.py`, `tests/test_greennode_train.py`; `docs/policy.md` and one measured number in
+  `docs/cloud.md`.
+
+### Commands and measured numbers
+
+```bash
+.venv/bin/python -m pytest tests/test_train.py -q -s            # 15 passed in 59 s
+.venv/bin/python -m pytest tests/test_diffusion.py tests/test_act.py -q   # 27 passed in 64 s
+.venv/bin/python -m pytest tests/test_greennode_train.py -q     # 6 passed in 24 s
+.venv/bin/python -m pytest tests/test_eval.py tests/test_config.py -q     # 93 passed in 14 s
+.venv/bin/ruff check .                                          # All checks passed!
+```
+
+| what the tests print | measured |
+|---|---|
+| lr multiplier (warmup 5, total 106) | step 0 **0.2000** (= 1/warmup), step 5 **1.0000**, step 55 **0.5000**, step 106 **0.0000** |
+| EMA vs last-step weights after 10 steps | largest difference **6.375e-05** over 341 parameter tensors; the two bundles' `weights_sha256` differ |
+| validation loss, 12 held-out frames of 1 held-out pair | step 3 **0.9179**, step 6 **0.8816**; the held-out pair is absent from the training episodes and the ROLL episode is present |
+| resume, 10 + 10 against 20 straight | largest \|loss difference\| **0.000e+00** over 20 steps; live and EMA weights equal to 1e-6 |
+| `diffusion_small` act(), 5 calls in-suite | DDIM 10 **82 ms**, DDIM 5 **56 ms** (budget 100 ms) |
+
+Full-scale CLI run of the new block, on the mock session T-029 and T-030 used (the dataset manifest
+sha256 is byte-for-byte theirs, so all three models were trained on the same data, 5.7):
+
+```bash
+.venv/bin/python -m policy.train --sessions data/raw/mock_smoke --smoke --config-block diffusion_small \
+    --run-name t035_small_smoke
+# run t035_small_smoke (diffusion, block diffusion_small): 75 frames, 30.4M parameters
+# training config hash 722c0cc4cafc1fa77aa141d67f2709ca4deccd0e588babfe59d799b0c07917b1
+# dataset manifest sha256 a4a45245e0985001b1e25a2d40df0c4b9e274aa075f8c53fe39a7e4c089ac31d
+# loss step 1 0.912535 -> step 30 0.867234 (mean of the last 10: 0.695773) in 251.5 s
+.venv/bin/python -m policy.export --checkpoint data/checkpoints/t035_small_smoke
+# bundle ... (diffusion, ema weights); torchscript model.ts traced, max diff vs eager 0.00e+00
+# weights sha256 e2246767577de2388d580e1e6cfc1b9ef7c14b6f7fa25a8cd9c498eba9810eb6
+.venv/bin/python -m policy.diffusion --bundle data/checkpoints/t035_small_smoke/bundle --trials 20
+.venv/bin/python -m policy.diffusion --bundle data/checkpoints/t035_small_smoke/bundle --trials 20 --inference-steps 5
+```
+
+| model, at the configured frame sizes | DDIM 10 median | DDIM 5 median | vs the 100 ms budget (5.2) |
+|---|---|---|---|
+| Diffusion Policy, 293.0 M params, 240x320 encoder (T-029, 14 threads, under load) | 804 ms | 498 ms | 8x / 5x over |
+| Diffusion Policy, same, quiet machine at 8 threads (this task) | **454 ms** | **281 ms** | 4.5x / 2.8x over |
+| **`diffusion_small`, 30.4 M params, 120x160, one shared encoder** (trained bundle, CLI, 20 calls) | **80 ms** (mean 80, p95 84, prepare 5) | **56 ms** (mean 58, p95 64) | **within, both** |
+| `diffusion_small`, same, untrained model in the sweep below | 71 ms | 53 ms | within |
+
+### The thread sweep (D-020), on a quiet machine
+
+`uptime` was polled until the 1-minute load average dropped below 3; it was **2.80** when the 1/2/4/8
+legs started and **0.94** when the 12/14 legs did (a second script, same code). One process per sweep,
+`torch.set_num_threads(n)` before each adapter is built, the same synthetic observation at the
+configured frame sizes, the same `policy._shared.benchmark`, 20 calls per cell, untrained models of the
+configured shapes (cost does not depend on the weights). Medians, ms:
+
+| torch threads | ACT (51.6 M) | Diffusion DDIM 10 (293 M) | Diffusion DDIM 5 | small DDIM 10 (30.4 M) | small DDIM 5 |
+|---|---|---|---|---|---|
+| 1 | 502 | 1746 | 1188 | 264 | 215 |
+| 2 | 265 | 917 | 620 | 161 | 123 |
+| 4 | 149 | 541 | 361 | 101 | 75 |
+| **8** | **91** | **454** | **281** | **71** | **53** |
+| 12 | 91 | 397 | 247 | 77 | 53 |
+| 14 (torch's guess) | 250 | 1057 | 507 | 128 | 91 |
+
+`compute.torch_threads: 8`, not D-020's placeholder 4: every model is at or within noise of its minimum
+at 8, 12 matches it (and is worse for the two small models), 14 is 2-3x worse everywhere, and 8 of 14
+logical cores leaves the camera, driver and DDS threads of `runtime/controller.py` somewhere to run.
+The 12/14 legs push the machine's own load to 5-10 by themselves, which is part of what they cost.
+
+### Findings that need a decision from Fable (not decided here: they are scope)
+
+1. **ACT fits the budget on this laptop: 91 ms against 100 ms, at 8 threads.** D-019 wrote the ladder as
+   DDIM 5 -> ACT -> Orin NX on the assumption that ACT was ~154 ms; on the quiet machine at the right
+   thread count it is inside the budget with no margin. `diffusion_small` is inside it with margin (71
+   and 53 ms). Neither says anything about success rate — that is Phase 3 eval (R5) — but the Orin NX
+   (Q-011) is no longer the only landing for 10 Hz.
+2. **A checkpoint is now 4x the parameters on disk** (weights + EMA + Adam's two moments): the greennode
+   round-trip test's checkpoint went 153.7 -> 614.8 MB, and the full 293 M model would be ~4.7 GB
+   against 12 GB free (Q-002). It is what an exact resume costs. If disk binds before Phase 3, the
+   lever is `--config-block diffusion_small` (490 MB) or dropping the optimiser state from all but the
+   latest checkpoint.
+3. **A crashed run still leaves nothing to resume from.** `--stop-after` covers planned slices, which is
+   what makes resume testable and usable, but there is no periodic checkpoint: a 200 k-step Greennode
+   run that dies at 120 k has no `checkpoint.pt`. A `--checkpoint-every N` that overwrites the same file
+   is a few lines; it was outside the deliverables, so I did not add it.
+4. **The validation loss is not comparable between the two models of 5.7** (ACT's loss is an L1 + KL sum
+   dominated by the KL at initialisation; the diffusion loss is an MSE on noise). It is a curve per run,
+   never a number across runs — only eval success rates compare (R5). Nothing in the code invites the
+   comparison, but `run.json` now carries `validation.loss_last` and someone will be tempted.
+
+### Deviations and notes
+
+- **`tests/test_greennode_train.py` and `docs/cloud.md` are outside the touch list.** Both changed for
+  one reason: `loss.csv` gained two columns and the checkpoint grew, so a header assertion and a
+  measured file size were false. One line each, both re-measured, no other edit. Same consequence as
+  T-010's and T-018's test-list edits.
+- **`--stop-after` is an addition to the task's API.** Without it "resume" can only extend a *finished*
+  run, and the acceptance test ("10 + resume + 10 == 20") cannot be written honestly, because a 10-step
+  run and the first 10 steps of a 20-step run are on different learning-rate schedules. With it the
+  first slice is the same run, and the test compares like with like. Logged as a disagreement with the
+  deliverable as written, and the deliverable itself (resume from checkpoint) is done.
+- **The bug that made resume inexact, and how it was found.** The first version of the test failed at
+  ~0.1 of loss difference. Cause: `_BaseDataLoaderIter.__init__` draws its worker base seed from the
+  **global** RNG when `DataLoader.generator` is None, so the resumed run's new iterator consumed one
+  draw that the uninterrupted run did not. The loader now gets its own generator, and the difference is
+  exactly 0.0. Worth keeping in mind anywhere a run is expected to be reproducible.
+- The `diffusion_small` block repeats every key `PolicySpec` reads rather than inheriting from
+  `diffusion`: a spec whose fields came half from another block would not be readable from the run
+  record it is written into.
+- Disk (Q-002): every test checkpoint is under `tmp_path`; the CLI run's `checkpoint.pt`, `weights.pt`
+  and `model.ts` (465 + 116 + 116 MB) were deleted after measuring and `run.json`, `loss.csv` and
+  `bundle.json` kept as evidence, as T-029 and T-030 did. `/home` is back at 12 GB free.
+
+### Safety
+R1: nothing here can send a motion command — `policy/` imports no driver and a test greps for it; the
+only new I/O is reading sessions and writing checkpoints. R2: no scripted motion, no literal joint
+target. R3: `config/safety.yaml` untouched; `hardware/session.enable` neither created, edited nor read.
+Nothing under `third_party/` touched and `requirements.txt` unchanged (lerobot is wrapped, never
+patched). Committed through the full pre-commit gate, no `--no-verify` (D-013 item 1).

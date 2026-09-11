@@ -159,7 +159,8 @@ def test_checkpoint_round_trip(round_trip) -> None:
           + ", ".join(f"{name} {size / 1e6:.1f} MB" for name, size in sizes.items()))
     assert sizes["checkpoint.pt"] > 0
     rows = round_trip["loss_csv"].strip().splitlines()
-    assert rows[0] == "step,loss,elapsed_s" and len(rows) == 31, rows[:2]  # the 30 steps of --smoke
+    # the curve gained a val_loss and an lr column in T-035; tests/test_train.py owns them
+    assert rows[0] == "step,loss,val_loss,lr,elapsed_s" and len(rows) == 31, rows[:2]  # 30 steps of --smoke
 
 
 def test_run_json_carries_both_hashes(round_trip, session) -> None:

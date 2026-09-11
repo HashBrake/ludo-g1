@@ -215,9 +215,11 @@ GREENNODE_TRANSPORT=local cloud/greennode.sh down
 
 `tests/test_greennode_train.py` runs exactly that on a freshly recorded mock session, with the pushed
 config shrunk to the test model size, and then deletes what it wrote (Q-002: 12 GB free). Measured at
-that scale: 38.4 M parameters, `checkpoint.pt` 153.7 MB, ~27 s for the job. At the configured scale a
-checkpoint is 293 M parameters and 2.3 GB (T-029, D-019), which is why the test shrinks it and why real
-training belongs on the VM in the first place.
+that scale: 38.4 M parameters, `checkpoint.pt` 614.8 MB, ~27 s for the job. A checkpoint is **four
+times** the parameters since T-035 — the weights, their EMA, and Adam's two moments — which is what
+resuming a run exactly costs; it was 153.7 MB before. At the configured scale a checkpoint is 293 M
+parameters and ~4.7 GB, which is why the test shrinks it, why real training belongs on the VM in the
+first place, and why nothing keeps two of them on this laptop (Q-002).
 
 ## Failure modes seen so far
 

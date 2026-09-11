@@ -95,7 +95,15 @@ from engine.interface import Command
 # The observation adaptation, the statistics buffers and the latency measurement are *shared* with
 # the Diffusion Policy wrapper on purpose (5.7: the baseline must be comparable, see the docstring),
 # so both models import them from policy/_shared.py rather than one importing them from the other.
-from policy._shared import BUNDLE_FILE, IMAGE_KEYS, WEIGHTS_FILE, Normalizer, benchmark, observation_frame
+from policy._shared import (
+    BUNDLE_FILE,
+    IMAGE_KEYS,
+    WEIGHTS_FILE,
+    Normalizer,
+    benchmark,
+    observation_frame,
+    set_torch_threads,
+)
 from runtime import config
 from runtime.policy_api import GOAL_CHANNELS, ActionChunk, Observation
 from runtime.types import ACTION_DIM
@@ -165,10 +173,19 @@ class ACTSpec:
         return 1
 
     @classmethod
-    def from_config(cls, config_root: Path | str | None = None, **overrides: Any) -> ACTSpec:
-        """Build the spec from ``config/training.yaml``; ``overrides`` are for tests, not for runs."""
+    def from_config(
+        cls, config_root: Path | str | None = None, *, block: str = "act", **overrides: Any
+    ) -> ACTSpec:
+        """Build the spec from ``config/training.yaml``; ``overrides`` are for tests, not for runs.
+
+        ``block`` exists for the same reason :meth:`policy.diffusion.PolicySpec.from_config` has one
+        (``policy/train.py --config-block``); the baseline has one block today, and the trainer must
+        be able to ask either spec of 5.7 the same question.
+        """
         training = config.load("training", root=config_root)
-        block = training["act"]
+        if block not in training:
+            raise config.ConfigError(f"config/training.yaml has no {block!r} block")
+        block = training[block]
         rates = training["rates"]
         weights = block["pretrained_backbone_weights"]
         if int(block["obs_history"]) != 1:
@@ -415,6 +432,8 @@ class ACTAdapter:
             spec = replace(spec, temporal_ensemble=bool(temporal_ensemble))
         self.spec = spec
         self.device = torch.device(device)
+        #: The thread pool of D-020, sized before the model is built (once per process).
+        self.torch_threads = set_torch_threads()
         weights = torch.load(self.path / WEIGHTS_FILE, map_location=self.device, weights_only=True)
         self.model = GoalACTPolicy(spec, device=str(self.device))
         self.model.load_state_dict(weights["state_dict"])

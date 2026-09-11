@@ -140,7 +140,53 @@ diffusion:
   learning_rate: 1.0e-4
   weight_decay: 1.0e-6
   train_iterations: 200000
+  # --- the optimiser schedule (T-035) ---------------------------------------------------------
+  # Decay of the exponential moving average policy/train.py keeps beside the live weights and
+  # policy/export.py exports by default. 0.9999 is the upstream Diffusion Policy value; it is a
+  # 10 000-step time constant, which is why the averaging warms up (see docs/policy.md).
   ema_decay: 0.9999
+  # Linear learning-rate warmup, then a cosine decay to `lr_min_ratio` x learning_rate at the last
+  # step. 500 of 200 000 steps is the upstream Diffusion Policy warmup. policy/train.py clamps the
+  # warmup to a tenth of a short run, so a 30-step smoke run still trains.
+  warmup_steps: 500
+  lr_min_ratio: 0.0
+  # Validation loss (on the held-out cell pairs of `dataset.val_fraction`) every `val_every` steps,
+  # averaged over `val_batches` batches, written as the `val_loss` column of loss.csv (section 8).
+  val_every: 1000
+  val_batches: 10
+  seed: 0
+
+# --- fallback configuration: a smaller Diffusion Policy (D-019) -----------------------------------
+# Same architecture, same wrapper, same loop, three levers pulled to make 10 Hz on a CPU thinkable:
+# one shared ResNet-18 instead of three, 120x160 encoder inputs instead of 240x320, and a U-Net a
+# quarter as wide. `policy/train.py --config-block diffusion_small` builds PolicySpec from this block
+# instead of `diffusion`; nothing else changes, so the two are comparable (R5). The latency it buys
+# is in docs/policy.md; whether it can learn the task is a Phase 3 eval question and is not decided
+# here. Every key `diffusion` has that PolicySpec reads is repeated, because a spec that inherited
+# half its fields from another block would not be readable from the run record it is written into.
+diffusion_small:
+  base: lerobot_diffusion_policy
+  vision_encoder: resnet18
+  encoder_per_camera: false   # one ResNet-18 for all three cameras (lerobot allows either)
+  encoder_image_hw: [120, 160]
+  down_dims: [128, 256, 512]
+  spatial_softmax_keypoints: 32
+  stats_samples: 256
+  chunk: 16
+  execute: 8
+  obs_history: 2
+  scheduler: ddim
+  train_steps: 100
+  inference_steps: 10
+  batch_size: 64
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  train_iterations: 200000
+  ema_decay: 0.9999
+  warmup_steps: 500
+  lr_min_ratio: 0.0
+  val_every: 1000
+  val_batches: 10
   seed: 0
 
 # --- baseline: ACT (5.7), trained on every dataset the diffusion model is trained on --------------
@@ -185,6 +231,14 @@ act:
   weight_decay: 1.0e-4
   train_iterations: 100000
   kl_weight: 10.0
+  # The same schedule keys as the diffusion block, for the same loop (T-035). ACT has no EMA
+  # upstream; it gets one here because policy/train.py is one loop for both models of 5.7 and an
+  # exported baseline that averaged its weights differently would not be a baseline.
+  ema_decay: 0.9999
+  warmup_steps: 500
+  lr_min_ratio: 0.0
+  val_every: 1000
+  val_batches: 10
   # Samples drawn for the normalisation statistics, as diffusion.stats_samples.
   stats_samples: 256
   seed: 0
@@ -224,3 +278,13 @@ compute:
   inference_fallback_order: [ddim_5, act, orin_nx]
   checkpoint_dir: data/checkpoints
   export_format: torchscript
+  # torch's intra-op thread pool, applied once per process by policy/train.py, both policy adapters
+  # and eval/run_eval.py (D-020). It is a property of THIS laptop, not of the hardware the brief
+  # measures, so it lives here rather than in robot.yaml: torch guesses 14 (one per core) and
+  # oversubscribes the small tensors both models of 5.7 are made of. T-035 measured every policy at
+  # 1/2/4/8 threads on a quiet machine; the table is in docs/policy.md and agents/BUILD_LOG.md.
+  # 8, not the guess of 14 and not D-020's placeholder of 4: on the quiet machine every policy is at
+  # or within noise of its minimum at 8 (ACT 91 ms, diffusion_small DDIM 10 71 ms, the full model
+  # 454 ms), 12 matches it, and 14 is 2-3x worse on every leg. 8 of 14 logical cores also leaves the
+  # camera, driver and DDS threads of runtime/controller.py somewhere to run.
+  torch_threads: 8

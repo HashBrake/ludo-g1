@@ -14,8 +14,9 @@ Three groups, in order:
 * **normalisation** -- :class:`Normalizer` and :func:`dataset_stats`: the statistics lerobot 0.4.4
   keeps in a processor pipeline built around a hub checkpoint, carried instead as buffers in the
   model's own ``state_dict`` so that an exported bundle is self-contained.
-* **measurement** -- :func:`benchmark` and :func:`synthetic_observation`: the identical latency
-  measurement for both models, which is what makes D-019's comparison a comparison.
+* **measurement** -- :func:`benchmark`, :func:`synthetic_observation` and
+  :func:`set_torch_threads`: the identical latency measurement for both models, which is what makes
+  D-019's comparison a comparison, and the one place the torch thread pool of D-020 is sized.
 
 Nothing here moves the robot (R1, R2).
 """
@@ -23,6 +24,7 @@ Nothing here moves the robot (R1, R2).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -31,6 +33,7 @@ from torch import Tensor, nn
 
 from engine.interface import Command, Primitive
 from policy.dataset import CAMERAS
+from runtime import config
 from runtime.policy_api import GOAL_CHANNELS, Observation
 from runtime.types import ACTION_DIM
 
@@ -44,6 +47,7 @@ __all__ = [
     "dataset_stats",
     "image_tensor",
     "observation_frame",
+    "set_torch_threads",
     "synthetic_observation",
     "with_steps",
 ]
@@ -56,6 +60,9 @@ EPS = 1e-8
 #: What an inference bundle holds (see :func:`policy.export.export`).
 BUNDLE_FILE = "bundle.json"
 WEIGHTS_FILE = "weights.pt"
+#: The thread count :func:`set_torch_threads` put in force in this process, or None before the first
+#: call. Process state, because the torch thread pool is process state.
+_THREADS: int | None = None
 
 
 class _Spec(Protocol):
@@ -264,3 +271,30 @@ def synthetic_observation(sizes: Mapping[str, Iterable[int]], task_dim: int, see
     task[0] = 1.0
     return Observation(ts_ns=0, top=frames["top"], oblique=frames["oblique"], palm=frames["palm"],
                        state=np.zeros(ACTION_DIM), goal=goal, task_id=task)
+
+
+def set_torch_threads(config_root: Path | str | None = None, *, threads: int | None = None) -> int:
+    """Size torch's intra-op thread pool from ``config/training.yaml`` ``compute.torch_threads``.
+
+    D-020: torch guesses one thread per core (14 here) and oversubscribes the small tensors both
+    models of 5.7 are made of -- ACT's ``act()`` went from 3.7 s to 154 ms between the guess and 4
+    threads. So the count is a configured value, applied **once per process**: ``policy/train.py``
+    and ``eval/run_eval.py`` call this at the start of ``main``, and both adapters call it in their
+    constructors, which is where a bundle is first turned into a model.
+
+    Idempotent by design, and that is not a detail: a process that builds two adapters must not
+    resize a pool that is already running, and a caller that has deliberately set its own count (a
+    DataLoader worker sets 1) must not be overridden by the next adapter it builds. The first call
+    in a process wins; every later one returns what is in force and changes nothing. Returns the
+    thread count now in force.
+    """
+    global _THREADS
+    if _THREADS is not None:
+        return _THREADS
+    count = int(config.load("training", root=config_root)["compute"]["torch_threads"]) if threads is None \
+        else int(threads)
+    if count < 1:
+        raise ValueError(f"compute.torch_threads must be >= 1, got {count}")
+    torch.set_num_threads(count)
+    _THREADS = count
+    return count

@@ -160,7 +160,12 @@ private names from `policy/diffusion.py`):
 - **normalisation** — `Normalizer` (the statistics as buffers in the model's own `state_dict`, because
   lerobot 0.4.4 keeps them in a processor pipeline built around a hub checkpoint) and `dataset_stats`;
 - **measurement** — `benchmark` and `synthetic_observation`, so that D-019 compares one measurement
-  with itself.
+  with itself, and `set_torch_threads`, the one place torch's intra-op thread pool is sized
+  (`compute.torch_threads`, D-020). It is applied once per process — by `policy/train.py` and
+  `eval/run_eval.py` at the start of `main`, and by both adapters' constructors, whichever comes
+  first — and every later call returns what is in force without resizing a pool that is already
+  running (a DataLoader worker sets its own count of 1, and must keep it). The table it is set from
+  is at the end of this page.
 
 `dataset_stats` counts **each camera's own pixels** since T-034; before that every camera was divided
 by `top`'s pixel count, which scaled the `palm` mean and std by (640·480)/(320·240) = 4 and would have
@@ -304,9 +309,53 @@ with the policy's own loss — no lerobot trainer, no hub. Each run writes
 
 - `run.json` — args, git commit, **all six config hashes**, the **dataset manifest hash** (sha256 over
   each session's `meta/info.json` and `episodes_meta.jsonl`, in session-name order), frame and episode
-  counts, parameter count, first/last loss, wall time;
-- `loss.csv` — `step,loss,elapsed_s` for every step;
-- `checkpoint.pt` — `{"policy", "spec", "state_dict", "run"}`.
+  counts, the held-out cell pairs, parameter count, first/last loss, wall time;
+- `loss.csv` — `step,loss,val_loss,lr,elapsed_s` for every step (`val_loss` is empty on a step that
+  ran no validation pass);
+- `checkpoint.pt` — `{"policy", "spec", "state_dict", "ema_state_dict", "ema_step", "optimizer",
+  "step", "rng", "losses", "run"}`.
+
+### EMA, warmup + cosine, validation, resume (T-035)
+
+- **EMA.** An exponential moving average of the **parameters** at `<policy>.ema_decay` is kept beside
+  the live weights and updated after every optimiser step; `policy/export.py` puts it in the bundle
+  by default. The decay ramps as `min(decay, (1 + n) / (10 + n))`: at 0.9999 the plain recursion has
+  a 10 000-step time constant, so without the ramp the "average" of any short run would still be the
+  initialisation. Buffers — the normalisation statistics and the encoders' BatchNorm running
+  statistics — are the live ones: they are already running averages of the data, and averaging them
+  twice makes them lag the weights they belong to.
+- **Warmup then cosine.** The learning rate is `learning_rate ×` a multiplier that ramps linearly over
+  `warmup_steps` (`1/warmup` at the first step, 1.0 at step `warmup - 1`) and then decays as a cosine
+  to `lr_min_ratio × learning_rate` at the last step; it is 1.0 at `warmup` from either side. The
+  warmup is clamped to a tenth of the run (`warmup_for`), so the configured 500 steps do not swallow
+  a 30-step smoke run. The multiplier that was applied is the `lr` column of `loss.csv`.
+- **A validation split by cell pair.** `--val-fraction` (default `dataset.val_fraction`, 0 for
+  `--smoke`) holds that fraction of the sessions' cell pairs out through `split_cell_pairs` — never a
+  fraction of the frames, which would put the same pair on both sides. ROLL episodes address no pair,
+  so they stay in training through their explicit `(None, None)`. Every `val_every` steps (and always
+  at the last step) the loss over `val_batches` fixed validation batches is written to the `val_loss`
+  column. The pass runs at a fixed seed (`VAL_SEED`) and restores the RNG afterwards, so two
+  validation losses differ by the model and not by the diffusion draw, and the training stream is
+  untouched. A split that would leave no training frames is refused, not silently trained on.
+- **Slices and resume.** `--stop-after N` runs N steps of the run, checkpoints and exits;
+  `--resume <checkpoint.pt>` continues it, restoring weights, optimiser, EMA, step counter, loss
+  history and RNG state, with the batch stream positioned by step number: `_StepSampler` draws epoch
+  *e*'s permutation from `default_rng([seed, e])`, so the resume point is arithmetic rather than a
+  replay, and the DataLoader gets its own `generator` so that creating a second iterator does not
+  draw from the global RNG (it does by default, and that single draw moved the resumed losses by
+  ~0.1 before it was found). `--steps` stays the horizon the schedule is computed against, so a run
+  taken in slices is the same run: 10 + 10 of a 20-step run **is** the 20-step run —
+  `tests/test_train.py` pins the two loss sequences (largest difference **0.0**) and both sets of
+  weights (live and EMA) against each other.
+
+A checkpoint is **four times the parameters** on disk since T-035: the weights, their EMA, and Adam's
+two moments. That is what an exact resume costs — 4.7 GB at the configured 293 M parameters, 490 MB
+for `diffusion_small` — and it is why nothing keeps two of them on this laptop (Q-002).
+
+`--config-block NAME` builds the spec (and takes the defaults) from another block of
+`config/training.yaml`: `diffusion_small` is the D-019 fallback configuration — one shared ResNet-18,
+120×160 encoder inputs, a quarter-width U-Net, 30.4 M parameters against 293.0 M — and the run
+directory, `run.json` and `checkpoint.pt` all record which block produced them.
 
 Two runs are comparable exactly when their config hashes and manifest hash agree (R5, 5.6). A run
 also writes `data/logs/train_<run>.heartbeat` (section 7).
@@ -333,8 +382,12 @@ fixed-probe loss `tests/test_diffusion.py` uses (same batch, same seeded draw, t
 ```
 
 A checkpoint becomes an inference bundle: `bundle.json` (format tag, the policy name, the spec, the
-weights sha256, the source checkpoint and its sha256, the training run's hashes, what tracing did)
-and `weights.pt` (the `state_dict`, statistics included). Both models of 5.7 export the same way —
+weights sha256, which weights they are, the source checkpoint and its sha256, the training run's
+hashes, what tracing did) and `weights.pt` (the `state_dict`, statistics included). **The bundle
+carries the training run's EMA weights by default**; `--raw` exports the last optimiser step's
+parameters instead, and `bundle.json` records which through `weights_source`, so a success rate
+belongs to one of the two and never to "the run". A checkpoint written before T-035 has no
+`ema_state_dict` and exports raw, which the manifest says. Both models of 5.7 export the same way —
 the format tag is `ludo-g1/diffusion-bundle/1` or `ludo-g1/act-bundle/1` — and `open_bundle(path)` is
 the one reader that turns either back into a `runtime.policy_api.Policy`, so
 `eval/run_eval.py --policy bundle PATH` takes either without being told which and records the policy,
@@ -349,23 +402,45 @@ weights again (1.17 GB for the 293 M-parameter model). It is a starting point fo
 leg of 5.8, and the honest export is the `state_dict` plus the spec. Revisit by exporting the U-Net
 alone and keeping the scheduler loop in Python.
 
-## Inference latency on this laptop (CPU, 2026-09-11)
+## Inference latency on this laptop (CPU, T-035, 2026-09-12)
 
 ```bash
 .venv/bin/python -m policy.diffusion --bundle data/checkpoints/<run>/bundle --trials 20
 .venv/bin/python -m policy.diffusion --bundle data/checkpoints/<run>/bundle --trials 20 --inference-steps 5
+.venv/bin/python -m policy.act       --bundle data/checkpoints/<run>/bundle --trials 20
 ```
 
-At the configured frame sizes (`top`/`oblique` 640x480, `palm` 320x240 → a 240x320 encoder input),
-the full 293 M-parameter model, torch 2.9.1+**cpu**, 14 threads:
+Every number below is the median of 20 `act()` calls at the configured frame sizes (`top`/`oblique`
+640×480, `palm` 320×240 → a 240×320 encoder input, 120×160 for `diffusion_small`), on untrained
+models of the configured shapes — cost does not depend on the weights — taken in **one process, one
+script, on a machine whose 1-minute load average was 2.80 at the start** (1–8 threads) and 0.94
+(12–14). torch 2.9.1+**cpu**, 14 logical cores. The budget of 5.2 is 100 ms (10 Hz).
 
-| DDIM steps | median `act()` | mean | budget (10 Hz) |
-|---|---|---|---|
-| 10 (`diffusion.inference_steps`) | **804 ms** | 1.1 s (spiky: p95 3.7 s) | 100 ms — **8x over** |
-| 5 (the first rung of `compute.inference_fallback_order`) | **498 ms** | 502 ms | 100 ms — **5x over** |
+| torch threads | ACT (51.6 M) | Diffusion DDIM 10 (293 M) | Diffusion DDIM 5 | small DDIM 10 (30.4 M) | small DDIM 5 |
+|---|---|---|---|---|---|
+| 1 | 502 ms | 1746 ms | 1188 ms | 264 ms | 215 ms |
+| 2 | 265 ms | 917 ms | 620 ms | 161 ms | 123 ms |
+| 4 | 149 ms | 541 ms | 361 ms | 101 ms | 75 ms |
+| **8** (`compute.torch_threads`) | **91 ms** | **454 ms** | **281 ms** | **71 ms** | **53 ms** |
+| 12 | 91 ms | 397 ms | 247 ms | 77 ms | 53 ms |
+| 14 (torch's own guess) | 250 ms | 1057 ms | 507 ms | 128 ms | 91 ms |
 
-Frame preparation (resize, normalise, project) is 8–16 ms of that; the rest is the U-Net. The
-fallback ladder of 5.8 does not close an 8x gap on CPU: DDIM 5 halves the cost and is still 5x over,
-so 10 Hz inference needs a GPU (a CUDA torch build on this laptop, or the Orin NX), a smaller model,
-or both. This is a measurement on an untrained smoke checkpoint, which costs exactly what a trained
-one of the same shape will.
+What it says:
+
+- **The thread count is worth more than the fallback ladder.** Between torch's guess of 14 and 8,
+  ACT goes 250 → 91 ms and the full diffusion policy 1057 → 454 ms. 8 is the configured value: every
+  model is at or within noise of its minimum there, 12 matches it, and 8 of 14 cores leaves the
+  camera, driver and DDS threads of `runtime/controller.py` somewhere to run. (T-030 measured 4
+  threads as the best under a second builder's load; on the quiet machine 8 wins.)
+- **ACT now fits the budget** — 91 ms against 100 ms, with no margin. The ACT rung of D-019's ladder
+  is reachable on this laptop.
+- **`diffusion_small` fits with margin**: 71 ms at DDIM 10, 53 ms at DDIM 5, at 30.4 M parameters
+  (one shared ResNet-18, 120×160 inputs, a quarter-width U-Net). Whether it can *learn* the task is a
+  Phase 3 eval question and nothing here answers it (R5).
+- **The full Diffusion Policy does not fit on this CPU**: 454 ms at DDIM 10 is 4.5× over, 281 ms at
+  DDIM 5 is 2.8× over. Its rung of the ladder is a GPU — a CUDA build here, or the Orin NX (Q-011).
+
+Frame preparation (resize, normalise, project) is 4–16 ms of every number above; the rest is the
+U-Net (diffusion) or the transformer (ACT). For reference, T-029/T-030 measured the full model at
+804 ms (DDIM 10) and 498 ms (DDIM 5) and ACT at 154 ms under load with 14 and 4 threads; those runs
+were taken while a second builder's suite was running and are superseded by the table above.

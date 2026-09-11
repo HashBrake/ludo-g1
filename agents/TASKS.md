@@ -1386,7 +1386,7 @@ result: (opus, 2026-09-12T02:05+07:00, commit 72259ca)
     training config hash is taken after parsing, so it is unchanged). runtime/policy_api.py untouched.
 
 ## T-035  Training loop completeness and a smaller inference configuration
-status: in_progress
+status: review
 priority: P1
 phase: 3
 owner: opus
@@ -1406,3 +1406,34 @@ notes: No hardware. Disk: keep checkpoints under tmp_path in tests and delete sm
   add config/training.yaml `compute.torch_threads` (placeholder 4, UNMEASURED), applied at start by policy/train.py, both
   adapters and eval/run_eval.py; re-measure ACT and diffusion (DDIM 10 and 5) act() at 1/2/4/8 threads with no other builder
   running (check `uptime` load < 2 before measuring, record it) and put the table in BUILD_LOG.md and docs/policy.md.
+result: (opus, 2026-09-12T04:35+07:00, commit COMMIT_HASH)
+  - policy/train.py: EMA of the parameters (`ema_decay`, ramped decay `min(d, (1+n)/(10+n))`) stored as
+    `ema_state_dict`; linear warmup then cosine (`warmup_steps` clamped to a tenth of the run, `lr_min_ratio`),
+    applied factor written to a new `lr` column; a validation split by cell pair (`--val-fraction`, ROLL kept in
+    training) whose loss every `val_every` steps is a new `val_loss` column; `--stop-after N` + `--resume` restoring
+    weights, optimiser, EMA, step, loss history and RNG, with the batch stream positioned by step (`_StepSampler`);
+    `--config-block NAME`. policy/export.py exports the EMA by default (`--raw` for the last step's weights,
+    `bundle.json.weights_source`). policy/_shared.py `set_torch_threads` applied once per process by train.py,
+    run_eval.py and both adapters.
+  - `.venv/bin/python -m pytest tests/test_train.py -q -s` -> 15 passed in 59 s. tests/test_diffusion.py +
+    tests/test_act.py -> 27 passed in 64 s. tests/test_greennode_train.py -> 6 passed. tests/test_eval.py +
+    tests/test_config.py -> 93 passed. `ruff check .` -> All checks passed. Full suite through the pre-commit
+    hook -> SUITE_RESULT. PASS
+  - printed numbers: lr multiplier 0.2000 / 1.0000 / 0.0000 at steps 0 / warmup 5 / 106; EMA vs last-step weights
+    after 10 steps 6.375e-05 over 341 tensors and a different `weights_sha256`; validation loss on 12 held-out
+    frames 0.9179 -> 0.8816 with the held-out pair absent from training and the ROLL episode present; resume
+    10+10 vs 20 straight, largest |loss difference| **0.000e+00**. PASS
+  - `diffusion_small` (30.4 M params, 120x160, one shared encoder), trained bundle, 20 CLI calls at the configured
+    frame sizes: **DDIM 10 median 80 ms, DDIM 5 median 56 ms**, both **within** the 100 ms budget, against T-029's
+    293 M-parameter 804 ms / 498 ms. PASS
+  - thread sweep at 1-minute load 2.80 (1/2/4/8) and 0.94 (12/14), 20 calls per cell, medians in ms:
+    ACT 502 / 265 / 149 / **91** / 91 / 250; diffusion DDIM 10 1746 / 917 / 541 / **454** / 397 / 1057; DDIM 5
+    1188 / 620 / 361 / **281** / 247 / 507; small DDIM 10 264 / 161 / 101 / **71** / 77 / 128; small DDIM 5
+    215 / 123 / 75 / **53** / 53 / 91 at 1 / 2 / 4 / 8 / 12 / 14 threads. `compute.torch_threads: 8` (measured,
+    not UNMEASURED: `unmeasured("training")` stays empty). Table in BUILD_LOG.md and docs/policy.md. PASS
+  - findings for Fable (BUILD_LOG): ACT is inside the 100 ms budget at 8 threads (91 ms), so D-019's ladder reaches
+    the laptop; a checkpoint is now 4x the parameters on disk (614.8 MB at the greennode test scale, ~4.7 GB at the
+    configured one, Q-002); a crashed run still leaves nothing to resume from (`--checkpoint-every` not added);
+    `--stop-after` was added so the resume acceptance could be written honestly (disagreement logged).
+  - outside the touch list: one header assertion in tests/test_greennode_train.py and one measured file size in
+    docs/cloud.md, both false after the loss.csv columns and the checkpoint contents changed.

@@ -278,7 +278,8 @@ def test_smoke_train_reduces_the_loss(run, spec, batch, capsys) -> None:
     assert run["loss_last"] < run["loss_first"], "training loss at step 30 was not below step 1"
 
     rows = (Path(run["checkpoint"]).parent / "loss.csv").read_text(encoding="utf-8").splitlines()
-    assert rows[0] == "step,loss,elapsed_s" and len(rows) == STEPS + 1
+    # the curve gained a validation and a learning-rate column in T-035; tests/test_train.py owns them
+    assert rows[0] == "step,loss,val_loss,lr,elapsed_s" and len(rows) == STEPS + 1
     record = json.loads((Path(run["checkpoint"]).parent / "run.json").read_text(encoding="utf-8"))
     assert record["policy"] == "act" and record["spec"]["chunk"] == spec.chunk == 32
     assert len(record["config_hashes"]["training"]) == 64 and record["frames"] == run["frames"]
@@ -295,6 +296,8 @@ def test_policy_act_is_one_flag_and_changes_nothing_else(monkeypatch, tmp_path) 
         return {"run": "x", "policy": policy_kind(kwargs["spec"]), "frames": 0, "parameters": 0,
                 "config_hashes": {"training": ""}, "dataset_manifest_sha256": "", "loss_first": 1.0,
                 "loss_last": 0.5, "loss_mean_last_10": 0.5, "elapsed_s": 0.0,
+                "config_block": kwargs["config_block"], "args": {"stopped_at_step": kwargs["steps"]},
+                "validation": {"loss_first": None, "loss_last": None, "frames": 0, "held_out_pairs": []},
                 "checkpoint": str(tmp_path / "checkpoint.pt")}
 
     monkeypatch.setattr(train_module, "train", fake_train)
@@ -304,6 +307,9 @@ def test_policy_act_is_one_flag_and_changes_nothing_else(monkeypatch, tmp_path) 
     assert seen["steps"] == block["train_iterations"] and seen["batch_size"] == block["batch_size"]
     assert seen["learning_rate"] == block["learning_rate"] and seen["weight_decay"] == block["weight_decay"]
     assert seen["seed"] == block["seed"] and seen["augment"] is True
+    # T-035: the schedule and the split come from the same block, and `--config-block` names it
+    assert seen["config_block"] == "act" and seen["val_fraction"] == config.load("training")["dataset"]["val_fraction"]
+    assert seen["resume"] is None and seen["stop_after"] is None
 
     seen.clear()
     assert train_module.main(["--sessions", "data/raw/s"]) == 0
@@ -326,6 +332,7 @@ def test_export_writes_a_self_contained_act_bundle(bundle, capsys) -> None:
               f" (max diff vs eager {manifest['torchscript_max_diff']})")
     assert (manifest["torchscript"] is None) != (manifest["trace_error"] is None)
     assert manifest["torchscript_used_at_inference"] is False
+    assert manifest["weights_source"] == "ema"  # T-035: a bundle carries the run's averaged weights
     if manifest["torchscript"]:
         assert (directory / manifest["torchscript"]).is_file()
         assert manifest["torchscript_max_diff"] <= 1e-4
@@ -345,7 +352,7 @@ def test_export_round_trip_gives_identical_actions(bundle, run, spec) -> None:
     # and the bundle is the checkpoint: the same weights produce the same actions out of train()
     checkpoint = torch.load(run["checkpoint"], map_location="cpu", weights_only=True)
     model = GoalACTPolicy(spec)
-    model.load_state_dict(checkpoint["state_dict"])
+    model.load_state_dict(checkpoint["ema_state_dict"])  # what the bundle carries since T-035
     model.eval()
     adapter = ACTAdapter(directory)
     adapter.reset(move())
