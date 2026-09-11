@@ -1,0 +1,22 @@
+# R1: the hardware session gate file is never committed
+hardware/session.enable
+
+# datasets, checkpoints, logs
+data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# vendored SDK binary payloads that are on disk but too large for git (see agents/DECISIONS.md D-003)
+third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/_internal/
+third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/pxcap_pro_local
+third_party/**/*.deb
+third_party/**/*.tar.gz
+
+# secrets never live in the repo
+.env
