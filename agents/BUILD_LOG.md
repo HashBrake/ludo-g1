@@ -92,3 +92,64 @@ see the T-001 result block in agents/TASKS.md.
 - No disagreements with the task as written. No hardware needed. No blockers.
 
 (T-001 scaffold commit: 4255484; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-004  runtime/clock.py: monotonic clock, stream alignment, latency compensation  (2026-09-11T19:20+07:00)
+
+Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (parallel with T-002 in the main tree).
+
+### What was built
+- `runtime/clock.py` (no threads, no I/O, numpy is the only dependency):
+  - `now_ns()` — `time.monotonic_ns()` minus one process-wide origin captured at import (`_ORIGIN_NS`).
+  - `Stamped(ts_ns, payload)` — frozen, slotted, generic dataclass.
+  - `StreamBuffer(name, maxlen=4096)` — bounded deque of `Stamped`; `push` (rejects an out-of-order
+    timestamp with ValueError; equal timestamps allowed), `push_stamped`, `latest`, `nearest(ts_ns)`
+    (binary search via `bisect(..., key=)`, ties resolve to the older sample, clamps to the first/last
+    sample outside the span, never extrapolates), `timestamps()`, `items()`.
+  - `align(streams, ts_ns, tolerance_ns) -> dict[name, Stamped]` — one sample per stream; raises
+    `AlignmentError` naming every empty or out-of-tolerance stream and its offset. Accepts either a
+    mapping `{name: buffer}` or an iterable of buffers (keyed by `buffer.name`; duplicates raise).
+  - `skew_stats(streams, instants=None, tolerance_ns=None) -> SkewStats(n, p50_ns, p99_ns, max_ns)`.
+    Skew per alignment instant is `max over streams of |sample_ts - target_ts|` (Fable's definition in
+    the task notes), documented in docs/clock.md. `instants` defaults to the timestamps of the stream
+    with the fewest samples (the slowest one); `tolerance_ns` routes each instant through `align` so an
+    unalignable frame raises instead of being counted. Percentiles are `numpy.percentile` defaults.
+  - `shift(stream, delta_ns) -> StreamBuffer` — returns a copy with every timestamp moved by `delta_ns`;
+    the input is untouched, `name`/`maxlen` preserved. Sign convention: a path that reports `L` ns late is
+    compensated with `delta_ns = -L`. The values themselves come from config/robot.yaml (T-003, UNMEASURED).
+- `runtime/log.py` — one structlog factory: `configure(level, json)` and `get_logger(name, **initial)`.
+  Processor `_add_monotonic_ts` stamps every event with `ts_ns = clock.now_ns()` plus `ts_s` for reading;
+  ConsoleRenderer by default, JSONRenderer with `json=True` for `data/logs/`. Configures on first use.
+- `tests/test_clock.py` — 9 tests; `docs/clock.md` — clock semantics, buffer invariant, align, the skew
+  definition, the shift sign convention, and the measured numbers.
+
+### Commands run and measured results
+1. Environment (the worktree has no .venv; it is git-ignored):
+   `cd /home/alois/Desktop/ludo-g1-wt-t004 && uv venv --python 3.10 .venv && uv pip install --python .venv/bin/python -r requirements.txt`
+   -> CPython 3.10.20, all pinned packages installed.
+2. Acceptance 1 (synthetic skew), command:
+   `.venv/bin/python -m pytest -q tests/test_clock.py -s`
+   printed by `test_skew_p99_under_10ms_for_30hz_and_100hz_streams_over_60s`:
+   `skew over 1800 aligned frames (60 s @ 30 Hz, seed 20260911): p50 = 2.982 ms, p99 = 6.701 ms, max = 7.799 ms`
+   Two streams (30 Hz `top`, 100 Hz `state`), 2 ms gaussian timestamp jitter, 60 s, aligned on the nominal
+   30 Hz grid (1800 instants), tolerance 10 ms (so every frame also had to pass `align`). p99 6.701 ms < 10 ms. PASS
+3. Acceptance 2 (`shift` recovers the pairing): `test_shift_then_align_recovers_the_original_pairing` —
+   100 Hz stream delayed by 37 ms; without compensation the nearest-sample pairing is wrong for
+   >90% of the 30 Hz frames; after `shift(-37 ms)` all 151 camera frames re-pair to exactly the original
+   sample (payload index equality) and the shifted timestamps equal the originals. PASS
+4. Acceptance 3 (`now_ns` monotonic): `test_now_ns_is_monotonic_over_10000_calls` — 10000 consecutive calls
+   non-decreasing, strictly advanced overall, first sample >= 0. PASS
+5. Full gate: `.venv/bin/ruff check .` -> "All checks passed!" (exit 0);
+   `.venv/bin/python -m pytest -q` -> `24 passed, 1 skipped` (the skip is the pre-existing motion-marker
+   autoskip "no session gate yet"), exit 0.
+
+### Notes / deviations
+- The 6.7 ms p99 floor is geometric, not a defect: a 100 Hz stream read at instants that are not its own
+  is up to 5 ms away before jitter. Documented in docs/clock.md so the Phase 2 dataset-card number is read
+  correctly (real capture must beat 10 ms with this same function, not with a looser definition).
+- `skew_stats` takes two optional extra arguments beyond the deliverable's `skew_stats(streams)`. The
+  no-argument form works (instants default to the slowest stream); the explicit form is what the acceptance
+  test needs to measure against a nominal grid. Flagged in case Fable wants the signature narrowed.
+- Synthetic jitter timestamps are sorted before being pushed: at 100 Hz with sigma 2 ms about 0.02% of
+  adjacent pairs would otherwise invert, and a real driver stamps on arrival, so the buffer's
+  non-decreasing invariant is the honest model. Stated in the test docstring and in docs/clock.md.
+- No hardware, no motion command, no blockers. No disagreement with the task as written.
