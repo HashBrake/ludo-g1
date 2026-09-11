@@ -96,3 +96,25 @@ runtime/safety.py against measured state, which is where R3 wants it. The `teleo
 is what section 7 asks for (no constants in code). Warm p99 of 9 ms is noted for Phase 2 (30 Hz budget is 33 ms; fine).
 Style note, not a defect: retarget.py is 318 lines against a 200-line guidance; the extra is docstrings and the detailed
 result type. Rest-pose choice raised as Q-010.
+
+## T-010  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits f3e553d, c6994b8, merged)
+Re-ran in the worktree with the Orbbec Ego attached: ruff clean; 323 passed 4 skipped; mock stream_stats 30.00 Hz, 0 drops;
+real Ego 5 s at 30.2 Hz, 0 drops. drivers/cameras.py only negotiates format via cap.set and never writes device state beyond
+that; no actuator involved. The tests/test_mock_drivers.py narrowing to actuated devices is the correct consequence of
+cameras gaining a real backend. usb_id discovery accepted: it only runs while `device` is UNMEASURED and can only match the
+declared vendor:product. Criterion 3 (Brio) stays open under H-001, H-003. Ego ignoring the requested resolution is
+recorded for Phase 1 (config/cameras.yaml oblique.resolution stays UNMEASURED).
+
+## T-014  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits 5c79b4d, 356473b, merged)
+Ran the scripts myself: setup of wt/fablesmoke at /tmp/ludo-wt-fablesmoke created the venv, linked 327 payload entries and ran
+the suite green (327 passed, 31 s wall); teardown removed the path and deleted the merged branch; main's status unchanged.
+No pytest wrapper accepted for the reason logged (cost inside the suite). Process finding: the hash-record follow-up commit
+was made with --no-verify. The gate was re-run green at HEAD so nothing slipped, but this is not allowed again; recorded as
+D-013 and added to the builder prompt.
+
+## T-016  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits 5fbb479, 33b31d7)
+Re-ran: ruff clean; 352 passed 1 skipped; a 20 s mock run at 9.83 Hz policy / 29.45 Hz actions with 0 refusals and 0
+alignment failures and a heartbeat file under data/logs/. Import-only grep for tools/ in runtime/, board/, policy/ is empty;
+the one text hit is prose in runtime/safety.py. HoldPolicy's docstring states it commands no motion and is never deployed
+(R2). Every send goes through the drivers, which admit via the Guard (controller.py:192-194). controller.py at 340 lines with
+docstrings is accepted; MockPerception failing every RECOVER by construction is honest and recorded in D-013.

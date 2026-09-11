@@ -97,3 +97,12 @@ Both pins go into requirements.txt in T-017 with the resolved versions recorded 
 Every Phase 0 task except T-010 (running) and T-014 is accepted; the two Phase 0 exit checks that need a human (Greennode
 dummy job, Q-001; real board still, H-001) stay open without blocking. To keep the loop stocked with non-hardware work
 (section 4.5 step 4) while those wait: T-015 Phase 0 report, T-016 mock end-to-end controller loop, T-017 recorder on mocks.
+
+## D-013  Builder guidelines from the T-010..T-016 reviews  (2026-09-12T02:10+07:00)
+1. Never commit with --no-verify, not even for a markdown-only follow-up; if the hook is slow, batch the hash record into the
+   work commit by amending before the first push (there is no remote yet) or accept the wait.
+2. Style guideline (not a return reason): keep a module under the size the task names by moving report/CLI types to a sibling
+   module rather than by cutting docstrings.
+3. MockPerception fails every RECOVER because a recovery restores the engine's own belief (empty delta). A mock run can show
+   that recoveries are issued and executed, never that they succeed; the first real success rate for RECOVER comes from
+   Phase 4 eval on the robot, as the brief already says.

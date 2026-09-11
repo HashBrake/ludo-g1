@@ -378,7 +378,7 @@ result: (opus, 2026-09-11T19:12+07:00, commit 5540c10; branch wt/t009)
     it survives the ssh connection dropping.
 
 ## T-010  Real camera driver (Brio, Orbbec) read-only with device discovery
-status: review
+status: accepted
 priority: P1
 phase: 0
 owner: opus
@@ -561,7 +561,7 @@ result: (commit 6628571)
     placeholders the task listed), because section 7 forbids the equivalent constants in code
 
 ## T-014  Worktree helper for parallel builders
-status: review
+status: accepted
 priority: P2
 phase: 0
 owner: opus
@@ -602,7 +602,7 @@ result:
     every branch of both scripts was executed by hand and quoted in BUILD_LOG.md. Flagged there for review.
 
 ## T-015  Phase 0 report
-status: todo
+status: in_progress
 priority: P1
 phase: 0
 owner: opus
@@ -621,7 +621,7 @@ acceptance:
 notes: No code changes. Do not restate the brief.
 
 ## T-016  Mock end-to-end controller loop (runtime/controller.py on mocks)
-status: review
+status: accepted
 priority: P1
 phase: 5
 owner: opus
@@ -669,7 +669,7 @@ result:
     "under 250" guidance. Both explained in BUILD_LOG.md.
 
 ## T-017  Teleop recorder to LeRobot v2 on mocks (D-011)
-status: todo
+status: in_progress
 priority: P1
 phase: 2
 owner: opus
