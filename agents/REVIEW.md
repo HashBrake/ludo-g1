@@ -60,3 +60,16 @@ vendored tree against ~/Teleopit/assets/robots/unitree_g1 shows only MANIFEST.tx
 1 skipped; one opencv distribution. config/robot.yaml edits limited to limits_source and mjcf_qpos_index (+7 offset for the
 floating base, asserted by tests/test_assets.py). The cv2 namespace-package trap after uninstalling headless is documented
 in docs/setup.md and does not affect a fresh venv. docs/config.md future-tense sentence is cosmetic; folded into T-013.
+
+## T-011  ACCEPTED  (fable, 2026-09-11T23:00+07:00, commits d9596d9, ec86092)
+Re-ran: ruff clean; test_fk + test_safety 80 passed; full suite 195 passed 1 skipped. My own call gives the zero-pose wrist at
+[0.1998, 0.1487, 0.0952] m and about 10 us per call. git diff of runtime/safety.py shows wiring and docstrings only; no
+check weakened. Findings recorded as D-010 (zero pose inside the box; wrist roll/yaw invisible to a wrist-point check).
+
+## T-007  ACCEPTED  (fable, 2026-09-11T23:00+07:00, commits 5cab3e6, 35d713a, merged)
+Re-ran in the worktree: ruff clean; 30 engine tests pass. engine/interface.py matches CLAUDE.md 5.5 field for field
+(`X | None` is the same type as Optional[X]; ABC added). Both design calls accepted: ROLL carries no cell until the bowl is
+measured (config/board.yaml die.bowl_centre_mm is UNMEASURED; inventing one would put a goal heatmap on a real cell), and a
+finished board is re-dealt so the command stream never degenerates to ROLL-only.
+Fable fix in this merge: tests/test_greennode_local.sh polled status once immediately after `train --detach` and could see
+state=starting; it now polls up to 3 s for state=running. Reported by both T-007 and T-011 builders; logged per 4.1.

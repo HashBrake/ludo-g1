@@ -80,3 +80,9 @@ cv2/ is a hazard. T-012 removes the headless pin and re-resolves.
 pyorbbecsdk on PyPI is unusable (docs/sdks.md 8.2); the Ego enumerates as a UVC stereo pair. Observation `oblique` is the
 left RGB stream at 640x480 as CLAUDE.md 5.3 already specifies. Depth is not in the policy input; Q-008 stays open for Alois
 to choose an SDK route later without changing anything downstream.
+
+## D-010  Envelope facts from the real FK (T-011)  (2026-09-11T23:00+07:00)
+The G1 all-zero pose puts the left wrist at [0.20, 0.15, 0.10] m in the pelvis frame, inside the placeholder box: the upper
+arm points forward at zero, it does not hang. Wrist roll and wrist yaw do not move the wrist point, so the box currently
+constrains 6 of 8 joints. Phase 1 adds a second checked point (the DexH15 fingertip pinch point, tool offset measured on the
+hand) rather than widening the box. config/safety.yaml is unchanged; Fable proposes, a human applies (R3).

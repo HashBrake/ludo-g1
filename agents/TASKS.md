@@ -217,7 +217,7 @@ result: (opus, 2026-09-11T21:55+07:00, commit 8c03733)
     mechanical range and a joint list that disagrees with config/robot.yaml.
 
 ## T-006  Mock drivers with the real driver interfaces
-status: todo
+status: in_progress
 priority: P0
 phase: 0
 owner: opus
@@ -237,7 +237,7 @@ acceptance:
 notes: Interfaces are the contract for the real drivers in Phase 1; keep them minimal, no features nobody asked for.
 
 ## T-007  Engine contract and scripted stub engine
-status: review
+status: accepted
 priority: P0
 phase: 0
 owner: opus
@@ -267,7 +267,7 @@ result: (opus, 2026-09-11T22:55+07:00, commit 5cab3e6, branch wt/t007)
   - Not mine, reported: tests/test_greennode_local.py::test_greennode_local_round_trip flakes ~1 in 6 full-suite runs on a `state=starting` vs `running` race in T-009's shell test.
 
 ## T-008  Board calibration from AprilTags and a Brio still
-status: todo
+status: in_progress
 priority: P1
 phase: 0
 owner: opus
@@ -347,7 +347,7 @@ acceptance:
 notes: Read-only; no session needed. Do not touch the palm camera here (it comes with the DexH15 driver in Phase 1).
 
 ## T-011  Left-arm forward kinematics for the workspace box
-status: review
+status: accepted
 priority: P1
 phase: 0
 owner: opus
