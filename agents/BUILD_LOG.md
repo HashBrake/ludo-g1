@@ -962,7 +962,7 @@ Config hashes changed by this: robot `1ae6aa90` -> `9dc5e64a`, hand `5b615a57` -
 
 ### Commands run and measured results
 - `.venv/bin/python -m pytest tests/test_mock_drivers.py -q` -> **51 passed in 1.4 s**.
-- `.venv/bin/python -m pytest -q` -> **275 passed, 1 skipped in 21.4 s** (225 before, +50 new; the
+- `.venv/bin/python -m pytest -q` -> **276 passed, 1 skipped in 21.8 s** (225 before, +51 new; the
   skip is the motion autoskip with no session file).
 - `.venv/bin/ruff check .` -> "All checks passed!".
 - Acceptance 1 — 10 s of mock arm state at 100 Hz: **1000 samples**, every inter-sample period
