@@ -1456,7 +1456,7 @@ result: (opus, 2026-09-12T04:35+07:00, commit 860916c)
     docs/cloud.md, both false after the loss.csv columns and the checkpoint contents changed.
 
 ## T-036  Periodic checkpoints, crash resume, checkpoint pruning and a disk guard
-status: in_progress
+status: review
 priority: P1
 phase: 3
 owner: opus
@@ -1472,6 +1472,25 @@ deliverables:
 acceptance:
   - tests pass with printed numbers; docs/policy.md and docs/cloud.md updated (cloud train passes --checkpoint-every)
 notes: Disk is 12 GB free; every test writes under tmp_path and deletes weights.
+result: (opus, 2026-09-12T06:20+07:00, commit COMMIT_HASH)
+  - tests/test_train.py 24 passed in 83 s (15 before); ruff clean; tests/test_act.py + tests/test_diffusion.py 27 passed in
+    50 s; tests/test_greennode_train.py + tests/test_config.py 76 passed in 28 s.
+  - Crash simulation: `python -m policy.train --checkpoint-every 2 --keep-last 1 --fault-at-step 5` in a subprocess dies at
+    step 5 of an 8-step run leaving exactly checkpoint.pt + checkpoint_step4.pt (step 2's pruned, both names one inode, no
+    .tmp, no run.json); resuming from it and running to step 8 reproduces the straight 8-step run's loss sequence with a
+    largest difference of 0.000e+00.
+  - Pruning: keeps exactly K, deletes oldest first, and leaves checkpoint.pt, run.json and a bundle/ directory alone (K=2
+    then K=0 asserted on an exact file set); the real loop's directory at --checkpoint-every 2 --keep-last 1 over 6 steps is
+    exactly checkpoint.pt, checkpoint_step4.pt, loss.csv, run.json.
+  - Atomicity: torch.save made to die after writing the temp file leaves the previous checkpoint.pt loadable.
+  - Disk guard on a mocked shutil.disk_usage (which reads os.statvfs): 293 M parameters, estimate 5.16 GB, factor 2 asks
+    10.31 GB, mocked free 7.74 GB -> DiskGuardError naming Q-002, the estimate and the free space; --no-disk-guard logs and
+    continues; a real train() refuses before writing anything (empty run directory).
+  - Printed estimates: diffusion 293.0 M -> 5.16 GB (guard needs 10.32 GB), act 51.6 M -> 0.91 GB, diffusion_small 30.4 M ->
+    0.54 GB; measured against the real file at 16.0 M parameters: 256.8 MB written, 282.1 MB estimated (1.10x).
+  - config/training.yaml compute.checkpoint_every 1000, compute.keep_last 2, compute.disk_guard_factor 2 (REQUIRED_KEYS
+    untouched); docs/policy.md "Surviving a crash" section; docs/cloud.md Phase 3 command now passes
+    --checkpoint-every 1000 --keep-last 2; cloud/greennode.sh header example shows the same.
 
 ## T-037  Progress watchdog and per-trial failure logging in the controller (CLAUDE.md Phase 5 hardening, on mocks)
 status: accepted

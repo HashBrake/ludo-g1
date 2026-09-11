@@ -1,4 +1,5 @@
-"""The training loop of T-035: EMA, warmup + cosine, a validation split, resume, and the small config.
+"""The training loop of T-035: EMA, warmup + cosine, a validation split, resume, and the small config,
+and of T-036: periodic checkpoints, a crash and its resume, pruning, and the disk guard.
 
 Everything that trains here runs on the mock session `tests/test_recorder.py`'s `Rig` records under
 `tmp_path`, at 64x48 frames and with the deliberately small model `tests/test_diffusion.py` uses, so
@@ -7,26 +8,52 @@ test suite. The one exception is the `diffusion_small` latency, which is measure
 model at the **configured** frame sizes, because a latency measured on a toy says nothing (D-019);
 the number a decision rests on is the 20-call sweep in `agents/BUILD_LOG.md` (R5).
 
+Every test that writes weights deletes them again, the T-036 runs use a one-encoder model (16.0 M
+parameters, 256 MB a checkpoint, against 38.4 M and 615 MB), and the disk guard is tested against a
+mocked free-space reading rather than by filling the disk: Q-002 leaves 12 GB on this laptop.
+
 Nothing here touches hardware and nothing sends a command (R1, R2).
 """
 
 from __future__ import annotations
 
 import csv
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import torch
+import yaml
 
 from engine.interface import Cell, Command, Primitive
 from policy._shared import benchmark, set_torch_threads, synthetic_observation
 from policy.dataset import LudoDataset, split_cell_pairs
 from policy.diffusion import DiffusionAdapter, GoalDiffusionPolicy, PolicySpec
 from policy.export import EMA_WEIGHTS, RAW_WEIGHTS, export
-from policy.train import EMA, NO_PAIR, _StepSampler, lr_multiplier, train, warmup_for
+from policy.train import (
+    CHECKPOINT_FILE,
+    EMA,
+    NO_PAIR,
+    DiskGuardError,
+    _StepSampler,
+    atomic_save,
+    check_checkpoint_disk,
+    checkpoint_bytes,
+    lr_multiplier,
+    prune_step_checkpoints,
+    train,
+    warmup_for,
+    write_step_checkpoint,
+)
 from runtime import config
 from tests.test_diffusion import TINY
-from tests.test_recorder import Rig
+from tests.test_recorder import Rig, config_root
+
+#: This repo, the tree the CLI tests copy their packages from.
+REPO = Path(__file__).resolve().parents[1]
 
 #: Four MOVE cell pairs and one ROLL, so a cell-pair split has something to split.
 PAIRS = [("R-base-1", "track-03"), ("R-base-2", "track-17"), ("track-03", "track-09"),
@@ -359,3 +386,256 @@ def test_the_torch_thread_pool_is_configured_and_applied_once() -> None:
     assert set_torch_threads() == configured == torch.get_num_threads()
     assert set_torch_threads(threads=configured + 1) == configured  # idempotent: the first call wins
     assert torch.get_num_threads() == configured
+
+
+# --------------------------------------------------------------------------------------------------
+# T-036: periodic checkpoints, crash resume, pruning, and the disk guard
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def small_spec(session) -> PolicySpec:
+    """`spec` with one shared ResNet-18 instead of three.
+
+    16.0 M parameters against 38.4 M, so every checkpoint these tests write is 256 MB and not 615 MB
+    (Q-002: 12 GB free). Nothing under test here depends on the number of encoders.
+    """
+    return PolicySpec.from_config(session[1], **TINY, separate_encoder_per_camera=False)
+
+
+def test_the_checkpoint_size_estimate_is_parameters_x_4_x_4_plus_a_margin() -> None:
+    """The guard's arithmetic: fp32 weights, their EMA, and Adam's two moments, plus 10%."""
+    assert checkpoint_bytes(1_000_000) == int(1_000_000 * 4 * 4 * 1.1)
+    assert checkpoint_bytes(0) == 0
+    # monotone, and an over-estimate of the real file (asserted against a real one further down)
+    assert checkpoint_bytes(2_000_000) == 2 * checkpoint_bytes(1_000_000)
+
+
+def test_the_disk_guard_refuses_a_run_that_cannot_hold_its_checkpoints(tmp_path, monkeypatch,
+                                                                      capsys) -> None:
+    """Acceptance: the guard triggers on a mocked free-space reading, names Q-002, and can be waived."""
+    parameters = 293_000_000                     # the configured diffusion policy of 5.7
+    estimate = checkpoint_bytes(parameters)
+    free = [int(1.5 * estimate)]                 # enough for one checkpoint, not for the factor of 2
+
+    def fake_usage(path):                        # os.statvfs is what shutil.disk_usage reads
+        assert Path(path) == tmp_path
+        return shutil._ntuple_diskusage(10 * estimate, 10 * estimate - free[0], free[0])
+
+    monkeypatch.setattr(shutil, "disk_usage", fake_usage)
+    with pytest.raises(DiskGuardError) as refusal:
+        check_checkpoint_disk(tmp_path, parameters, factor=2.0)
+    message = str(refusal.value)
+    with capsys.disabled():
+        print(f"\n[T-036] disk guard: {parameters / 1e6:.0f}M parameters -> checkpoint estimate "
+              f"{estimate / 1e9:.2f} GB, factor 2 needs {2 * estimate / 1e9:.2f} GB, mocked free "
+              f"{free[0] / 1e9:.2f} GB -> refused")
+    assert "Q-002" in message and "disk_guard_factor 2" in message
+    assert f"{estimate / 1e9:.2f} GB" in message and f"{free[0] / 1e9:.2f} GB free" in message
+
+    # --no-disk-guard: the same shortfall, logged instead of raised
+    numbers = check_checkpoint_disk(tmp_path, parameters, factor=2.0, enforce=False)
+    assert numbers == {"parameters": parameters, "estimate_bytes": estimate,
+                       "required_bytes": 2 * estimate, "free_bytes": free[0], "factor": 2.0,
+                       "enforced": False}
+    # and with room it passes without either
+    free[0] = 3 * estimate
+    assert check_checkpoint_disk(tmp_path, parameters, factor=2.0)["free_bytes"] == free[0]
+
+
+def test_a_run_whose_checkpoints_do_not_fit_never_starts(session, small_spec, tmp_path,
+                                                         monkeypatch) -> None:
+    """The guard runs before the first step: no checkpoint, no loss.csv, one second wasted."""
+    monkeypatch.setattr(shutil, "disk_usage",
+                        lambda path: shutil._ntuple_diskusage(1 << 40, (1 << 40) - 1_000_000, 1_000_000))
+    with pytest.raises(DiskGuardError, match="Q-002"):
+        run_training(session, small_spec, tmp_path, "no_room", steps=2)
+    assert sorted(p.name for p in (tmp_path / "no_room").iterdir()) == []
+    # the same run trains once the guard is waived, and says so in the record
+    record = run_training(session, small_spec, tmp_path, "no_room", steps=1, disk_guard=False)
+    assert record["args"]["disk_guard"] is False
+    assert Path(record["checkpoint"]).is_file()
+    shutil.rmtree(Path(record["checkpoint"]).parent)   # 256 MB of test weights, measured then gone
+
+
+def test_prune_step_checkpoints_keeps_the_last_k_and_touches_nothing_else(tmp_path) -> None:
+    """Acceptance: exactly K step checkpoints remain; checkpoint.pt and a bundle are never pruned."""
+    for step in (100, 20, 3, 4000):
+        (tmp_path / f"checkpoint_step{step}.pt").write_bytes(b"x")
+    (tmp_path / CHECKPOINT_FILE).write_bytes(b"x")
+    (tmp_path / "run.json").write_bytes(b"{}")
+    (tmp_path / "bundle").mkdir()                       # the EMA export: never a step checkpoint
+    (tmp_path / "bundle" / "weights.pt").write_bytes(b"x")
+
+    assert [p.name for p in prune_step_checkpoints(tmp_path, keep=2)] == ["checkpoint_step3.pt",
+                                                                         "checkpoint_step20.pt"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["bundle", "checkpoint.pt",
+                                                          "checkpoint_step100.pt",
+                                                          "checkpoint_step4000.pt", "run.json"]
+    assert prune_step_checkpoints(tmp_path, keep=2) == []          # already at K: nothing to do
+    assert len(prune_step_checkpoints(tmp_path, keep=0)) == 2      # K=0 keeps none of them
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["bundle", "checkpoint.pt", "run.json"]
+    assert (tmp_path / "bundle" / "weights.pt").is_file()
+
+
+def test_a_checkpoint_write_that_dies_leaves_the_previous_one(tmp_path, monkeypatch) -> None:
+    """Why every write is temp-then-rename: a half-written checkpoint is never named checkpoint.pt."""
+    path = tmp_path / CHECKPOINT_FILE
+    atomic_save({"step": 1, "weight": torch.ones(4)}, path)
+    assert torch.load(path, weights_only=True)["step"] == 1
+    assert not list(tmp_path.glob("*.tmp"))
+
+    real_save = torch.save
+
+    def dying_save(payload, target, *args, **kwargs):
+        real_save(payload, target, *args, **kwargs)     # the bytes land in the .tmp file
+        raise OSError("No space left on device")        # and the process dies before the rename
+
+    monkeypatch.setattr(torch, "save", dying_save)
+    with pytest.raises(OSError, match="No space left"):
+        atomic_save({"step": 2, "weight": torch.zeros(4)}, path)
+    assert torch.load(path, weights_only=True)["step"] == 1, "the previous checkpoint was destroyed"
+    assert [p.name for p in tmp_path.glob("*.tmp")] == ["checkpoint.pt.tmp"]
+
+
+def test_a_step_checkpoint_is_an_alias_of_checkpoint_pt(tmp_path) -> None:
+    """The periodic copy costs no second write and no second inode, and both names survive pruning."""
+    alias, pruned = write_step_checkpoint({"step": 7, "weight": torch.ones(2)}, tmp_path, 7, keep=1)
+    assert alias.name == "checkpoint_step7.pt" and pruned == []
+    latest = tmp_path / CHECKPOINT_FILE
+    assert alias.stat().st_ino == latest.stat().st_ino      # one file, two names
+    assert not list(tmp_path.glob("*.tmp"))
+
+    alias2, pruned2 = write_step_checkpoint({"step": 8, "weight": torch.zeros(2)}, tmp_path, 8, keep=1)
+    assert [p.name for p in pruned2] == ["checkpoint_step7.pt"]
+    assert torch.load(latest, weights_only=True)["step"] == 8
+    assert alias2.stat().st_ino == latest.stat().st_ino
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["checkpoint.pt", "checkpoint_step8.pt"]
+
+
+def test_the_loop_checkpoints_every_n_steps_and_keeps_the_last_k(session, small_spec, tmp_path,
+                                                                 capsys) -> None:
+    """Acceptance: the real loop's run directory holds exactly checkpoint.pt plus the K newest."""
+    record = run_training(session, small_spec, tmp_path, "periodic", steps=6, checkpoint_every=2,
+                          keep_last=1)
+    directory = Path(record["checkpoint"]).parent
+    try:
+        # steps 2 and 4 were written (6 is the end of the invocation, checkpointed below anyway),
+        # and keep_last 1 pruned step 2
+        assert sorted(p.name for p in directory.iterdir()) == ["checkpoint.pt", "checkpoint_step4.pt",
+                                                               "loss.csv", "run.json"]
+        step4 = torch.load(directory / "checkpoint_step4.pt", map_location="cpu", weights_only=True)
+        latest = torch.load(directory / CHECKPOINT_FILE, map_location="cpu", weights_only=True)
+        assert step4["step"] == 4 and step4["run"]["complete"] is False
+        assert latest["step"] == 6 and latest["run"]["complete"] is True
+        assert [row[0] for row in step4["losses"]] == [1, 2, 3, 4]
+        size = (directory / CHECKPOINT_FILE).stat().st_size
+        estimate = record["checkpoint_bytes_estimate"]
+        with capsys.disabled():
+            print(f"[T-036] {record['parameters'] / 1e6:.1f}M parameters: checkpoint.pt is "
+                  f"{size / 1e6:.1f} MB, the guard's estimate {estimate / 1e6:.1f} MB "
+                  f"({estimate / size:.2f}x), disk guard factor {record['args']['disk_guard_factor']:g}")
+        assert size < estimate, "the estimate must not be under the real file, or it is not a guard"
+    finally:
+        shutil.rmtree(directory)   # ~512 MB of test weights: measured, then gone (Q-002)
+
+
+# --- the crash: a real `python -m policy.train` killed mid-run, then resumed ------------------------
+
+#: The packages `python -m policy.train` needs, copied so that the CLI can be run against a
+#: test-sized config: `runtime.config.CONFIG_DIR` is fixed relative to the imported runtime/config.py,
+#: so a shrunk config/ only reaches the CLI as part of a tree (the same thing `greennode.sh up` pushes).
+CLI_PACKAGES = ("board", "drivers", "engine", "eval", "policy", "runtime", "teleop", "tools")
+#: The tiny model, written into the copied tree's `diffusion` block. One shared encoder: 16.0 M
+#: parameters, so each of the three runs below writes a 256 MB checkpoint (Q-002).
+CLI_DIFFUSION = {"encoder_image_hw": [48, 64], "down_dims": [64, 128, 256],
+                 "spatial_softmax_keypoints": 8, "stats_samples": 8, "encoder_per_camera": False}
+#: 8 steps, batch 2: enough for a crash at step 5 to have two periodic checkpoints behind it.
+CLI_STEPS, CLI_FAULT_AT, CLI_EVERY = 8, 5, 2
+
+
+@pytest.fixture(scope="module")
+def cli_tree(tmp_path_factory) -> Path:
+    """A copy of the source packages with a shrunk config, to run the CLI at test scale."""
+    tree = tmp_path_factory.mktemp("cli")
+    for package in CLI_PACKAGES:
+        shutil.copytree(REPO / package, tree / package,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    config_root(tree, small=True)
+    training = yaml.safe_load((tree / "config" / "training.yaml").read_text(encoding="utf-8"))
+    training["diffusion"].update(CLI_DIFFUSION)
+    (tree / "config" / "training.yaml").write_text(yaml.safe_dump(training, sort_keys=False),
+                                                   encoding="utf-8")
+    return tree
+
+
+def cli_train(tree: Path, session_root: Path, out: Path, name: str, *extra: str):
+    """`python -m policy.train` in a subprocess against the copied tree. Returns the completed run."""
+    argv = [sys.executable, "-m", "policy.train", "--sessions", str(session_root), "--out-dir", str(out),
+            "--run-name", name, "--steps", str(CLI_STEPS), "--batch-size", "2", "--lr", "1e-3",
+            "--seed", "0", "--val-fraction", "0", "--stats-samples", "8", "--device", "cpu", *extra]
+    done = subprocess.run(argv, cwd=tree, env={**os.environ, "PYTHONPATH": str(tree)},
+                          capture_output=True, text=True, timeout=1800, check=False)
+    print(f"$ {' '.join(argv[1:])}\n{done.stdout}\n{done.stderr[-2000:]}")
+    return done
+
+
+@pytest.fixture(scope="module")
+def crash_and_resume(cli_tree, session, tmp_path_factory) -> dict:
+    """Three real CLI runs: 8 steps straight, 8 steps crashing at 5, and the resume of the crash.
+
+    Each run's weights are deleted as soon as the next one no longer needs them; what this fixture
+    keeps is text (Q-002: nothing here may leave 256 MB behind).
+    """
+    out = tmp_path_factory.mktemp("crash")
+    root = session[0]
+    straight = cli_train(cli_tree, root, out, "straight", "--checkpoint-every", "0")
+    straight_losses = (out / "straight" / "loss.csv").read_text(encoding="utf-8") if straight.returncode == 0 else ""
+    shutil.rmtree(out / "straight", ignore_errors=True)
+
+    crashed = cli_train(cli_tree, root, out, "crashed", "--checkpoint-every", str(CLI_EVERY),
+                        "--keep-last", "1", "--fault-at-step", str(CLI_FAULT_AT))
+    files = sorted(p.name for p in (out / "crashed").iterdir()) if (out / "crashed").is_dir() else []
+    last = out / "crashed" / f"checkpoint_step{CLI_FAULT_AT - 1}.pt"
+    same_inode = last.is_file() and last.stat().st_ino == (out / "crashed" / CHECKPOINT_FILE).stat().st_ino
+    step = int(torch.load(last, map_location="cpu", weights_only=True)["step"]) if last.is_file() else -1
+
+    resumed = cli_train(cli_tree, root, out, "resumed", "--checkpoint-every", "0",
+                        "--resume", str(last))
+    resumed_losses = (out / "resumed" / "loss.csv").read_text(encoding="utf-8") if resumed.returncode == 0 else ""
+    for name in ("crashed", "resumed"):
+        shutil.rmtree(out / name, ignore_errors=True)
+    return {"straight": straight, "crashed": crashed, "resumed": resumed, "files": files,
+            "checkpoint_step": step, "same_inode": same_inode,
+            "curves": {"straight": straight_losses, "resumed": resumed_losses}}
+
+
+def curve(text: str) -> list[tuple[int, float]]:
+    return [(int(row["step"]), float(row["loss"])) for row in csv.DictReader(text.splitlines())]
+
+
+def test_a_crashed_run_leaves_the_last_periodic_checkpoint_whole(crash_and_resume) -> None:
+    """The process really died at step 5, and what it left behind is the step-4 checkpoint."""
+    crashed = crash_and_resume["crashed"]
+    assert crashed.returncode != 0, crashed.stdout
+    assert "InjectedFault" in crashed.stderr and f"--fault-at-step {CLI_FAULT_AT}" in crashed.stderr
+    # written at steps 2 and 4, pruned to the last one; no run.json and no loss.csv (it never finished)
+    assert crash_and_resume["files"] == ["checkpoint.pt", f"checkpoint_step{CLI_FAULT_AT - 1}.pt"]
+    assert crash_and_resume["checkpoint_step"] == CLI_FAULT_AT - 1
+    assert crash_and_resume["same_inode"], "the step copy must be a hard link, not a second write"
+
+
+def test_resuming_the_crash_reproduces_the_uninterrupted_run(crash_and_resume, capsys) -> None:
+    """ACCEPTANCE: the loss sequence of crash + resume is the straight run's, step for step."""
+    assert crash_and_resume["straight"].returncode == 0, crash_and_resume["straight"].stderr
+    assert crash_and_resume["resumed"].returncode == 0, crash_and_resume["resumed"].stderr
+    straight = curve(crash_and_resume["curves"]["straight"])
+    resumed = curve(crash_and_resume["curves"]["resumed"])
+    assert [s for s, _ in straight] == list(range(1, CLI_STEPS + 1))
+    assert [s for s, _ in resumed] == list(range(1, CLI_STEPS + 1))
+    worst = max(abs(a - b) for (_s, a), (_t, b) in zip(straight, resumed, strict=True))
+    with capsys.disabled():
+        print(f"[T-036] crash at step {CLI_FAULT_AT}, resume from checkpoint_step{CLI_FAULT_AT - 1}.pt: "
+              f"largest |loss difference| against the straight {CLI_STEPS}-step run {worst:.3e} "
+              f"(losses {[round(v, 4) for _s, v in resumed]})")
+    assert worst < 1e-6

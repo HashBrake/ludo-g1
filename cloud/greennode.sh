@@ -4,6 +4,9 @@
 #   cloud/greennode.sh up                       sync data/raw + the repo (minus third_party) to the remote
 #   cloud/greennode.sh train SCRIPT [ARGS...]   run SCRIPT on the remote (nohup + heartbeat); waits for it
 #                                               unless --detach. --timeout N bounds only the waiting.
+#     train --detach policy/train.py --sessions data/raw/<session> --steps 200000 --device cuda \
+#           --checkpoint-every 1000 --keep-last 2      a real run: checkpointed every 1000 steps so
+#                                                      that a killed job resumes (T-036, docs/cloud.md)
 #   cloud/greennode.sh down                     sync the remote's data/checkpoints back into this repo
 #   cloud/greennode.sh status [JOB_ID]          transport, roots, and the state of the known jobs
 #
@@ -35,7 +38,7 @@ info() {
 }
 
 usage() {
-  sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # --- configuration -----------------------------------------------------------------------------

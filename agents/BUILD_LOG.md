@@ -3651,3 +3651,120 @@ import nothing from `tools/hardware_checks/` (the existing test asserts it and p
 goes through `send()` -> `arm.send_targets` / `hand.send_pinch` -> `Guard.admit` like every other
 action, and the test with the lunging policy shows the guard refusing 601 of 602 sends and admitting
 exactly the hold. `config/safety.yaml` untouched, `third_party/` untouched, no `--no-verify` (D-013).
+
+## T-036  Periodic checkpoints, crash resume, pruning and a disk guard  (opus, 2026-09-12T06:20+07:00)
+
+### What I changed
+
+- **`policy/train.py`** (618 -> 849 lines). Everything a run needs to survive being killed:
+  - `atomic_save(payload, path)` — `torch.save` to `<name>.tmp`, then `os.replace`. Every checkpoint
+    now goes through it, the periodic ones and the one at the end of an invocation, so a crash (or a
+    full disk) *during* a write leaves the previous checkpoint whole instead of a truncated file that
+    `--resume` would choke on. The temp suffix is deliberately not `.pt`: a half-written file can
+    never be picked up by the step-checkpoint glob or handed to `--resume`.
+  - `--checkpoint-every N` (`compute.checkpoint_every`, default 1000) — the loop checkpoints every N
+    steps, *except* at the last step of the invocation, which is checkpointed below it anyway. Each
+    periodic write leaves `checkpoint_step<N>.pt` as a **hard link** to the file just written
+    (`write_step_checkpoint`): a 4.7 GB checkpoint is not written twice and K kept copies do not cost
+    K times the disk while they share an inode. `--resume` takes either name.
+  - `--keep-last K` (`compute.keep_last`, default 2) — `prune_step_checkpoints` deletes all but the K
+    newest `checkpoint_step<N>.pt` after each periodic write. It globs only that pattern, so
+    `checkpoint.pt`, `run.json`, `loss.csv` and an exported bundle in the same directory are
+    structurally unprunable, not merely "not deleted today".
+  - the **disk guard** — `checkpoint_bytes(parameters)` = parameters x 4 bytes x 4 (weights, EMA,
+    Adam's two moments) + 10%; `check_checkpoint_disk` compares `compute.disk_guard_factor` (2) times
+    that with `shutil.disk_usage(run directory).free` **before the first step** and raises
+    `DiskGuardError` naming Q-002, the estimate and the free space. The factor is 2 because an atomic
+    write holds the new checkpoint and the one it is replacing at once. `--no-disk-guard` logs the
+    shortfall (`disk_guard_overridden`) and trains anyway; it is a training-time convenience, not a
+    safety rule (R3 stays in `runtime/safety.py` and stays non-overridable). The estimate is printed
+    by every run and stored in `run.json` as `checkpoint_bytes_estimate`.
+  - `--fault-at-step K` — the documented test aid Fable asked for instead of a test-only env var: it
+    raises `InjectedFault` after step K and does nothing at all unless passed. It is what lets the
+    crash test kill a **real** `python -m policy.train` at a step of its choosing.
+  - the run record is now built in two halves: an `identity` dict (run, policy, block, git commit, the
+    six config hashes, the manifest hash, the spec, the args, the parameter count, the checkpoint
+    estimate) fixed before the first step, so a periodic checkpoint carries the same identity as the
+    final one, and the rest of `run.json` added at the end. A periodic checkpoint's `run` has
+    `complete: false`; only a finished invocation's has `complete: true`.
+- **`config/training.yaml`**: `compute.checkpoint_every: 1000`, `compute.keep_last: 2`,
+  `compute.disk_guard_factor: 2`, each with the reasoning next to it. No `UNMEASURED` tags (these are
+  design choices, as the file's header requires); `REQUIRED_KEYS` untouched.
+- **`tests/test_train.py`** (361 -> 641 lines, 15 -> 24 tests, 83 s): the nine T-036 tests below.
+- **`cloud/greennode.sh`**: one example line in the header (and `usage()`'s `sed` range 2,17 -> 2,20)
+  showing the real training command with `--checkpoint-every 1000 --keep-last 2`. No behaviour change:
+  `train` already passes everything after the script path through untouched.
+- **`docs/policy.md`** (a "Surviving a crash" section with the flag table and the measured numbers) and
+  **`docs/cloud.md`** (the flags in the Phase 3 remote command, what a preempted job costs, the guard's
+  three configured-scale thresholds, and why the local smoke example does not pass them).
+
+### Commands and measured numbers
+
+```bash
+.venv/bin/python -m pytest tests/test_train.py -q                     # 24 passed in 83 s
+.venv/bin/python -m pytest tests/test_act.py tests/test_diffusion.py -q   # 27 passed in 50 s (1 fixed, see findings)
+.venv/bin/python -m pytest tests/test_greennode_train.py tests/test_config.py -q   # 76 passed in 28 s
+.venv/bin/ruff check .                                                # clean
+```
+
+| measurement | value |
+|---|---|
+| crash at step 5 of 8, resume from `checkpoint_step4.pt` | largest \|loss difference\| against the straight 8-step run **0.000e+00** (losses 0.2605, 0.1834, 0.5863, 0.6674, 0.2984, 0.4164, 0.3863, 0.3101) |
+| the killed run's directory | exactly `checkpoint.pt` + `checkpoint_step4.pt` (step 2's pruned at `--keep-last 1`), same inode, no `.tmp`, no `run.json` |
+| checkpoint estimate vs the real file | 16.0 M parameters: `checkpoint.pt` **256.8 MB**, estimate **282.1 MB** (1.10x) |
+| configured `diffusion` (293.0 M) | estimate **5.16 GB**, guard asks for **10.32 GB** free |
+| configured `act` (51.6 M) | estimate **0.91 GB**, guard asks for **1.82 GB** |
+| `diffusion_small` (30.4 M) | estimate **0.54 GB**, guard asks for **1.07 GB** |
+| disk guard refusal (mocked free space) | 293 M parameters, 7.74 GB free of the 10.31 GB asked -> refused, message names Q-002 |
+
+The nine tests: the estimate arithmetic; the guard refusing and being waived on a mocked
+`shutil.disk_usage` (which is what reads `os.statvfs`), and a real `train()` call refusing **before**
+it writes anything (the run directory is empty afterwards) and training once `--no-disk-guard` is
+passed; pruning keeping exactly K and leaving `checkpoint.pt`, `run.json` and a `bundle/` untouched; a
+`torch.save` made to die after writing the temp file, after which the previous `checkpoint.pt` still
+loads; the step copy sharing an inode with `checkpoint.pt`; the real loop's run directory holding
+exactly `checkpoint.pt`, `checkpoint_step4.pt`, `loss.csv`, `run.json` at `--checkpoint-every 2
+--keep-last 1`; and the crash pair, which runs `python -m policy.train` three times in subprocesses
+(straight, crashing at step 5, resumed) against a copied source tree with a shrunk config -- the same
+trick `cloud/greennode.sh up` plays on the remote, because `runtime.config.CONFIG_DIR` is fixed
+relative to the imported `runtime/config.py` and a test-sized model can only reach the CLI as a tree.
+
+Disk (Q-002): the T-036 runs use a one-encoder model (16.0 M parameters, 256 MB a checkpoint, against
+TINY's 38.4 M and 615 MB), every test that writes weights deletes them in a `finally`, and the crash
+fixture deletes each run's weights as soon as the next run no longer needs them (peak 2 checkpoints).
+`df /home` read 12 GB free before and after the suite.
+
+### Findings
+1. **A 293 M-parameter run would only just pass its own guard on this laptop.** 10.32 GB asked
+   against 12 GB free, and that is before the dataset. The guard's refusal message therefore points
+   at Greennode, `--out-dir`, and `diffusion_small` before it mentions `--no-disk-guard`. It is one
+   more instance of Q-002 rather than a new problem.
+2. **`main()` prints the estimate from `record["parameters"]`, not from the new
+   `checkpoint_bytes_estimate` key.** `tests/test_act.py::test_policy_act_is_one_flag_and_changes_nothing_else`
+   monkeypatches `train()` with a stub record; reading a new key there would have meant editing a test
+   file outside this task's touch list to accommodate production code. Recomputing from the parameter
+   count is the same number by construction (both go through `checkpoint_bytes`) and needs no new key
+   from the record, so the stub keeps working and the printed number is still the guard's.
+3. **The periodic write is skipped at the invocation's last step.** Writing it there would mean a
+   second full `torch.save` of the same state the end-of-run checkpoint writes moments later -- 4.7 GB
+   and ~a minute at the configured scale, for a file that is `checkpoint.pt` anyway. The consequence
+   is visible in the tests: a completed run's `checkpoint.pt` is a *fresh* inode, not a link to the
+   last step copy.
+
+### Disagreement
+None. The one design choice not spelled out in the task is the hard link (the task says "keep the last
+K plus checkpoint.pt"); a second `torch.save` per periodic checkpoint would have doubled both the
+write time and the disk cost of `--keep-last`, and `os.link` + `os.replace` keeps both names atomic.
+Should a future checkpoint directory ever live on a filesystem without hard links, the code falls back
+to `shutil.copy2` rather than failing.
+
+### Files changed outside the task's touch list
+None. `policy/_shared.py` was in the touch list but needed no change: the estimate belongs with the
+checkpoint writer, not with what both models feed on.
+
+### Safety
+R1: no hardware, no session file read, created or edited; `hardware/session.enable` still absent. R2:
+nothing here produces a target of any kind; `policy/` still imports nothing from
+`tools/hardware_checks/`. R3: untouched -- the disk guard is explicitly *not* a safety mechanism and
+says so in the code, the config and the docs; `config/safety.yaml` unchanged, `third_party/`
+unchanged, no `--no-verify` (D-013).

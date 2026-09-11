@@ -192,7 +192,8 @@ ssh -i "$GREENNODE_SSH_KEY" "$GREENNODE_USER@$GREENNODE_HOST" \
 cloud/greennode.sh up
 cloud/greennode.sh train --detach policy/train.py \
     --sessions data/raw/<session> [data/raw/<session2> ...] \
-    --steps 200000 --device cuda --batch-size 64 --workers 8 --run-name <YYYYmmddTHHMMSS>_diffusion
+    --steps 200000 --device cuda --batch-size 64 --workers 8 --run-name <YYYYmmddTHHMMSS>_diffusion \
+    --checkpoint-every 1000 --keep-last 2
 cloud/greennode.sh status <JOB_ID>                # while it runs; the heartbeat is mirrored here
 cloud/greennode.sh down
 cat data/checkpoints/<run>/run.json               # the two hashes go into agents/BUILD_LOG.md
@@ -201,7 +202,20 @@ cat data/checkpoints/<run>/run.json               # the two hashes go into agent
 `--steps 200000` is `config/training.yaml` `diffusion.train_iterations`; `--device cuda` is the only
 argument that must change from the laptop's smoke runs. `--detach` because a real run is hours long: the
 job is launched under `nohup setsid` and survives the ssh connection dropping either way, and `--detach`
-only stops *this* shell from waiting. The ACT baseline (5.7) is the same command with its own entry
+only stops *this* shell from waiting.
+
+`--checkpoint-every 1000 --keep-last 2` (T-036) are the `compute.checkpoint_every` and
+`compute.keep_last` defaults written out, because on a rented box they are the arguments that decide
+what a crash costs: the run writes `checkpoint.pt` — atomically, temp then rename — every 1000 steps
+and keeps the two newest `checkpoint_step<N>.pt` beside it, so a preempted or killed job resumes with
+`--resume data/checkpoints/<run>/checkpoint.pt` (or a named step) having lost at most 1000 steps.
+`down` brings the step checkpoints back with the rest of the run directory; at 293 M parameters each
+is 4.7 GB, so **delete them from the remote once a run is finished** and keep only what
+`policy/export.py` needs. The job also refuses to start when the remote's free space is below
+`compute.disk_guard_factor` (2) × the estimated checkpoint size — 10.32 GB for the configured diffusion
+policy, 1.82 GB for ACT, 1.07 GB for `diffusion_small` — with a message naming Q-002; that estimate is
+printed by every run, and `--no-disk-guard` overrides the refusal. The local smoke command below does
+not pass `--checkpoint-every`: 30 steps never reach the first periodic write, and this laptop has 12 GB. The ACT baseline (5.7) is the same command with its own entry
 point, on the same sessions, so that the comparison always exists.
 
 ### The same run without credentials (what is actually tested today)

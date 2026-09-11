@@ -301,3 +301,21 @@ compute:
   # 454 ms), 12 matches it, and 14 is 2-3x worse on every leg. 8 of 14 logical cores also leaves the
   # camera, driver and DDS threads of runtime/controller.py somewhere to run.
   torch_threads: 8
+  # --- periodic checkpoints, pruning and the disk guard (T-036) --------------------------------
+  # Steps between periodic checkpoints (`--checkpoint-every`; 0 writes only the one at the end of
+  # the invocation). 1000 of the 200 000 steps of a real run is ~0.5% of the run lost to a crash,
+  # and at the configured 293 M parameters it is one 4.7 GB write every ~1000 steps -- minutes of
+  # training per write on the GPU, seconds of writing (5.8: the run is hours long, on a box we do
+  # not own). A smoke run is 30 steps and writes none.
+  checkpoint_every: 1000
+  # Step checkpoints (`checkpoint_step<N>.pt`) kept beside `checkpoint.pt`, newest first
+  # (`--keep-last`). 2 is one to resume from and one that was already complete before it; the EMA
+  # export bundle of policy/export.py is never a step checkpoint and is never pruned.
+  keep_last: 2
+  # The run refuses to start unless the free space under the run directory is this many times the
+  # estimated checkpoint size (parameters x 4 bytes x 4 -- weights, EMA, Adam's two moments -- plus
+  # a 10% margin). 2, because an atomic write holds the new checkpoint and the previous one at the
+  # same time, and a run that fills the disk half way through loses the run *and* the checkpoint it
+  # was overwriting. This is a training-time convenience against agents/QUESTIONS.md Q-002 (12 GB
+  # free on /home), not a safety rule: `--no-disk-guard` overrides it with a logged warning.
+  disk_guard_factor: 2

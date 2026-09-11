@@ -301,6 +301,8 @@ a receding horizon.
 .venv/bin/python -m policy.train --sessions data/raw/<session> --steps 200000        # Greennode
 .venv/bin/python -m policy.train --sessions data/raw/<session> --policy act          # the baseline
 .venv/bin/python -m policy.train --sessions data/raw/mock_smoke --smoke              # 30 steps, CPU
+.venv/bin/python -m policy.train --sessions ... --checkpoint-every 1000 --keep-last 2  # T-036
+.venv/bin/python -m policy.train --sessions ... --resume data/checkpoints/<run>/checkpoint.pt
 ```
 
 A plain torch loop (Adam, `<policy>.learning_rate`, `<policy>.weight_decay`) over `LudoDataset`
@@ -313,7 +315,8 @@ with the policy's own loss — no lerobot trainer, no hub. Each run writes
 - `loss.csv` — `step,loss,val_loss,lr,elapsed_s` for every step (`val_loss` is empty on a step that
   ran no validation pass);
 - `checkpoint.pt` — `{"policy", "spec", "state_dict", "ema_state_dict", "ema_step", "optimizer",
-  "step", "rng", "losses", "run"}`.
+  "step", "rng", "losses", "run"}`;
+- `checkpoint_step<N>.pt` — the last `--keep-last` periodic copies of the same thing (T-036).
 
 ### EMA, warmup + cosine, validation, resume (T-035)
 
@@ -351,6 +354,47 @@ with the policy's own loss — no lerobot trainer, no hub. Each run writes
 A checkpoint is **four times the parameters** on disk since T-035: the weights, their EMA, and Adam's
 two moments. That is what an exact resume costs — 4.7 GB at the configured 293 M parameters, 490 MB
 for `diffusion_small` — and it is why nothing keeps two of them on this laptop (Q-002).
+
+### Surviving a crash: periodic checkpoints, pruning, the disk guard (T-036)
+
+A real run is hours of a GPU we rent (5.8), so the run is checkpointed as it goes and not only at the
+end. Three flags, three `compute` keys in `config/training.yaml`:
+
+| flag | default | what it does |
+|---|---|---|
+| `--checkpoint-every N` | `compute.checkpoint_every` = 1000 | write the checkpoint every N steps; 0 writes only the one at the end of the invocation |
+| `--keep-last K` | `compute.keep_last` = 2 | step checkpoints kept beside `checkpoint.pt`, newest first |
+| `--no-disk-guard` | guard on, `compute.disk_guard_factor` = 2 | train even when the free space is below factor × the estimated checkpoint size |
+
+- **Atomic.** Every checkpoint — periodic or final — is `torch.save`d to `checkpoint.pt.tmp` and then
+  `os.replace`d over `checkpoint.pt`. The rename is atomic on one filesystem, so a crash (or a full
+  disk) *during* a write leaves the previous checkpoint whole instead of a truncated file that
+  `--resume` would choke on; the `.tmp` suffix is not `.pt`, so a half-written file can never be
+  mistaken for a checkpoint. `tests/test_train.py` makes `torch.save` die after writing the temp file
+  and asserts the old `checkpoint.pt` still loads.
+- **Periodic, and named.** Each periodic write also leaves `checkpoint_step<N>.pt`, a **hard link** to
+  the file just written — a 4.7 GB checkpoint is not written twice and two names do not cost two
+  inodes. `--resume` takes either name. The step copy's `run` record is the run so far, with
+  `complete: false`; only the checkpoint at the end of an invocation has `complete: true`.
+- **Pruned.** After each periodic write, all but the `--keep-last K` newest `checkpoint_step<N>.pt`
+  are deleted. Nothing else is ever considered: `checkpoint.pt`, `run.json`, `loss.csv` and an
+  exported bundle sitting in the same run directory do not match the glob and cannot be pruned.
+- **The disk guard.** Before the first step, the free space under the run directory is compared with
+  `disk_guard_factor ×` the estimated checkpoint size (`parameters × 4 bytes × 4`, plus 10%, printed
+  either way — at the configured scale **5.16 GB** for the 293.0 M diffusion policy, 0.54 GB for
+  `diffusion_small`, and 0.91 GB for the 51.6 M ACT baseline). Short of it, the run refuses to start
+  with a message naming Q-002, the estimate and the free space, instead of dying an hour in with a
+  half-written checkpoint. The factor is 2 because an atomic write holds the new checkpoint and the
+  previous one at the same time. `--no-disk-guard` overrides it with a logged warning: this is a
+  training-time convenience against a full laptop disk, **not** a safety rule (R3 is `runtime/safety.py`
+  and is not overridable). Measured against the real file at the test scale: 16.0 M parameters wrote
+  256.8 MB and the estimate is 282.1 MB (1.10×), so the guard over-estimates by design.
+
+The crash path is tested end to end, not described: `tests/test_train.py` runs `python -m policy.train`
+in a subprocess with `--fault-at-step 5` (a documented test aid that does nothing unless passed), which
+raises after step 5 of an 8-step run; the killed run's directory holds exactly `checkpoint.pt` and
+`checkpoint_step4.pt` (step 2's was pruned, and both names are one inode); resuming from it and running
+to step 8 reproduces the straight 8-step run's loss sequence with a largest difference of **0.0**.
 
 `--config-block NAME` builds the spec (and takes the defaults) from another block of
 `config/training.yaml`: `diffusion_small` is the D-019 fallback configuration — one shared ResNet-18,

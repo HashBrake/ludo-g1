@@ -6,6 +6,7 @@
 .venv/bin/python -m policy.train --sessions data/raw/mock_smoke --smoke      # 30 steps, batch 4, CPU
 .venv/bin/python -m policy.train --sessions ... --config-block diffusion_small   # the D-019 fallback
 .venv/bin/python -m policy.train --sessions ... --resume data/checkpoints/<run>/checkpoint.pt
+.venv/bin/python -m policy.train --sessions ... --checkpoint-every 1000 --keep-last 2   # T-036
 ```
 
 Real training happens on Greennode (5.8, Q-001); this is the entry point ``cloud/greennode.sh``
@@ -41,17 +42,38 @@ What the loop does besides stepping the optimiser (T-035)
   the same run: 10 steps + resume + 10 steps of a 20-step run **is** the 20-step run, and
   ``tests/test_train.py`` pins the two loss sequences and the two sets of weights against each other.
 
+Surviving a crash (T-036)
+-------------------------
+A real run is hours of a rented GPU (5.8), so it is checkpointed as it goes, not only at the end:
+
+* **Periodic.** ``--checkpoint-every N`` (``compute.checkpoint_every``) writes the checkpoint every N
+  steps. Every write goes to ``checkpoint.pt.tmp`` and is then renamed over ``checkpoint.pt``
+  (:func:`atomic_save`), so a crash *during* a write leaves the previous checkpoint whole rather than
+  a truncated file. ``--resume`` on it continues the run exactly, by the machinery above.
+* **Pruning.** Each periodic write also leaves ``checkpoint_step<N>.pt``, a hard link to the same
+  file (a 4.7 GB checkpoint is not written twice and two names do not cost two inodes);
+  ``--keep-last K`` keeps the K newest and deletes the rest. Nothing else in the run directory is
+  ever pruned -- not ``checkpoint.pt`` and not an exported bundle.
+* **The disk guard.** Before the first step the run compares the free space under its directory with
+  ``compute.disk_guard_factor`` x the estimated checkpoint size (:func:`checkpoint_bytes`:
+  parameters x 4 bytes x 4, printed either way) and refuses to start if it is short, naming
+  ``agents/QUESTIONS.md`` Q-002. ``--no-disk-guard`` overrides it with a logged warning; it is a
+  convenience against a full laptop disk, not a safety rule.
+
 Every run writes ``data/checkpoints/<run>/``:
 
-======================  ==========================================================================
-``run.json``            args, git commit, the six config hashes, the dataset manifest hash, the
-                        per-session episode and frame counts, the held-out pairs, the final loss
-                        and the wall time
-``loss.csv``            ``step,loss,val_loss,lr,elapsed_s`` for every step: the loss curves
-                        CLAUDE.md section 8 audits (``val_loss`` is empty on a step that ran none)
-``checkpoint.pt``       ``{"policy", "spec", "state_dict", "ema_state_dict", "optimizer", "step",
-                        "rng", "losses", "run"}``; ``policy/export.py`` turns it into a bundle
-======================  ==========================================================================
+==========================  ======================================================================
+``run.json``                args, git commit, the six config hashes, the dataset manifest hash, the
+                            per-session episode and frame counts, the held-out pairs, the parameter
+                            count and checkpoint size estimate, the final loss and the wall time
+``loss.csv``                ``step,loss,val_loss,lr,elapsed_s`` for every step: the loss curves
+                            CLAUDE.md section 8 audits (``val_loss`` is empty on a step with none)
+``checkpoint.pt``           ``{"policy", "spec", "state_dict", "ema_state_dict", "ema_step",
+                            "optimizer", "step", "rng", "losses", "run"}``; ``policy/export.py``
+                            turns it into a bundle
+``checkpoint_step<N>.pt``   the last ``--keep-last`` periodic copies of the same thing; ``run`` in
+                            one of them is the run record so far, with ``complete: false``
+==========================  ======================================================================
 
 The dataset manifest hash is the sha256 of each session's ``meta/info.json`` and
 ``episodes_meta.jsonl`` bytes, in session-name order. Two runs whose manifest hash and config hashes
@@ -68,6 +90,8 @@ import csv
 import hashlib
 import json
 import math
+import os
+import shutil
 import subprocess
 import time
 from collections.abc import Iterator, Sequence
@@ -93,15 +117,24 @@ from teleop.recorder import SIDECAR
 
 __all__ = [
     "CHECKPOINT_DIR",
+    "CHECKPOINT_FILE",
     "POLICIES",
+    "STEP_CHECKPOINT_GLOB",
+    "DiskGuardError",
     "EMA",
+    "InjectedFault",
+    "atomic_save",
+    "check_checkpoint_disk",
+    "checkpoint_bytes",
     "dataset_manifest_hash",
     "git_commit",
     "lr_multiplier",
     "main",
     "policy_kind",
+    "prune_step_checkpoints",
     "train",
     "warmup_for",
+    "write_step_checkpoint",
 ]
 
 #: ``--policy NAME`` -> (the spec it builds, the model it trains, the ``config/training.yaml`` block).
@@ -129,6 +162,134 @@ VAL_SEED = 20260912
 #: ROLL episodes address no cell pair, so no pair split can hold them out; they stay in training
 #: (T-027, ``policy/dataset.py`` ``split``).
 NO_PAIR: CellPair = (None, None)
+
+#: The run's latest checkpoint, and the periodic copies kept beside it (T-036). A step checkpoint is
+#: an alias of ``checkpoint.pt`` as it stood at that step, so ``--resume`` takes either name.
+CHECKPOINT_FILE = "checkpoint.pt"
+STEP_CHECKPOINT = "checkpoint_step{step}.pt"
+STEP_CHECKPOINT_GLOB = "checkpoint_step*.pt"
+#: Every checkpoint is written to ``<name>.tmp`` first and renamed over the old one, so that a crash
+#: during the write leaves the previous checkpoint whole. The suffix is not ``.pt``, so a half-written
+#: file can never be mistaken for a checkpoint by the glob above or by ``--resume``.
+TMP_SUFFIX = ".tmp"
+#: What a checkpoint costs per parameter: fp32 weights, their EMA, and Adam's two moments.
+BYTES_PER_PARAMETER, CHECKPOINT_COPIES = 4, 4
+#: Added to that estimate for everything else in the payload (the normalisation buffers, the loss
+#: history, the run record) and for the filesystem's rounding.
+CHECKPOINT_MARGIN = 0.1
+
+
+class DiskGuardError(RuntimeError):
+    """Not enough free space under the run directory for this run's checkpoints (Q-002)."""
+
+
+class InjectedFault(RuntimeError):
+    """``--fault-at-step``: the deliberate crash the resume test needs. Never raised without it."""
+
+
+# --------------------------------------------------------------------------------------------------
+# checkpoints: atomic writes, periodic copies, pruning, and the disk guard (T-036)
+# --------------------------------------------------------------------------------------------------
+
+
+def checkpoint_bytes(parameters: int) -> int:
+    """Estimated size of one ``checkpoint.pt`` for a model of ``parameters`` parameters.
+
+    ``parameters x 4 bytes x 4`` -- the weights, their EMA, and Adam's two moments, all fp32 -- plus
+    :data:`CHECKPOINT_MARGIN`. Measured against the real thing at the test scale: 38.4 M parameters
+    wrote 614.8 MB and this estimate is 675.8 MB, so it is an over-estimate by design (a guard that
+    under-estimates is not a guard).
+    """
+    return int(int(parameters) * BYTES_PER_PARAMETER * CHECKPOINT_COPIES * (1.0 + CHECKPOINT_MARGIN))
+
+
+def check_checkpoint_disk(directory: Path | str, parameters: int, *, factor: float,
+                          enforce: bool = True, log: Any | None = None) -> dict:
+    """Refuse to start a run whose checkpoints will not fit. Returns the numbers either way.
+
+    ``factor`` (``compute.disk_guard_factor``) times :func:`checkpoint_bytes` must be free under
+    ``directory``: an atomic write holds the new checkpoint and the one it is replacing at the same
+    time, and a run that fills the disk half way through loses the run *and* the checkpoint it was
+    overwriting. ``enforce=False`` (``--no-disk-guard``) logs the shortfall and continues; this is a
+    training-time convenience, not a safety rule (R3 is elsewhere and is never overridable).
+    """
+    estimate = checkpoint_bytes(parameters)
+    needed = int(float(factor) * estimate)
+    free = shutil.disk_usage(Path(directory)).free
+    numbers = {"parameters": int(parameters), "estimate_bytes": estimate, "required_bytes": needed,
+               "free_bytes": int(free), "factor": float(factor), "enforced": bool(enforce)}
+    if log is not None:
+        log.info("disk_guard", ok=free >= needed, **numbers)
+    if free >= needed:
+        return numbers
+    message = (
+        f"{Path(directory)} has {free / 1e9:.2f} GB free and this run needs "
+        f"{needed / 1e9:.2f} GB for its checkpoints: one checkpoint of {int(parameters) / 1e6:.1f}M "
+        f"parameters is about {estimate / 1e9:.2f} GB (parameters x {BYTES_PER_PARAMETER} bytes x "
+        f"{CHECKPOINT_COPIES} for the weights, their EMA and Adam's two moments, plus "
+        f"{CHECKPOINT_MARGIN:.0%}), times disk_guard_factor {factor:g} so that writing a new one "
+        f"never destroys the one already on disk. This is agents/QUESTIONS.md Q-002 (12 GB free on "
+        f"/home against the 500 GB the brief asks for): train on Greennode (5.8), point --out-dir at "
+        f"a bigger disk, use --config-block diffusion_small, or pass --no-disk-guard to train anyway."
+    )
+    if enforce:
+        raise DiskGuardError(message)
+    if log is not None:
+        log.warning("disk_guard_overridden", reason=message, **numbers)
+    return numbers
+
+
+def atomic_save(payload: dict, path: Path) -> Path:
+    """``torch.save`` to ``<path>.tmp``, then :func:`os.replace` over ``path``.
+
+    The rename is atomic on the same filesystem, so a crash (or a full disk) during the write leaves
+    the previous checkpoint intact instead of a truncated file that ``--resume`` would choke on.
+    """
+    tmp = path.with_name(path.name + TMP_SUFFIX)
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
+    return path
+
+
+def _step_of(path: Path) -> int:
+    """``checkpoint_step1200.pt`` -> 1200."""
+    return int(path.stem.rsplit("step", 1)[-1])
+
+
+def prune_step_checkpoints(directory: Path | str, keep: int) -> list[Path]:
+    """Delete all but the ``keep`` newest ``checkpoint_step<N>.pt``. Returns what was deleted.
+
+    Only step checkpoints are ever considered: ``checkpoint.pt`` (the latest) and an exported bundle
+    sitting in the same run directory are not matched by :data:`STEP_CHECKPOINT_GLOB` and cannot be
+    pruned. ``keep <= 0`` keeps none of them, and ``checkpoint.pt`` still holds the latest state.
+    """
+    files = sorted(Path(directory).glob(STEP_CHECKPOINT_GLOB), key=_step_of)
+    doomed = files if int(keep) <= 0 else files[:-int(keep)]
+    for path in doomed:
+        path.unlink(missing_ok=True)
+    return doomed
+
+
+def write_step_checkpoint(payload: dict, directory: Path | str, step: int,
+                          keep: int) -> tuple[Path, list[Path]]:
+    """One periodic checkpoint: ``checkpoint.pt`` updated atomically, aliased, older ones pruned.
+
+    The step copy is a **hard link** to the file just written, not a second ``torch.save``: a 4.7 GB
+    checkpoint is not written twice, and ``keep`` copies of it do not cost ``keep`` times the disk
+    while they share an inode. Both names are replaced atomically, and unlinking either leaves the
+    other whole. Returns ``(the step checkpoint, the ones deleted)``.
+    """
+    directory = Path(directory)
+    latest = atomic_save(payload, directory / CHECKPOINT_FILE)
+    alias = directory / STEP_CHECKPOINT.format(step=int(step))
+    staged = alias.with_name(alias.name + TMP_SUFFIX)
+    staged.unlink(missing_ok=True)
+    try:
+        os.link(latest, staged)
+    except OSError:  # a filesystem without hard links (or across one): pay for the copy
+        shutil.copy2(latest, staged)
+    os.replace(staged, alias)
+    return alias, prune_step_checkpoints(directory, keep)
 
 
 def policy_kind(spec: PolicySpec | ACTSpec) -> str:
@@ -358,6 +519,11 @@ def train(
     val_batches: int | None = None,
     resume: Path | str | None = None,
     stop_after: int | None = None,
+    checkpoint_every: int | None = None,
+    keep_last: int | None = None,
+    disk_guard: bool = True,
+    disk_guard_factor: float | None = None,
+    fault_at_step: int | None = None,
 ) -> dict:
     """Run ``steps`` optimiser steps and write the run directory. Returns the run record."""
     if steps < 1:
@@ -374,6 +540,10 @@ def train(
     min_ratio = float(block["lr_min_ratio"]) if lr_min_ratio is None else float(lr_min_ratio)
     every = int(block["val_every"]) if val_every is None else int(val_every)
     val_count = int(block["val_batches"]) if val_batches is None else int(val_batches)
+    compute = training["compute"]
+    save_every = int(compute["checkpoint_every"]) if checkpoint_every is None else int(checkpoint_every)
+    keep = int(compute["keep_last"]) if keep_last is None else int(keep_last)
+    guard_factor = float(compute["disk_guard_factor"]) if disk_guard_factor is None else float(disk_guard_factor)
 
     # Each model of 5.7 gets the observation history its own config block asks for: `obs_history` is
     # 2 for the Diffusion Policy and 1 for ACT, which lerobot forbids from taking more (T-034).
@@ -448,6 +618,45 @@ def train(
     # 200 000-step run on a preemptible box is the same run whether it is taken in one slice or ten
     # (``--stop-after`` + ``--resume``), and the learning rate at step 120 000 is the same either way.
     last_step = steps if stop_after is None else min(steps, start_step + max(int(stop_after), 1))
+
+    # T-036: the run must not start if its checkpoints cannot fit, and what every one of them will
+    # cost is printed either way. Before the first step, because the point is to fail in a second
+    # rather than after an hour of training that cannot be saved.
+    parameters = int(sum(p.numel() for p in model.parameters()))
+    disk = check_checkpoint_disk(directory, parameters, factor=guard_factor, enforce=disk_guard, log=log)
+
+    # Everything a checkpoint records about *which run it belongs to*, known before the first step so
+    # that a periodic checkpoint carries it too (policy/export.py reads these out of `run`).
+    arguments = {"steps": steps, "batch_size": batch_size, "learning_rate": float(learning_rate),
+                 "weight_decay": float(weight_decay), "seed": seed, "device": device, "augment": augment,
+                 "stats_samples": samples, "workers": workers, "ema_decay": decay,
+                 "warmup_steps": warmup, "lr_min_ratio": min_ratio, "val_fraction": float(val_fraction),
+                 "val_every": every, "val_batches": val_count, "stop_after": stop_after,
+                 "checkpoint_every": save_every, "keep_last": keep, "disk_guard": bool(disk_guard),
+                 "disk_guard_factor": guard_factor,
+                 "resumed_from": None if resume is None else str(resume), "resumed_at_step": start_step,
+                 "stopped_at_step": last_step}
+    identity = {
+        "run": run,
+        "policy": kind,
+        "config_block": config_block or kind,
+        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "git_commit": git_commit(),
+        "config_hashes": hashes,
+        "dataset_manifest_sha256": manifest,
+        "spec": spec.to_dict(),
+        "args": arguments,
+        "parameters": parameters,
+        "checkpoint_bytes_estimate": disk["estimate_bytes"],
+    }
+
+    def checkpoint_payload(record: dict) -> dict:
+        """What ``--resume`` needs, plus the run record: the model, optimiser, EMA, step, RNG, curve."""
+        return {"policy": kind, "spec": spec.to_dict(), "state_dict": model.state_dict(),
+                "ema_state_dict": ema.state_dict(model), "ema_step": ema.step,
+                "optimizer": optimizer.state_dict(), "step": losses[-1][0],
+                "rng": torch.get_rng_state(), "losses": losses, "run": record}
+
     started = time.perf_counter()
     batches = islice(iter(loader), last_step - start_step)
     for step, batch in enumerate(batches, start=start_step + 1):
@@ -473,6 +682,21 @@ def train(
                      val_loss=None if val is None else round(val, 6), elapsed_s=round(elapsed, 2))
             heartbeat.write_text(f"step {step}/{steps} loss {losses[-1][1]:.6f} elapsed_s {elapsed:.1f}\n",
                                  encoding="utf-8")
+        # The periodic checkpoint (T-036). Not at `last_step`, which is checkpointed below anyway as
+        # the end of the invocation; a run killed between two of these resumes from the last one.
+        if save_every > 0 and step % save_every == 0 and step != last_step:
+            alias, pruned = write_step_checkpoint(
+                checkpoint_payload({**identity, "step": step, "of": steps, "complete": False,
+                                    "loss_last": losses[-1][1], "elapsed_s": elapsed}),
+                directory, step, keep)
+            log.info("checkpoint", step=step, file=alias.name, keep_last=keep,
+                     pruned=[p.name for p in pruned])
+        # The deliberate crash of `--fault-at-step`, after everything step N would have done. It is a
+        # test aid (tests/test_train.py kills a real run here and resumes it); without the flag
+        # `fault_at_step` is None and this is dead code.
+        if fault_at_step is not None and step >= int(fault_at_step):
+            raise InjectedFault(f"--fault-at-step {int(fault_at_step)}: crashing after step {step} of "
+                                f"{steps} on purpose; the last checkpoint is the run's own")
 
     with (directory / "loss.csv").open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
@@ -482,27 +706,14 @@ def train(
 
     validated = [(s, val) for s, _loss, val, _t, _lr in losses if val is not None]
     record = {
-        "run": run,
-        "policy": kind,
-        "config_block": config_block or kind,
-        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "git_commit": git_commit(),
-        "config_hashes": hashes,
-        "dataset_manifest_sha256": manifest,
+        **identity,
+        "complete": True,
         "sessions": [
             {"path": str(Path(s)), "episodes": sum(1 for e in data.episodes if e.session == i)}
             for i, s in enumerate(sessions)
         ],
         "frames": len(data),
         "n_obs_steps": data.n_obs_steps,
-        "spec": spec.to_dict(),
-        "args": {"steps": steps, "batch_size": batch_size, "learning_rate": float(learning_rate),
-                 "weight_decay": float(weight_decay), "seed": seed, "device": device, "augment": augment,
-                 "stats_samples": samples, "workers": workers, "ema_decay": decay,
-                 "warmup_steps": warmup, "lr_min_ratio": min_ratio, "val_fraction": float(val_fraction),
-                 "val_every": every, "val_batches": val_count, "stop_after": stop_after,
-                 "resumed_from": None if resume is None else str(resume), "resumed_at_step": start_step,
-                 "stopped_at_step": last_step},
         "validation": {
             "frames": 0 if validation is None else len(validation),
             "episodes": 0 if validation is None else len(validation.episodes),
@@ -510,19 +721,17 @@ def train(
             "loss_first": validated[0][1] if validated else None,
             "loss_last": validated[-1][1] if validated else None,
         },
-        "parameters": int(sum(p.numel() for p in model.parameters())),
         "loss_first": losses[0][1],
         "loss_last": losses[-1][1],
         "loss_mean_last_10": float(np.mean([loss for _s, loss, _v, _t, _lr in losses[-10:]])),
         "elapsed_s": losses[-1][3],
-        "checkpoint": str(directory / "checkpoint.pt"),
+        "step": losses[-1][0],
+        "checkpoint": str(directory / CHECKPOINT_FILE),
     }
     (directory / "run.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    torch.save({"policy": kind, "spec": spec.to_dict(), "state_dict": model.state_dict(),
-                "ema_state_dict": ema.state_dict(model), "ema_step": ema.step,
-                "optimizer": optimizer.state_dict(), "step": losses[-1][0], "rng": torch.get_rng_state(),
-                "losses": losses, "run": record},
-               directory / "checkpoint.pt")
+    # The end of this invocation is a checkpoint like any other: written to `.tmp` and renamed, so
+    # that a crash here leaves the last periodic checkpoint rather than a truncated file (T-036).
+    atomic_save(checkpoint_payload(record), directory / CHECKPOINT_FILE)
     log.info("train_end", run=run, policy=kind, loss_first=round(record["loss_first"], 6),
              loss_last=round(record["loss_last"], 6),
              val_loss_last=record["validation"]["loss_last"], elapsed_s=round(record["elapsed_s"], 1))
@@ -570,6 +779,22 @@ def main(argv: list[str] | None = None) -> int:
                              "continues the same run on the same schedule")
     parser.add_argument("--resume", default=None, metavar="CHECKPOINT",
                         help="continue a run from its checkpoint.pt (weights, optimiser, EMA, step, RNG)")
+    compute = training["compute"]
+    parser.add_argument("--checkpoint-every", type=int, default=None, metavar="N",
+                        help="write checkpoint.pt (and a checkpoint_step<N>.pt copy) every N steps, so "
+                             "that a crash costs at most N steps; 0 writes only the final one "
+                             f"(default: compute.checkpoint_every = {compute['checkpoint_every']})")
+    parser.add_argument("--keep-last", type=int, default=None, metavar="K",
+                        help="step checkpoints kept beside checkpoint.pt, newest first; an exported "
+                             f"bundle is never pruned (default: compute.keep_last = {compute['keep_last']})")
+    parser.add_argument("--no-disk-guard", action="store_true",
+                        help="train even when the free space under the run directory is below "
+                             f"compute.disk_guard_factor ({compute['disk_guard_factor']}) x the "
+                             "estimated checkpoint size; the shortfall is logged (Q-002)")
+    parser.add_argument("--fault-at-step", type=int, default=None, metavar="K",
+                        help="TEST AID: raise after step K instead of finishing, to exercise a crash "
+                             "and the resume from the last periodic checkpoint. Does nothing unless "
+                             "passed; tests/test_train.py is the only caller")
     args = parser.parse_args(argv)
 
     name = args.config_block or args.policy
@@ -597,12 +822,18 @@ def main(argv: list[str] | None = None) -> int:
         run_name=run_name, spec=spec, augment=not args.no_augment, stats_samples=args.stats_samples,
         workers=args.workers, config_block=name, val_fraction=val_fraction, val_every=args.val_every,
         ema_decay=args.ema_decay, warmup_steps=args.warmup_steps, resume=args.resume,
-        stop_after=args.stop_after,
+        stop_after=args.stop_after, checkpoint_every=args.checkpoint_every, keep_last=args.keep_last,
+        disk_guard=not args.no_disk_guard, fault_at_step=args.fault_at_step,
     )
     print(f"run {record['run']} ({record['policy']}, block {record['config_block']}): "
           f"{record['frames']} frames, {record['parameters'] / 1e6:.1f}M parameters")
     print(f"training config hash {record['config_hashes']['training']}")
     print(f"dataset manifest sha256 {record['dataset_manifest_sha256']}")
+    # The disk guard's estimate, printed for every run (T-036). Recomputed from the parameter count
+    # rather than read from the record, so that it is the same number the guard used and one key.
+    print(f"checkpoint {checkpoint_bytes(record['parameters']) / 1e9:.2f} GB estimated "
+          f"({record['parameters'] / 1e6:.1f}M parameters x {BYTES_PER_PARAMETER} bytes x "
+          f"{CHECKPOINT_COPIES} + {CHECKPOINT_MARGIN:.0%})")
     print(f"loss step 1 {record['loss_first']:.6f} -> step {record['args']['stopped_at_step']} "
           f"{record['loss_last']:.6f} "
           f"(mean of the last 10: {record['loss_mean_last_10']:.6f}) in {record['elapsed_s']:.1f} s")
