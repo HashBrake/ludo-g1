@@ -1495,7 +1495,7 @@ acceptance:
   - tests pass; `eval.run_eval --backend mock --kind move --n 5 --policy hold` now reports policy_stalled (command and output
     in BUILD_LOG.md)
 notes: R2: the hold on halt is the measured state, not a pose. Keep the watchdog inside controller.py's tick, no threads.
-result: (opus, 2026-09-12T05:10+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-12T05:10+07:00, commit 54be930)
   - runtime/controller.py: `Watchdog` sampled inside the loop's own tick (no thread): once per
     `runtime.watchdog_interval_s` it reads the new `Perception.progress(command, before, now) -> [0, 1]`,
     remembers the last increase, and `stalled()` is true `runtime.watchdog_stall_s` after it. The loop tests
@@ -1527,7 +1527,7 @@ result: (opus, 2026-09-12T05:10+07:00, commit COMMIT_HASH)
     -> 3 commands, `policy_stalled=2, timeout_no_progress=1`, `run_deadline=1, watchdog=2`, 9.98 Hz / 29.89 Hz,
     0 refusals.
   - tests/test_controller.py 30 passed, tests/test_eval.py 26 passed, `ruff check .` clean. Full suite through
-    the pre-commit hook -> SUITE_NUMBERS. PASS
+    the pre-commit hook -> 596 passed, 10 skipped in 311 s (586 passed before this task). PASS
 
 ## T-039  Network engine client for the real game engine (contract of CLAUDE.md 5.5 over a socket)
 status: todo

@@ -3538,7 +3538,7 @@ path to guard; `config/safety.yaml` untouched. `hardware/session.enable` neither
 read. Nothing under `third_party/` touched. Committed through the full pre-commit gate, no
 `--no-verify` (D-013).
 
-## T-037  Progress watchdog and per-trial failure logging in the controller  (opus, 2026-09-12T05:10+07:00)
+## T-037  Progress watchdog and per-trial failure logging in the controller  (opus, 2026-09-12T05:10+07:00, commit 54be930)
 
 CLAUDE.md Phase 5 hardening, on mocks. Nothing here touched hardware, no session file was created,
 read or needed, and no real driver exists to command (R1).
@@ -3605,6 +3605,9 @@ read or needed, and no real driver exists to command (R1).
   "records": 5, "by_failure_mode": {"policy_stalled": 5}, "agrees": true}`, every row
   `stopped_by="watchdog"`, `duration_s=20.067`, `actions_sent=602`, `policy_calls=200`,
   `safety_refusals=0`.
+- Full suite through the pre-commit hook (`ruff check .` clean, `pytest -q`) -> **596 passed, 10
+  skipped in 310.9 s**; commit `54be930`. The 10 skips are the absent hardware (H-002, H-003) and the
+  absent session file, all unchanged.
 - `.venv/bin/python -m runtime.controller --backend mock --seconds 60` (real clock) -> 3 commands,
   `failure modes policy_stalled=2, timeout_no_progress=1`, `stopped by run_deadline=1, watchdog=2`,
   599 policy calls = 9.98 Hz, 1794 actions = 29.89 Hz, 0 refusals, 0 alignment failures. The run
