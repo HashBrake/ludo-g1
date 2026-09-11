@@ -90,3 +90,5 @@ see the T-001 result block in agents/TASKS.md.
 - `tests/` is a package (`__init__.py`) per the task's "each Python package with an `__init__.py`", and
   `pythonpath = ["."]` is also set so top-level imports work regardless of collection mode.
 - No disagreements with the task as written. No hardware needed. No blockers.
+
+(T-001 scaffold commit: 4255484; this line and the TASKS.md result hash are the only content of the follow-up commit.)

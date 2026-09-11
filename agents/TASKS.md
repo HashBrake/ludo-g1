@@ -25,7 +25,7 @@ acceptance:
   - hook proof: a scratch commit containing a file with a ruff error is rejected by the hook; the command and its output are in BUILD_LOG.md; the scratch file is not left in the tree
   - `git status` clean after the commit; `.venv/` and `data/` untracked
 notes: Keep it minimal (section 7). Do not add torch, lerobot, mujoco yet; T-002 decides what the SDKs need.
-result: (opus, 2026-09-11T18:45+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T18:45+07:00, commit 4255484)
   - `.venv/bin/python --version` -> Python 3.10.20 (uv-managed CPython; system python3 is 3.10.12). PASS
   - `.venv/bin/ruff check .` -> "All checks passed!", exit 0. PASS
   - `.venv/bin/python -m pytest -q` -> 15 passed, 1 skipped ("no session gate yet"), exit 0. PASS
