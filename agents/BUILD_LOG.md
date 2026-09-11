@@ -2513,3 +2513,7 @@ magnitude is not in doubt.
 - R1-R6 intact: no motion command anywhere (nothing in `policy/` imports a driver — a test asserts
   it), no scripted motion, `hardware/session.enable` never created or read. Committed through the
   full pre-commit gate, no `--no-verify` (D-013 item 1).
+
+(T-029 commit: f743667, which holds all of the code, tests, config keys and docs of this task. This
+line and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
+pre-commit gate -- no `--no-verify`, per D-013 item 1.)

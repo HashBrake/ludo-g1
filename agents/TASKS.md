@@ -1070,7 +1070,7 @@ acceptance:
 notes: Real training happens on Greennode (Q-001). No hardware. Keep the LeRobot modifications in policy/ (wrap, do not
   patch the package).
 result:
-  commit: PENDING
+  commit: f743667
   policy/diffusion.py (~470 lines) + policy/train.py (~230) + policy/export.py (~150) + tests/test_diffusion.py
     (10 tests) + docs/policy.md (+130 lines) + policy/__init__.py docstring + 4 new config/training.yaml
     `diffusion` keys (encoder_image_hw [240,320], down_dims, spatial_softmax_keypoints, stats_samples; no existing
