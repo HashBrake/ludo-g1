@@ -1394,3 +1394,5 @@ on this laptop, so the scripts were not statically linted.
 - The three `_internal/` payload symlink sets made by hand in T-007, T-008 and T-009 are unaffected;
   future worktrees get them from `tools/worktree_setup.sh` instead.
 - No hardware needed, no blockers.
+
+(T-014 commit: 5c79b4d; this line and the TASKS.md result hash are the only content of the follow-up commit.)

@@ -557,7 +557,7 @@ acceptance:
   - `git status` in main is clean afterwards
 notes: Nothing under third_party/ is modified; the symlinks live only in the worktree and are git-ignored there.
 result:
-  commit: COMMIT_HASH
+  commit: 5c79b4d
   files: tools/worktree_setup.sh, tools/worktree_teardown.sh, tools/worktree_payloads.txt, docs/setup.md
   acceptance 1: `bash tools/worktree_setup.sh wt/smoke /tmp/ludo-wt-smoke` -> exit 0, "worktree_setup: OK
     worktree=/tmp/ludo-wt-smoke branch=wt/smoke suite=green", pytest inside the worktree 327 passed, 1 skipped
