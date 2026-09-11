@@ -1386,7 +1386,7 @@ result: (opus, 2026-09-12T02:05+07:00, commit 72259ca)
     training config hash is taken after parsing, so it is unchanged). runtime/policy_api.py untouched.
 
 ## T-035  Training loop completeness and a smaller inference configuration
-status: review
+status: accepted
 priority: P1
 phase: 3
 owner: opus
@@ -1437,3 +1437,63 @@ result: (opus, 2026-09-12T04:35+07:00, commit 860916c)
     `--stop-after` was added so the resume acceptance could be written honestly (disagreement logged).
   - outside the touch list: one header assertion in tests/test_greennode_train.py and one measured file size in
     docs/cloud.md, both false after the loss.csv columns and the checkpoint contents changed.
+
+## T-036  Periodic checkpoints, crash resume, checkpoint pruning and a disk guard
+status: todo
+priority: P1
+phase: 3
+owner: opus
+depends_on: T-035
+hardware: none
+deliverables:
+  - policy/train.py: `--checkpoint-every N` writing checkpoint.pt atomically (temp then rename) so a crash mid-write leaves the
+    previous one; `--keep-last K` pruning older step checkpoints (the EMA export bundle is never pruned); a disk guard that
+    refuses to start (clear message naming Q-002) when free space under data/checkpoints is below `disk_guard_factor` (config,
+    default 2) times the estimated checkpoint size (parameters x 4 x 4 bytes, printed)
+  - tests: crash simulation (kill the process after step N, resume from the last periodic checkpoint, loss sequence matches the
+    straight run); pruning keeps exactly K; the disk guard triggers on a mocked statvfs
+acceptance:
+  - tests pass with printed numbers; docs/policy.md and docs/cloud.md updated (cloud train passes --checkpoint-every)
+notes: Disk is 12 GB free; every test writes under tmp_path and deletes weights.
+
+## T-037  Progress watchdog and per-trial failure logging in the controller (CLAUDE.md Phase 5 hardening, on mocks)
+status: in_progress
+priority: P1
+phase: 5
+owner: opus
+depends_on: T-016, T-028
+hardware: none
+deliverables:
+  - runtime/controller.py: a progress watchdog distinct from the primitive timeout: every `watchdog_interval_s` (config) it asks
+    perception for a cheap progress signal (`Perception.progress(command, before, now) -> float in [0,1]`, MockPerception
+    returns 0 unless the mock board changed); if the signal has not increased for `watchdog_stall_s` (20 s per section 6.5) the
+    primitive is halted with failure_mode `policy_stalled` and reported to the engine; the arm receives a hold (its own
+    measured state) through the Guard when a primitive is halted, never a scripted retreat
+  - a per-trial failure log line (JSON) under data/logs/ with command, failure_mode, duration, actions sent, refusals, watchdog
+    verdict, consumed by eval/run_eval.py so the eval JSON and the controller log agree
+  - tests on mocks: HoldPolicy stalls and the watchdog halts at 20 s +/- 0.2 on the fake clock with failure_mode
+    policy_stalled; a mock policy that changes the mock board keeps the watchdog quiet; the eval JSON's by_failure_mode counts
+    policy_stalled once per stalled trial
+acceptance:
+  - tests pass; `eval.run_eval --backend mock --kind move --n 5 --policy hold` now reports policy_stalled (command and output
+    in BUILD_LOG.md)
+notes: R2: the hold on halt is the measured state, not a pose. Keep the watchdog inside controller.py's tick, no threads.
+
+## T-039  Network engine client for the real game engine (contract of CLAUDE.md 5.5 over a socket)
+status: todo
+priority: P2
+phase: 5
+owner: opus
+depends_on: T-007
+hardware: none
+deliverables:
+  - engine/net.py: `NetEngineClient(url)` implementing EngineClient over ZeroMQ REQ/REP (pyzmq is already a transitive
+    dependency; if not, use a plain TCP JSON-lines protocol and add nothing) with a JSON schema for Command, Outcome and
+    board_state in docs/engine.md; `engine/serve_stub.py`: serves StubEngine on the same protocol so the controller can run
+    against a "remote" engine today; timeouts and reconnect rules stated
+  - tests: client against the served stub in a subprocess: 50 commands round trip identical to the in-process stub with the
+    same seed; a dropped server yields a clear EngineUnavailable, not a hang
+acceptance:
+  - tests pass; `runtime.controller --backend mock --engine zmq://127.0.0.1:5555 --seconds 20` works against serve_stub
+    (command and output in BUILD_LOG.md)
+notes: This is the integration point the engine team will target; keep the schema in one place and versioned.

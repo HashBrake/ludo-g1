@@ -164,3 +164,12 @@ but the first step is free: config/training.yaml gains `compute.torch_threads` (
 policy/train.py, both adapters and eval/run_eval.py at start; T-035 re-measures both policies at 1/2/4/8 threads on a quiet
 machine (no other builder running) and records the table. ACT at ~150 ms is still above the 100 ms budget at 10 Hz but
 within reach of the 5.8 ladder (ACT then Orin NX); the diffusion policy is not, on this CPU.
+
+## D-021  Inference can land on the laptop: ACT 91 ms, diffusion_small 80 ms at 8 threads  (2026-09-12T04:21+07:00)
+T-035's sweep on a quiet machine: at torch_threads 8 the ACT baseline runs act() in 91 ms median and the diffusion_small
+configuration (one shared ResNet-18, 120x160, 30 M parameters) in 80 ms at DDIM 10 and 53 ms at DDIM 5; the full 293 M
+diffusion policy stays at 454 ms. Both small models fit the 100 ms budget of 5.2 on this laptop, so D-019's Orin NX path
+is no longer the only landing; Q-011 stays open as an option, not a blocker. Which model is deployed is a Phase 3 eval
+question (R5): both are trained on the same data and compared on held-out cell pairs before anything is chosen. The full
+diffusion configuration remains the primary in the sense of 5.7 for training on Greennode; if its on-robot eval is not
+better than diffusion_small's by a margin that pays for a 5x slower loop, diffusion_small is deployed.

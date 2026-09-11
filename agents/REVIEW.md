@@ -222,3 +222,11 @@ consequence as T-010's. g1_arm.py at 332 lines: the DDS binding moves to drivers
 Two parallel builders each running the full suite (now 533 tests, ~4 min alone) drove the load average to 27 and a
 51-test file to 13 minutes. From now on builder prompts say: run only the relevant test files while developing; the
 pre-commit hook is the one full-suite run per commit. Fable's own verification runs targeted files.
+
+## T-035  ACCEPTED  (fable, 2026-09-12T04:21+07:00, commits 860916c, e7e0249)
+Re-ran tests/test_train.py: 15 passed with the printed lr multipliers 0.2/1.0/0.5/0.0, EMA delta 6.4e-5, validation
+0.918 -> 0.882 on held-out frames, resume 10+10 vs 20 identical to 0.0. set_torch_threads is applied in train.py, both
+adapters and run_eval.py; compute.torch_threads is 8 and measured (the sweep table is in BUILD_LOG and docs/policy.md,
+taken at 1-minute load 2.8 and 0.94). The --stop-after addition is the honest way to make the resume test exact; accepted
+and logged as the builder's disagreement. The DataLoader worker-seed bug it found is the kind of thing R5 exists for.
+Consequences: D-021 (inference landing), T-036 (checkpoint-every, disk guard).
