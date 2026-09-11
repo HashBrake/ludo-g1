@@ -1,12 +1,12 @@
 # STATE.md (Fable rewrites this every cycle)
 
-updated: 2026-09-11T23:16+07:00
+updated: 2026-09-12T00:39+07:00
 phase: 0 closed (audit D-014); Phase 1 tasks created (T-018..T-024); non-hardware Phase 2/3 work continues (T-025..T-027)
 milestone: Phase 1 read-only bring-up needs H-002 (robot LAN) and H-003 (plug in Brio, DexH15, glove); Phase 1 motion needs Q-004 answered and a human-enabled session
-last_accepted_commit: merge of wt/t032 (23 tasks accepted; suite green)
+last_accepted_commit: 329a549 (T-033 clutch + step cap accepted; 24 tasks; 490 tests green)
 loop: running
 
-next three tasks: T-033 clutch + first-command step cap (in progress, P0 before any motion), T-030 ACT baseline (in progress, parallel), T-034 observation history
+next three tasks: T-031 Greennode training launch (in progress), T-030 ACT baseline (in progress, parallel), T-034 observation history (after T-030 merges)
 
 what Alois should look at (ten-second version):
 - Phase 0 is done except two human-gated exit checks: Greennode real round trip (Q-001 credentials) and a Brio still of the board (H-001).

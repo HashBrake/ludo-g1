@@ -1122,7 +1122,7 @@ notes: CLAUDE.md 5.7: ACT is trained on every dataset the diffusion model is tra
   change.
 
 ## T-031  Greennode training launch for real: train.py inside the pinned image, manifest and checkpoint round trip
-status: todo
+status: in_progress
 priority: P2
 phase: 3
 owner: opus
@@ -1186,7 +1186,7 @@ result: (opus, 2026-09-13T14:40+07:00, commit db2b922)
     follow-up task to be accepted before the first Phase 1 motion session.
 
 ## T-033  Clutch and first-command step cap before any hardware motion (D-018)
-status: review
+status: accepted
 priority: P0
 phase: 1
 owner: opus

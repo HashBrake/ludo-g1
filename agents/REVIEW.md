@@ -177,3 +177,13 @@ task one-hot on the state) is the only one 0.4.4 permits and a test pins why. Ex
 DDIM 10 median 804 ms and DDIM 5 median 498 ms on this CPU: recorded, not a defect of the task; D-019 decides what follows.
 Its four findings become: D-019 (inference budget), T-034 (observation history in the dataset), T-035 (EMA, warmup,
 validation curves), Q-002 escalated (12 GB free; one checkpoint plus bundle is 2.3 GB). tests/test_eval.py edit accepted.
+
+## T-033  ACCEPTED  (fable, 2026-09-12T00:39+07:00, commits 275abc0, 3efa76a, 329a549)
+Checked `git diff a3bb076..main -- config/safety.yaml`: eight added lines (the key, its UNMEASURED status, the R3 comment),
+no deletion, nothing loosened. Re-ran safety and loop tests: 0.05 rad admitted / 0.055 refused as first_command_step; raw
+engage at 0.443 rad refused with the arm unmoved; clutch engage first step 0.000709 rad; 917 ticks at 30.000 Hz with 0
+refusals once engaged. Bypass grep clean. The three test files outside the list had to change because the tighter envelope
+refused their old first commands; that is the tightening working, accepted. loop.py at 369 lines: style note, the clutch
+moves to teleop/clutch.py the next time loop.py is touched. Fable fix in this commit: runtime/config.py REQUIRED_KEYS now
+lists first_command_max_step_rad (the builder's finding 4). The 0-refusal out-of-box session is correct: the clutch never
+sends an unreachable target.

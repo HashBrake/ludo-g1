@@ -103,6 +103,7 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "joint_velocity_limit_rad_s",
         "command_rate_limit_hz",
         "command_gap_reset_s",
+        "first_command_max_step_rad",
         "watchdog_timeout_s",
         "hand.pinch_scalar_range",
         "hand.pinch_rate_limit_per_s",
