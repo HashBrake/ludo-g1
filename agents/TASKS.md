@@ -1594,7 +1594,7 @@ acceptance:
   - tests pass; `runtime.controller --backend mock --engine zmq://127.0.0.1:5555 --seconds 20` works against serve_stub
     (command and output in BUILD_LOG.md)
 notes: This is the integration point the engine team will target; keep the schema in one place and versioned.
-result: (opus, 2026-09-12T07:10+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-12T07:10+07:00, commit 775ea5e)
   - Protocol: **TCP JSON-lines**, not ZeroMQ. `.venv/bin/python -c "import zmq"` -> ModuleNotFoundError, and T-039 adds no
     dependency, so the task's stated fallback applies and the acceptance URL is `tcp://127.0.0.1:5555` (a `zmq://` URL is
     accepted as a synonym for the same protocol). Schema in one place and versioned: engine/schema.py, `{"v": 1, ...}`.
@@ -1615,7 +1615,8 @@ result: (opus, 2026-09-12T07:10+07:00, commit COMMIT_HASH)
     policy calls 199 = 9.92 Hz, actions sent 595 = 29.66 Hz, safety refusals 0, alignment failures 0"; the server logged 24
     requests for that command (1 next_command + 1 report + 2 + 20 watchdog board_state). Full output in BUILD_LOG.md. PASS
   - Regression: `pytest tests/test_controller.py tests/test_engine_stub.py tests/test_config.py tests/test_eval.py -q` ->
-    156 passed; `.venv/bin/ruff check .` -> All checks passed!
+    156 passed; `.venv/bin/ruff check .` -> All checks passed!; full pre-commit suite on the commit -> 703 passed,
+    14 skipped (all hardware-absent or no-session) in 402.75 s, no --no-verify.
   - Gaps (BUILD_LOG): the `engine:` block is not in docs/config.md and not in `REQUIRED_KEYS`, both files being outside this
     task's touch list for the training.yaml branch; it sits exactly where the existing `runtime:`/`recorder:` blocks do.
 
