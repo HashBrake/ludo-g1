@@ -1979,3 +1979,81 @@ Blockers: `agents/BLOCKERS.md` -> `(none)`. No Phase 0 item reached the section 
 
 (T-015 commit: 381b9d7; this line and the TASKS.md result hash are the only content of the follow-up
 commit, which ran the full pre-commit gate — no `--no-verify`, per D-013.)
+
+## T-026  Dataset viewer: frame strips for Fable's audits  (opus, 2026-09-11T23:55+07:00)
+
+Built on `wt/t026` (worktree `/home/alois/Desktop/ludo-g1-wt-t026`, created with
+`tools/worktree_setup.sh`), which is the only tree this task touched; `teleop/operator_ui.py` (T-025)
+was being built in the main tree at the same time.
+
+### What I changed
+
+- **`tools/dataset_view.py` (249 lines, new).** `python -m tools.dataset_view SESSION_ROOT
+  [--episodes 0,3] [--out DIR]`. Opens a session with `LeRobotDataset` plus the recorder's
+  `episodes_meta.jsonl`, prints the dataset card (`README.md`) to stdout, and writes one
+  `episode_nnnnnn.png` per episode to `SESSION_ROOT/strips/` (or `--out`). Public surface:
+  `load_session`, `episode_strip`, `render_session`.
+  One strip is, top to bottom: a header (episode index, `task_id`, `src -> dst`, `success`,
+  `perturbed`, frame count, skew p99 — all read from the sidecar, never recomputed, R5); the 8
+  evenly spaced `top` frames with the goal channels alpha-blended over them (green source, magenta
+  target); the same 8 instants of `oblique`; the same 8 of `palm`, scaled up to the same column
+  width; a legend naming the 9 dimensions; and two panels of `cv2.polylines` curves — the 9 action
+  dims and the 9 state dims over the whole episode, each panel on one shared, labelled y range.
+  Tiles are separated by a 1 px rule so that eight near-identical frames of a static board stay
+  countable; the rule is an inserted column, so the tile pixels themselves are bit-exact copies of
+  what the dataset holds (three tests assert that equality).
+  The overlay is **not** a re-derivation of the goal: `_goal_layers` builds `runtime.goal.GoalRenderer`
+  at the sidecar's stored frame size and sigma and feeds it an `engine.interface.Cell` carrying the
+  `src_px`/`dst_px` the recorder wrote, so the auditor sees the same gaussian the policy will be
+  conditioned on. A ROLL (both pixels `None`) produces zero layers and no overlay at all, matching
+  `runtime/goal.py`'s "absence of a goal, not a goal at the origin".
+  Dependencies are opencv, numpy and lerobot (loading only), as the task asked; no matplotlib, no
+  driver import, no new requirement. Read-only: it opens files and writes PNGs (R1 is not in reach).
+- **`tests/test_dataset_view.py` (175 lines, new).** 8 tests, all on a session recorded by
+  `tests.test_recorder.Rig` (mock drivers + `FakeClock`) under `tmp_path`: a 2 s MOVE and a 1 s ROLL.
+- **`docs/teleop.md`.** New section "Viewing a session: `tools/dataset_view.py` (T-026)" with the CLI,
+  the band-by-band table, and the measured numbers below.
+
+### Commands run, and what they measured
+
+```
+.venv/bin/ruff check .                              -> All checks passed!
+.venv/bin/python -m pytest -q                       -> 399 passed, 4 skipped, 72.05 s
+.venv/bin/python -m pytest tests/test_dataset_view.py -q -s
+```
+
+| | |
+|---|---|
+| acceptance: one PNG per episode | 2 episodes -> `episode_000000.png`, `episode_000001.png` in `SESSION_ROOT/strips/` |
+| acceptance: image size | both 1927 x 797 px (mock 64x48/48x32 frames), asserted exactly; 451 kB and 323 kB |
+| acceptance: goal overlay differs from the raw frame | yes: 3072/3072 px changed, peak \|diff\| 218/765 |
+| goal lands on the cell | each channel's peak within 1 px of the stored centre, value 1.00 there; src (18.9, 29.8), dst (37.8, 20.4) |
+| ROLL episode | 0 goal layers; `top` row bit-identical to the raw frames |
+| `oblique` / `palm` rows | bit-identical to the raw frames (never overlaid) |
+| at the real configured sizes (640x480 / 320x240), 3 s episode | 1927 x 817 px, 647 kB |
+| suite before / after | 391 -> 399 passed (8 new), 4 skipped |
+
+The full-resolution strip was rendered and looked at (scratchpad, not committed: strips live under
+`data/`, which is git-ignored) before the numbers above were written down.
+
+### Notes / deviations
+
+- The task note says "keep it dependency-free beyond opencv and numpy (lerobot only for loading)".
+  The module also imports `runtime.goal`, `engine.interface` and `teleop.recorder` (for the `SIDECAR`
+  filename) — first-party modules, not dependencies, and using the project's own renderer is the
+  point of the overlay. Nothing under `tools/` is imported by `policy/` or `runtime/` (R2).
+- Fable's guidance said "drawn with `cv2.line`". I used `cv2.polylines`, the vectorised form of the
+  same primitive: one call per dimension instead of ~1800 in a Python loop, identical output. No
+  matplotlib, which is what the guidance was protecting.
+- `meta/info.json` does not store the repo id, so `load_session` rebuilds it as
+  `ludo-g1/<session dir name>`, exactly how `teleop/recorder.py` composes it. With `root=` present
+  lerobot reads the local files and never contacts the hub; a session directory renamed by hand would
+  still load, because the id is only an identifier here.
+- A strip is deliberately one PNG per episode rather than one per session: section 8 asks for five
+  random episodes, and `--episodes` selects them without rendering the rest.
+- R1-R6 intact: no motion command anywhere (the module imports no driver), no scripted motion,
+  `config/safety.yaml` untouched, nothing under `third_party/` touched, `hardware/session.enable`
+  never created. Committed through the full pre-commit gate, no `--no-verify` (D-013).
+
+(T-026 commit: dd3368c. The hash was written into this line and the TASKS.md `result:` block by
+amending that same commit before any push, per D-013 item 1; the full pre-commit gate ran on both.)

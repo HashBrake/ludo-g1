@@ -671,7 +671,7 @@ acceptance:
     data/logs/ and a printed summary of commands executed and outcomes (command and output in BUILD_LOG.md)
 notes: No learned policy exists yet; HoldPolicy exists only so the orchestration can be tested. No scripted trajectories anywhere.
 result:
-  commit: COMMIT_HASH
+  commit: dd3368c
   tests: 352 passed, 1 skipped (`.venv/bin/python -m pytest -q`; was 327+1). 25 new in tests/test_controller.py.
   ruff: `.venv/bin/ruff check .` clean.
   loop rate (fake clock, the criterion): policy_hz 9.98 Hz over a full 20.03 s MOVE (201 calls), action_hz 29.9;
@@ -890,7 +890,7 @@ acceptance:
 notes: No hardware. The real teleop loop (input drivers -> IK -> Guard -> arm) is wired in Phase 2 after T-020/T-021.
 
 ## T-026  Dataset viewer: frame strips for Fable's audits
-status: in_progress
+status: review
 priority: P1
 phase: 2
 owner: opus
@@ -904,6 +904,26 @@ acceptance:
   - runs on a mock session recorded by tests (tmp_path) and produces one PNG per episode; test asserts image size and that the
     goal overlay pixels differ from the raw frame
 notes: Section 8 audit tool; keep it dependency-free beyond opencv and numpy.
+result:
+  commit: dd3368c
+  tools/dataset_view.py (249 lines) + tests/test_dataset_view.py (8 tests) + a docs/teleop.md section.
+  CLI: `python -m tools.dataset_view SESSION_ROOT [--episodes 0,3] [--out DIR]`; prints the dataset card
+    (README.md) to stdout, writes episode_nnnnnn.png to SESSION_ROOT/strips/ (or --out).
+  strip = header (ep, task, src -> dst, success, perturbed, frames, skew p99, all from episodes_meta.jsonl)
+    / 8 evenly spaced `top` frames with the goal channels blended over them (green src, magenta dst, rendered
+    by runtime.goal.GoalRenderer from the sidecar's stored pixels and sigma) / the same 8 `oblique` / the same
+    8 `palm` upscaled to the column width / legend / two cv2 panels: 9 action dims and 9 state dims.
+  acceptance (`.venv/bin/python -m pytest tests/test_dataset_view.py -q -s`): 2-episode mock session recorded
+    by tests.test_recorder.Rig under tmp_path -> 2 PNGs, both 1927x797 px (asserted exactly), 451 kB and
+    323 kB; goal overlay changes 3072/3072 px of the first `top` frame, peak |diff| 218/765, and each channel
+    peaks within 1 px of the cell centre the recorder stored (src 18.9,29.8; dst 37.8,20.4).
+  also asserted: a ROLL gets 0 goal layers and a bit-identical `top` row; the `oblique` and `palm` rows are
+    always bit-identical to the dataset frames; --episodes and --out select and redirect; unknown episode and
+    a non-session directory raise.
+  at the real configured sizes (640x480 / 320x240), 3 s episode: 1927x817 px, 647 kB.
+  suite: 399 passed, 4 skipped (`.venv/bin/python -m pytest -q`, 72.0 s; was 391). ruff `check .` clean.
+  deviations: uses cv2.polylines rather than cv2.line (same primitive, one call per dim, no matplotlib); also
+    imports runtime.goal / engine.interface / teleop.recorder, which are first-party, not dependencies.
 
 ## T-027  policy/dataset.py: loader, goal rendering, augmentation on the mock dataset
 status: todo
