@@ -398,3 +398,82 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
   docs/config.md in case Fable prefers sorted.
 - No hardware touched, no motion command, no session file read or written, no blockers, no new questions.
 (T-003 config commit: b2e3bdc; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+## T-009  cloud/greennode.sh with a local fake transport  (2026-09-11T19:10+07:00)
+
+### What was built
+- `cloud/greennode.sh` — `up` / `train SCRIPT [ARGS...]` / `down` / `status [JOB_ID]`. Reads
+  `~/.config/ludo-g1/env` (path overridable with `GREENNODE_ENV_FILE`; the script never writes it).
+  Three transport primitives (`push_files`/`push_tree`, `pull_tree`, `remote_exec`) have a remote
+  implementation (rsync + ssh + `docker run` the pinned image) and a local one (`cp -a --parents` into
+  `GREENNODE_LOCAL_ROOT`, job run by `.venv/bin/python`). Everything above those three is one code path,
+  so local mode exercises the real orchestration.
+  - `up` pushes `git ls-files --cached --others --exclude-standard` minus `third_party/` (so a
+    not-yet-committed script still travels and `data/`, `.venv/`, `__pycache__/` never do) plus the
+    `data/raw` tree.
+  - `train` always launches the job detached (`nohup setsid bash cloud/job_wrapper.sh ...`) so it
+    outlives the ssh connection, then **waits** for the job's `.exit` file by default and fails with the
+    log tail on a non-zero exit. `--detach` returns immediately; `--timeout N` bounds only the client's
+    waiting and never kills the remote job.
+  - `down` pulls `data/checkpoints` and mirrors the remote job logs into `data/logs/greennode/`.
+- `cloud/job_wrapper.sh` — supervises one job on the remote: `JOB_ID.log`, `.pid`, `.heartbeat`
+  (rewritten every `GREENNODE_HEARTBEAT_SECONDS`, default 5) and `.exit` under
+  `<root>/data/logs/greennode/`. The `.exit` file is the completion signal the client polls.
+- `cloud/Dockerfile` — `python:3.10.20-slim-bookworm`, pinned apt packages, `torch==2.5.1+cpu` from the
+  CPU index, and the training subset of requirements.txt (the `file://` DexH15 wheel and `unitree_sdk2py`
+  are laptop/robot-only and cannot resolve on the VM). Repo bind-mounted at `/work`, no project code in
+  the image. Phase 3 GPU swap recorded as a TODO in the header with the candidate base image.
+- `cloud/dummy_job.py` — waits `--seconds` (default **60**, the Phase 0 exit-check value) and writes
+  hostname / platform / interpreter / start+finish times to `$LUDO_G1_CHECKPOINT_DIR/dummy/result.txt`.
+- `tests/test_greennode_local.sh` (18 checks) + `tests/test_greennode_local.py` (pytest wrapper).
+- `docs/cloud.md` — configuration, the two transports, job files, the Phase 0 exit-check command to run
+  the moment Q-001 is answered, and an explicit "untested against the real VM" section.
+
+### Commands run and measured results
+1. Environment (the worktree has no .venv; it is git-ignored):
+   `cd /home/alois/Desktop/ludo-g1-wt-t009 && uv venv --python 3.10 .venv && uv pip install --python .venv/bin/python -r requirements.txt`
+   -> CPython 3.10.20, exit 0, all pinned packages installed.
+2. Acceptance 1 (local-mode round trip), command: `bash tests/test_greennode_local.sh` -> exit 0,
+   "all checks passed", 18/18. The chain run is the literal acceptance chain with no extra flags:
+   `GREENNODE_TRANSPORT=local cloud/greennode.sh up` -> `... train cloud/dummy_job.py --seconds 1 --note ...`
+   -> `... down`, and `data/checkpoints/dummy/result.txt` was produced with e.g.
+   `hostname: aloisThinkpad`, `python: 3.10.20 (.../.venv/bin/python)`, `cwd: /tmp/ludo-t009-*/remote`
+   (the fake remote root, i.e. the job really ran from the pushed copy, not from the repo).
+   Heartbeat mirrored to `data/logs/greennode/t009-roundtrip.heartbeat`:
+   `2026-09-11T12:05:16Z job=t009-roundtrip pid=1022857 state=finished exit=0`.
+   `up` pushed 45 repo files (38 tracked + the 7 new files of this task); `third_party/` absent from the fake remote (asserted).
+   `train --detach` returned in 0 s against a 5 s job and `status` showed `state=running` (asserted).
+3. Acceptance 2 (remote mode refuses without credentials), same script, checks 1-4:
+   `GREENNODE_TRANSPORT=remote cloud/greennode.sh up` with `HOME` and `GREENNODE_ENV_FILE` pointed into a
+   temp dir -> exit 1, message names the missing file and points at `agents/QUESTIONS.md Q-001`; the test
+   also asserts the run did not create the credentials file.
+4. Acceptance 3 (no credential strings): `git grep --untracked -i -n -E "password|secret|token" -- cloud/`
+   -> no output, exit 1 (= no matches). Asserted by `test_no_credential_strings_in_cloud`; `--untracked`
+   is added so the check is real before the files are staged as well as after.
+5. Gate: `.venv/bin/ruff check .` -> "All checks passed!", exit 0;
+   `.venv/bin/python -m pytest -q` -> `35 passed, 1 skipped` (the skip is the pre-existing motion-marker
+   autoskip "no session gate yet"), exit 0.
+
+### Notes / deviations
+- **The remote transport and the Dockerfile are untested.** No credentials (Q-001) and docker is not
+  installed on this laptop, so `docker build`, `docker run`, `ssh` and `rsync` have never executed. Only
+  the local transport ran. Said plainly in `docs/cloud.md` ("Status: untested against the real VM") and in
+  the script header. Treat the first real run as bring-up.
+- `train` waits by default instead of returning after the nohup launch. The task's acceptance chains
+  `up && ... train ... && down`, which races if `train` returns while the job is still running; the job is
+  still launched detached, so nothing about the remote-survivability property is lost. `--detach` gives the
+  fire-and-forget behaviour and is tested.
+- `up` uses `git ls-files --cached --others --exclude-standard` rather than `--cached` alone, so that a
+  file written but not yet committed (including, at first run, these very cloud scripts) is pushed.
+- Two bugs found and fixed while testing, both worth knowing about: `remote_cat` returned non-zero for an
+  absent file, which `set -e` turned into a silent immediate exit of the whole poll loop; and the first
+  `up` implementation pushed only tracked files, so the job script it was meant to ship was missing.
+- Worktree-local environment fix, committed nothing: the git-ignored PyInstaller payload under
+  `third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/_internal/` (1.7 GB) exists only in the main tree, so
+  `tests/test_docs_sdks.py::test_references_resolve_to_existing_lines` failed in this worktree before any
+  of my changes. I made `_internal/` a real directory of symlinks into the main tree (a real directory so
+  the existing `.gitignore` rule, which has a trailing slash, still matches it and `git status` stays
+  clean). Nothing under `third_party/` was modified and nothing was staged. Any future worktree needs the
+  same step; a `tools/` helper for it would be a reasonable small task.
+- No hardware, no motion command, no blockers, no scripted motion. No disagreement with the task as
+  written.
+(T-009 cloud commit: 5540c10; this line and the TASKS.md result hash are the only content of the follow-up commit.)

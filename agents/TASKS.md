@@ -249,7 +249,7 @@ acceptance:
 notes: `top` observation crop and the goal heatmaps depend on this frame; never apply geometric augmentation to it later (5.7).
 
 ## T-009  cloud/greennode.sh with a local fake transport
-status: in_progress
+status: review
 priority: P1
 phase: 0
 owner: opus
@@ -266,6 +266,30 @@ acceptance:
   - the script refuses to run in remote mode when ~/.config/ludo-g1/env is missing, with a message pointing to QUESTIONS.md Q-001
   - no credential strings in git (`git grep -i -E "password|secret|token" cloud/` empty)
 notes: The real one-minute dummy job round trip is the Phase 0 exit check and waits for Q-001. Record the command in docs/cloud.md so it can be run the moment credentials exist.
+result: (opus, 2026-09-11T19:12+07:00, commit 5540c10; branch wt/t009)
+  - acceptance 1 (local-mode round trip), `bash tests/test_greennode_local.sh` -> exit 0, 18/18 checks.
+    The chain is the literal acceptance form, no extra flags: `GREENNODE_TRANSPORT=local cloud/greennode.sh up`
+    -> `... train cloud/dummy_job.py --seconds 1 --note ...` -> `... down`, producing
+    data/checkpoints/dummy/result.txt with `hostname: aloisThinkpad`, `python: 3.10.20 (.venv/bin/python)`,
+    `cwd: /tmp/ludo-t009-*/remote` (the job ran from the pushed copy, not from the repo). Heartbeat mirrored to
+    data/logs/greennode/: "job=t009-roundtrip pid=... state=finished exit=0". `up` pushed 45 repo files with
+    third_party/ absent from the fake remote; `train --detach` returned in 0 s against a 5 s job and `status`
+    showed state=running. PASS
+  - acceptance 2 (remote mode refuses without credentials): same script, checks 1-4. With HOME and
+    GREENNODE_ENV_FILE pointed at a temp dir, `GREENNODE_TRANSPORT=remote cloud/greennode.sh up` exits 1 and
+    names the missing file plus "agents/QUESTIONS.md Q-001"; the test also asserts the run did not create that
+    file. The real ~/.config/ludo-g1/env is never read or written by any test. PASS
+  - acceptance 3 (no credential strings): `git grep --untracked -i -n -E "password|secret|token" -- cloud/`
+    -> no output, exit 1 (no matches). Asserted by tests/test_greennode_local.py::test_no_credential_strings_in_cloud.
+    PASS
+  - gate: `.venv/bin/ruff check .` exit 0; `.venv/bin/python -m pytest -q` -> 35 passed, 1 skipped
+    (pre-existing motion autoskip), exit 0.
+  - NOT verified, and cannot be here: the remote transport (ssh/rsync) and cloud/Dockerfile. No credentials
+    (Q-001) and docker is not installed on this laptop, so docker build/run never executed. docs/cloud.md
+    carries the exact 60 s Phase 0 exit-check command to run the moment the credentials file exists.
+  - deviation: `train` waits for the job by default (`--detach` to fire and forget) because the acceptance
+    chains `up && train && down`, which would otherwise race. The job is still launched with nohup+setsid, so
+    it survives the ssh connection dropping.
 
 ## T-010  Real camera driver (Brio, Orbbec) read-only with device discovery
 status: todo
