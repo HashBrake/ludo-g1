@@ -325,6 +325,40 @@ recorder with it, shows the frame and reads one key. It needs a display and is n
 
 ```
 .venv/bin/python -m pytest tests/test_operator_ui.py -q -s
+## Viewing a session: `tools/dataset_view.py` (T-026)
+
+The section 8 audit asks for five random episodes of every session to be looked at and for the goal
+heatmaps to be checked against the cells they claim. This renders that check as one PNG per episode.
+
+```
+.venv/bin/python -m tools.dataset_view data/raw/20260912T090000
+.venv/bin/python -m tools.dataset_view data/raw/20260912T090000 --episodes 0,3 --out /tmp/strips
+```
+
+It prints the dataset card to stdout and writes `episode_nnnnnn.png` to `SESSION_ROOT/strips/`
+(`--out` moves them). Each strip, 1927 px wide, is:
+
+| band | what it shows |
+|---|---|
+| header | episode index, `task_id`, `src -> dst`, `success`, `perturbed`, frame count, skew p99 |
+| `top` | 8 evenly spaced frames with the goal channels blended over them: **green** source, **magenta** target |
+| `oblique` | the same 8 instants, untouched |
+| `palm` | the same 8 instants, scaled up to the same column width |
+| legend + plots | the 9 action dims and the 9 state dims over the whole episode, two panels, one shared y range per panel |
+
+The overlay is not a redrawing of the goal: it is `runtime/goal.py`'s `GoalRenderer` fed the pixels
+and the sigma the recorder stored in `episodes_meta.jsonl`, so what the auditor sees is the gaussian
+the policy will be conditioned on. A ROLL, whose `src_px`/`dst_px` are `None`, gets no overlay at
+all rather than a blob at the origin, and the `top` row is then pixel-identical to the raw frames
+(a test asserts exactly that, and that the `oblique` and `palm` rows always are).
+
+Every number on a strip is read from the session, never recomputed here: the skew is the recorder's
+measurement, not the viewer's opinion (R5). The tool is read-only and imports no driver.
+
+### Measured, `tests/test_dataset_view.py` on the laptop
+
+```
+.venv/bin/python -m pytest tests/test_dataset_view.py -q -s
 ```
 
 | | |
@@ -338,6 +372,9 @@ recorder with it, shows the frame and reads one key. It needs a display and is n
 The marker test reads the two cell pixels back through `runtime/goal.py`, renders, and asserts that
 *no* pixel further than the marker radius from either cell changed: the display cannot quietly draw
 anything else over the board.
+| mock session (64x48 / 48x32 frames), 2 episodes | 2 PNGs, 1927x797 px, 451 kB and 323 kB |
+| real configured sizes (640x480 / 320x240), 3 s episode | 1927x817 px, 647 kB |
+| goal overlay on the first `top` frame | changed 3072/3072 px, peak \|diff\| 218/765, each channel peaking within 1 px of the stored cell centre |
 
 ## What is not here yet
 

@@ -143,3 +143,8 @@ Re-ran: ruff clean; 11 UI tests pass with two episodes recorded, marked and one 
 only drivers.interfaces.CameraDriver and never calls send_targets, send_pinch or a Guard (grep). Deviations accepted: a
 mark-failure key (5.6 wants labelled failures), two operator-side failure_mode strings, 261 lines. Fable fix in this commit:
 TASKS.md line 674 (T-016 result block) still read COMMIT_HASH; set to 5fbb479.
+
+## T-026  ACCEPTED  (fable, 2026-09-11T21:53+07:00, commits 5f84310, 994c1e3, merged)
+Re-ran in the worktree: 8 tests pass; overlay changes 3072/3072 px with peaks within 1 px of the stored centres. Viewed a
+rendered strip myself (episode 1, a ROLL: header, three frame rows without overlay as expected, legend, action/state
+curves). No driver or Guard reference in the tool. This is the section 8 audit viewer; first real use at the Phase 2 card audit.

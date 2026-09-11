@@ -1,12 +1,12 @@
 # STATE.md (Fable rewrites this every cycle)
 
-updated: 2026-09-11T21:51+07:00
+updated: 2026-09-11T21:53+07:00
 phase: 0 closed (audit D-014); Phase 1 tasks created (T-018..T-024); non-hardware Phase 2/3 work continues (T-025..T-027)
 milestone: Phase 1 read-only bring-up needs H-002 (robot LAN) and H-003 (plug in Brio, DexH15, glove); Phase 1 motion needs Q-004 answered and a human-enabled session
-last_accepted_commit: 2d5b48c (18 tasks accepted; 402 tests green)
+last_accepted_commit: merge of wt/t026 (19 tasks accepted; suite green)
 loop: running
 
-next three tasks: T-027 dataset loader (in progress), T-026 dataset viewer (in progress, parallel), then T-018/T-019/T-020 when devices are attached
+next three tasks: T-027 dataset loader (starting), then T-018/T-019/T-020 read-only device bring-up when H-002/H-003 are done; Fable to add more non-hardware tasks
 
 what Alois should look at (ten-second version):
 - Phase 0 is done except two human-gated exit checks: Greennode real round trip (Q-001 credentials) and a Brio still of the board (H-001).
