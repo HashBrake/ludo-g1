@@ -619,7 +619,7 @@ acceptance:
   - every number in the report is next to the command that produced it (spot-checked by Fable)
   - `.venv/bin/python -m pytest -q` count in the report equals a fresh run at review time
 notes: No code changes. Do not restate the brief.
-result: (opus, 2026-09-11T21:00+07:00, branch wt/t015, commit PENDING_HASH)
+result: (opus, 2026-09-11T21:00+07:00, branch wt/t015, commit 381b9d7)
   Phase 0 report appended to agents/BUILD_LOG.md (seven sections) and docs/README.md written (11 module
   pages, one sentence each). No code changed.
   measured in the worktree at 3c5df60:

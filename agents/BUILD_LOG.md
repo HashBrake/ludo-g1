@@ -1857,3 +1857,6 @@ Blockers: `agents/BLOCKERS.md` -> `(none)`. No Phase 0 item reached the section 
 - R1-R6 intact: no motion command, no scripted motion, `config/safety.yaml` untouched, nothing under
   `third_party/` read-modified, `hardware/session.enable` never created (still absent, still git-ignored,
   still absent from history — commands in section 5).
+
+(T-015 commit: 381b9d7; this line and the TASKS.md result hash are the only content of the follow-up
+commit, which ran the full pre-commit gate — no `--no-verify`, per D-013.)
