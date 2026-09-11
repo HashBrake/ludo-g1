@@ -397,3 +397,4 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
 - `unmeasured()` returns document order, not sorted order. Deterministic for a given file; noted in
   docs/config.md in case Fable prefers sorted.
 - No hardware touched, no motion command, no session file read or written, no blockers, no new questions.
+(T-003 config commit: b2e3bdc; this line and the TASKS.md result hash are the only content of the follow-up commit.)

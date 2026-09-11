@@ -114,7 +114,7 @@ notes: Facts from docs/sdks.md (T-002) to encode: G1 joint indices from unitree_
   address 0x78 (from the SDK example), joint names/order from pxdex.dh15 stubs; Orbbec Ego is UVC stereo (/dev/video4 left,
   /dev/video6 right), Brio UNMEASURED; G1 joint limits: take them from the G1 MJCF at ~/Teleopit/assets/robots/unitree_g1/
   g1_29dof.xml (read-only reference, T-012 vendors it) and cite the file. Placeholder envelope must be conservative: workspace box no larger than the table region in front of the robot, velocity limit low. Fable will review the numbers. Section 7: config in yaml, never constants in code.
-result: (opus, 2026-09-11T21:40+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T21:40+07:00, commit b2e3bdc)
   - All six files load: `test_every_config_loads` over NAMES = (board, cameras, hand, robot, safety, training). PASS
   - `config_hash` deterministic across two loads (all six, 64 hex chars), unchanged when key order or comments
     change (unsorted / sorted / top level reversed -> one hash), changed when a value changes
