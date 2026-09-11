@@ -19,7 +19,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from torch.utils.data import DataLoader, RandomSampler
 
 from engine.interface import Cell, Command, Primitive
-from policy.dataset import CAMERAS, LudoDataset, episode_metadata, split_cell_pairs
+from policy.dataset import CAMERAS, LudoDataset, _color_jitter, _crop_resize, episode_metadata, split_cell_pairs
 from runtime import config
 from tests.test_recorder import SMALL, Rig
 
@@ -118,6 +118,90 @@ def test_task_one_hot_matches_the_recorded_primitive(session) -> None:
     metas = {int(m["episode_index"]): m["task_id"] for m in episode_metadata(session[0])}
     assert seen == metas
     assert set(seen.values()) == {"move", "roll"}
+
+
+# --------------------------------------------------------------------------------------------------
+# observation history (T-034): the last n_obs_steps frames, oldest first, padded at episode start
+# --------------------------------------------------------------------------------------------------
+
+
+def test_history_sample_shapes(session) -> None:
+    data = load(session, n_obs_steps=2)
+    sample = data[0]
+    top_h, top_w = SMALL["top"][1], SMALL["top"][0]
+    assert tuple(sample["top"].shape) == (2, 5, top_h, top_w)  # (S, 3 RGB + 2 goal, h, w)
+    assert tuple(sample["oblique"].shape) == (2, 3, top_h, top_w)
+    assert tuple(sample["palm"].shape) == (2, 3, SMALL["palm"][1], SMALL["palm"][0])
+    assert tuple(sample["state"].shape) == (2, 9)
+    assert tuple(sample["obs_mask"].shape) == (2,)
+    assert tuple(sample["task_id"].shape) == (3,)  # constant over the episode: no step dimension
+    assert tuple(sample["action"].shape) == (16, 9) and tuple(sample["action_mask"].shape) == (16,)
+    for key, value in sample.items():
+        assert value.dtype == torch.float32, key
+    with pytest.raises(ValueError, match="n_obs_steps >= 1"):
+        load(session, n_obs_steps=0)
+
+
+def test_a_single_step_sample_carries_no_step_dimension(session) -> None:
+    """The default is 1, and at 1 a sample is exactly what it was before T-034 (ACT takes these)."""
+    data = load(session)
+    assert data.n_obs_steps == 1
+    sample = data[0]
+    assert tuple(sample["top"].shape) == (5, SMALL["top"][1], SMALL["top"][0])
+    assert tuple(sample["state"].shape) == (9,)
+    assert sample["obs_mask"].tolist() == [1.0]
+
+
+def test_the_history_is_the_previous_frames_oldest_first(session) -> None:
+    root, _cfg = session
+    data = load(session, n_obs_steps=2)
+    back = LeRobotDataset(f"ludo-g1/{root.name}", root=root)
+    for index in (5, 23, 70):
+        _position, frame = data._index[index]
+        sample = data[index]
+        assert torch.equal(sample["top"][0, :3], back[frame - 1]["observation.images.top"])
+        assert torch.equal(sample["top"][1, :3], back[frame]["observation.images.top"])
+        assert torch.equal(sample["palm"][0], back[frame - 1]["observation.images.palm"])
+        assert torch.equal(sample["state"][0], back[frame - 1]["observation.state"].to(torch.float32))
+        assert torch.equal(sample["state"][1], back[frame]["observation.state"].to(torch.float32))
+        assert sample["obs_mask"].tolist() == [1.0, 1.0]
+
+
+def test_the_start_of_an_episode_is_padded_with_its_first_frame(session) -> None:
+    """And never reaches into the episode before it: the padding repeats, it does not borrow."""
+    data = load(session, n_obs_steps=3)
+    for position, episode in enumerate(data.episodes):
+        first = next(i for i, (pos, frame) in enumerate(data._index) if pos == position and frame == episode.start)
+        sample = data[first]
+        assert sample["obs_mask"].tolist() == [0.0, 0.0, 1.0]
+        for name in CAMERAS:
+            assert torch.equal(sample[name][0], sample[name][2]) and torch.equal(sample[name][1], sample[name][2])
+        assert torch.equal(sample["state"][0], sample["state"][2])
+        second = data[first + 1]
+        assert second["obs_mask"].tolist() == [0.0, 1.0, 1.0]
+        assert torch.equal(second["state"][0], second["state"][1])  # still one padded copy
+        assert not torch.equal(second["state"][1], second["state"][2])
+
+
+def test_the_goal_channels_are_repeated_over_the_history(session) -> None:
+    """One render per episode (5.3), the same two channels on every frame of the sample."""
+    data = load(session, n_obs_steps=2)
+    sample = data[0]
+    assert torch.equal(sample["top"][0, 3:], sample["top"][1, 3:])
+    assert sorted(data._goal_cache) == [0]  # still one render, not one per step
+
+
+def test_one_augmentation_per_sample_not_per_frame(session) -> None:
+    """A window or a jitter that moved between two frames 33 ms apart would be a camera that moved."""
+    frame = torch.rand(3, 24, 32)
+    history = torch.stack([frame, frame])
+    generator = torch.Generator().manual_seed(0)
+    cropped = _crop_resize(history, generator, 0.9)
+    assert tuple(cropped.shape) == (2, 3, 24, 32) and torch.equal(cropped[0], cropped[1])
+    jittered = _color_jitter(history, torch.Generator().manual_seed(0),
+                             {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "hue": 0.05})
+    assert tuple(jittered.shape) == (2, 3, 24, 32) and torch.equal(jittered[0], jittered[1])
+    assert not torch.equal(jittered[0], frame)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -328,34 +412,42 @@ def test_a_session_without_a_sidecar_is_refused(tmp_path) -> None:
 
 
 def test_iteration_benchmark(session) -> None:
-    """Samples per second through a DataLoader, with no worker and with two.
+    """Samples per second through a DataLoader, with no worker and with two, at 1 and 2 history steps.
 
     The mock session is 120 frames, so the 1000 samples are drawn with replacement: the measurement
-    is of 1000 sample *fetches* (three PNG decodes, one goal lookup, one augmentation each), which is
-    what a training epoch costs per sample. The frames are `tests.test_recorder.SMALL`, so these
-    numbers are an upper bound on the rate at the real 640x480 resolution.
+    is of 1000 sample *fetches* (three PNG decodes per observation step, one goal lookup, one
+    augmentation each), which is what a training epoch costs per sample. The frames are
+    `tests.test_recorder.SMALL`, so these numbers are an upper bound on the rate at the real 640x480
+    resolution.
 
-    Both legs run with one torch thread: a DataLoader worker sets `torch.set_num_threads(1)` itself
+    `n_obs_steps=2` is the T-034 cost: the Diffusion Policy's sample decodes six PNGs instead of
+    three, so the rate is expected to roughly halve. Both legs of both are reported, because that
+    cost is what decides whether a real training run needs more DataLoader workers.
+
+    Every leg runs with one torch thread: a DataLoader worker sets `torch.set_num_threads(1)` itself
     (`torch/utils/data/_utils/worker.py`), and on 3x48x64 tensors the default thread pool costs about
     three times more than it saves, so measuring the `num_workers=0` leg with the pool on would be
     measuring thread contention rather than the loader.
     """
     root, cfg = session
-    data = LudoDataset([root], augment=True, seed=0, config_root=cfg)
-    rates = {}
+    rates: dict[tuple[int, int], float] = {}
     threads = torch.get_num_threads()
     torch.set_num_threads(1)
     try:
-        for workers in (0, 2):
-            sampler = RandomSampler(data, replacement=True, num_samples=BENCH_SAMPLES, generator=torch.Generator())
-            loader = DataLoader(data, batch_size=BENCH_BATCH, sampler=sampler, num_workers=workers)
-            seen, started = 0, time.perf_counter()
-            for batch in loader:
-                seen += int(batch["top"].shape[0])
-            rates[workers] = seen / (time.perf_counter() - started)
-            assert seen == BENCH_SAMPLES
+        for steps in (1, 2):
+            data = LudoDataset([root], n_obs_steps=steps, augment=True, seed=0, config_root=cfg)
+            for workers in (0, 2):
+                sampler = RandomSampler(data, replacement=True, num_samples=BENCH_SAMPLES,
+                                        generator=torch.Generator())
+                loader = DataLoader(data, batch_size=BENCH_BATCH, sampler=sampler, num_workers=workers)
+                seen, started = 0, time.perf_counter()
+                for batch in loader:
+                    seen += int(batch["top"].shape[0])
+                rates[steps, workers] = seen / (time.perf_counter() - started)
+                assert seen == BENCH_SAMPLES
     finally:
         torch.set_num_threads(threads)
     print(f"\nbenchmark ({BENCH_SAMPLES} samples, batch {BENCH_BATCH}, {SMALL['top'][0]}x{SMALL['top'][1]} frames, "
-          f"1 torch thread): " + ", ".join(f"num_workers={w}: {r:.0f} samples/s" for w, r in rates.items()))
+          f"1 torch thread): " + ", ".join(f"n_obs_steps={s}, num_workers={w}: {r:.0f} samples/s"
+                                           for (s, w), r in rates.items()))
     assert min(rates.values()) > 0.0

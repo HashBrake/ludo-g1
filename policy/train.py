@@ -12,11 +12,11 @@ launches there and the one that runs on the laptop for a smoke test. It is a pla
 (``diffusion.ema_decay`` is not applied yet; see docs/policy.md).
 
 ``--policy act`` is the whole difference between the two models of 5.7: the same sessions, the same
-:class:`~policy.dataset.LudoDataset` (at ``act.chunk`` instead of ``diffusion.chunk``), the same
-split, the same statistics, the same loop, the same run directory. CLAUDE.md 5.7 requires the
-baseline to be trained on every dataset the primary is trained on, so training it must cost one flag
-and must not be able to change anything else. Defaults (steps, batch, lr, weight decay, seed) come
-from the chosen policy's block in ``config/training.yaml``.
+:class:`~policy.dataset.LudoDataset` (at ``act.chunk`` and ``act.obs_history`` instead of the diffusion
+block's), the same split, the same statistics, the same loop, the same run directory. CLAUDE.md 5.7
+requires the baseline to be trained on every dataset the primary is trained on, so training it must
+cost one flag and must not be able to change anything else. Defaults (steps, batch, lr, weight decay,
+seed) come from the chosen policy's block in ``config/training.yaml``.
 
 Every run writes ``data/checkpoints/<run>/``:
 
@@ -56,9 +56,10 @@ import torch
 from lerobot.datasets.utils import INFO_PATH
 from torch.utils.data import DataLoader
 
+from policy._shared import dataset_stats
 from policy.act import ACTSpec, GoalACTPolicy
 from policy.dataset import LudoDataset
-from policy.diffusion import GoalDiffusionPolicy, PolicySpec, dataset_stats
+from policy.diffusion import GoalDiffusionPolicy, PolicySpec
 from runtime import config
 from runtime.log import get_logger
 from runtime.safety import REPO_ROOT
@@ -150,11 +151,15 @@ def train(
     kind = policy_kind(spec)
     samples = int(training[kind]["stats_samples"]) if stats_samples is None else int(stats_samples)
 
-    data = LudoDataset(sessions, chunk=spec.chunk, augment=augment, seed=seed, config_root=config_root)
+    # Each model of 5.7 gets the observation history its own config block asks for: `obs_history` is
+    # 2 for the Diffusion Policy and 1 for ACT, which lerobot forbids from taking more (T-034).
+    data = LudoDataset(sessions, chunk=spec.chunk, n_obs_steps=spec.n_obs_steps, augment=augment,
+                       seed=seed, config_root=config_root)
     manifest = dataset_manifest_hash(sessions)
     hashes = {name: config.config_hash(name, config_root) for name in config.NAMES}
     log.info("train_start", policy=kind, steps=steps, batch=batch_size, device=device, frames=len(data),
-             episodes=len(data.episodes), training_config_hash=hashes["training"], dataset_manifest=manifest)
+             episodes=len(data.episodes), n_obs_steps=data.n_obs_steps,
+             training_config_hash=hashes["training"], dataset_manifest=manifest)
 
     model = POLICIES[kind][1](spec, device=device).to(device)
     model.norm.load_stats(dataset_stats(data, samples=samples, seed=seed))
@@ -200,6 +205,7 @@ def train(
             for i, s in enumerate(sessions)
         ],
         "frames": len(data),
+        "n_obs_steps": data.n_obs_steps,
         "spec": spec.to_dict(),
         "args": {"steps": steps, "batch_size": batch_size, "learning_rate": float(learning_rate),
                  "weight_decay": float(weight_decay), "seed": seed, "device": device, "augment": augment,

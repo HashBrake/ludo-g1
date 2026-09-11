@@ -1313,7 +1313,7 @@ result: (opus, 2026-09-12T00:35+07:00, commit 275abc0)
     (that file is outside the touch list).
 
 ## T-034  Observation history in the dataset (n_obs_steps frames per sample)
-status: in_progress
+status: review
 priority: P1
 phase: 3
 owner: opus
@@ -1330,6 +1330,34 @@ deliverables:
 acceptance:
   - tests pass; policy/diffusion.py smoke test still passes with the history input; numbers in BUILD_LOG.md
 notes: Before any real training run.
+
+result: (opus, 2026-09-12T02:05+07:00, commit COMMIT_HASH)
+  - policy/dataset.py: `n_obs_steps` (default 1, explicit per policy). Above 1 the three camera keys and
+    observation.state carry lerobot delta_timestamps [-(S-1)/fps ... 0], so a sample is (S, 5, h, w) / (S, 3, h, w)
+    / (S, 9) oldest first, plus a new `obs_mask` (S,) that is 0 where lerobot clamped to the episode's first frame.
+    At 1 there is no step dimension (an ACT sample is unchanged). Goal channels: still one render per episode,
+    repeated over the history; task_id keeps no step dimension. One augmentation draw per sample, not per frame.
+  - policy/train.py passes spec.n_obs_steps: 2 for the Diffusion Policy (diffusion.obs_history), 1 for ACT via the
+    new constant ACTSpec.n_obs_steps property; ACTSpec.from_config refuses an act.obs_history other than 1
+    (ConfigError). run.json records n_obs_steps.
+  - policy/diffusion.py: DiffusionAdapter._batch() queues, pads-left and stacks oldest first -- the dataset's rule.
+    tests/test_diffusion.py::test_the_adapter_queue_and_the_dataset_history_agree feeds two consecutive
+    Observations built from a recorded episode and asserts exact tensor equality with the dataset's two-frame
+    sample at that frame, padded first call included (obs_mask [0, 1]).
+  - policy/_shared.py (new, 266 lines): image_tensor, observation_frame, with_steps, Normalizer, dataset_stats,
+    benchmark, synthetic_observation, IMAGE_KEYS/EPS/BUNDLE_FILE/WEIGHTS_FILE, imported by both wrappers;
+    policy/diffusion.py re-exports what policy/export.py imports from it. No private cross-imports remain (a test
+    asserts it). Defect fixed in the move: dataset_stats divided every camera by `top`'s pixel count, scaling the
+    palm mean/std by 4 at the configured sizes; each camera now counts its own pixels.
+  - Benchmark (1000 samples, batch 8, 64x48 mock frames, 1 torch thread), samples/s at num_workers 0 / 2:
+    before 90 / 143; after at n_obs_steps=1: 80 / 148; at n_obs_steps=2: 45 / 83 (six PNG decodes per sample
+    instead of three).
+  - Diffusion smoke train on real history: loss 0.9677 -> 0.7615 (mean last 10 0.7205), fixed probe 1.1773 ->
+    0.9804 (-16.7%); T-029 on the repeated frame was 0.951 -> 0.770, -16.9%. ACT smoke unchanged: 23.08 -> 0.97.
+  - ruff clean; tests/test_dataset.py 24 passed (18 before), tests/test_diffusion.py 11 (10), tests/test_act.py 16
+    (15); full suite 519 passed, 4 skipped in 947 s (under another builder's load; 511 before).
+  - config/training.yaml: comments only on diffusion.obs_history and act.obs_history, no value changed (the
+    training config hash is taken after parsing, so it is unchanged). runtime/policy_api.py untouched.
 
 ## T-035  Training loop completeness and a smaller inference configuration
 status: todo

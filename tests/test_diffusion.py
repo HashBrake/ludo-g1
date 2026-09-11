@@ -73,7 +73,8 @@ def spec(session) -> PolicySpec:
 
 @pytest.fixture(scope="module")
 def data(session, spec) -> LudoDataset:
-    return LudoDataset([session[0]], chunk=spec.chunk, config_root=session[1])
+    """At the policy's own observation history (T-034): two frames per sample for the diffusion model."""
+    return LudoDataset([session[0]], chunk=spec.chunk, n_obs_steps=spec.n_obs_steps, config_root=session[1])
 
 
 @pytest.fixture(scope="module")
@@ -144,6 +145,10 @@ def test_forward_and_predict_shapes(spec, batch) -> None:
     assert tuple(model.goal_proj.weight.shape) == (3, 3 + spec.goal_channels, 1, 1)
     assert torch.equal(model.goal_proj.weight[:, :3, 0, 0], torch.eye(3))
     assert float(model.goal_proj.weight[:, 3:].abs().sum()) == 0.0
+    # the batch arrives with a real history (T-034), not one frame the model has to repeat
+    assert tuple(batch["top"].shape) == (2, spec.n_obs_steps, 3 + spec.goal_channels, *SMALL["top"][::-1])
+    assert tuple(batch["state"].shape) == (2, spec.n_obs_steps, 9)
+    assert tuple(batch["obs_mask"].shape) == (2, spec.n_obs_steps)
     # lerobot sees 12 = 9 state + 3 task one-hot, one entry per observation step
     prepared = model._lerobot_batch(batch)
     assert tuple(prepared["observation.state"].shape) == (2, spec.n_obs_steps, spec.cond_state_dim)
@@ -307,9 +312,51 @@ def test_run_eval_loads_a_bundle(bundle) -> None:
     assert info["inference_steps"] == 10 and info["dataset_manifest_sha256"]
 
 
+def _observation_of(sample: dict[str, torch.Tensor]) -> Observation:
+    """The current frame of one dataset sample as the `Observation` the controller would build."""
+    current = {name: (sample[name][-1] if sample[name].ndim == 4 else sample[name]) for name in CAMERAS}
+    state = sample["state"][-1] if sample["state"].ndim == 2 else sample["state"]
+    return Observation(
+        ts_ns=0,
+        top=current["top"][:3].permute(1, 2, 0).numpy(),
+        oblique=current["oblique"].permute(1, 2, 0).numpy(),
+        palm=current["palm"].permute(1, 2, 0).numpy(),
+        state=state.numpy(),
+        goal=current["top"][3:].numpy(),
+        task_id=sample["task_id"].numpy(),
+    )
+
+
+def test_the_adapter_queue_and_the_dataset_history_agree(session, spec, bundle) -> None:
+    """T-034: training history and inference queue are the same tensor, order and padding included.
+
+    Two consecutive frames of a recorded episode are fed to the adapter as two `Observation`s; after
+    each call its assembled batch is compared with the dataset's own sample at that frame. The first
+    call exercises the padding rule at the start of an episode (the adapter repeats the only frame it
+    has; lerobot's `delta_timestamps` clamping repeats the episode's first frame), the second the
+    ordering (oldest first).
+    """
+    root, cfg = session
+    data = LudoDataset([root], chunk=spec.chunk, n_obs_steps=spec.n_obs_steps, config_root=cfg)
+    assert spec.n_obs_steps == 2
+    episode = data.episodes[0]
+    adapter = DiffusionAdapter(bundle[0], seed=0)
+    adapter.reset(move())
+    for step in range(spec.n_obs_steps):
+        index = next(i for i, (pos, frame) in enumerate(data._index)
+                     if pos == 0 and frame == episode.start + step)
+        sample = data[index]
+        batch = adapter._batch(_observation_of(sample))
+        for key in (*CAMERAS, "state"):
+            assert torch.equal(batch[key][0], sample[key]), f"{key} differs at step {step}"
+        assert torch.equal(batch["task_id"][0], sample["task_id"].expand(spec.n_obs_steps, -1))
+        assert sample["obs_mask"].tolist() == ([0.0, 1.0] if step == 0 else [1.0, 1.0])
+    assert len(adapter._queue) == spec.n_obs_steps
+
+
 def test_nothing_in_policy_imports_a_driver_or_a_hardware_check() -> None:
     """R2: `policy/` learns and exports; it never reaches a device or a bring-up script."""
-    for name in ("diffusion", "train", "export"):
+    for name in ("_shared", "dataset", "diffusion", "train", "export"):
         source = (Path(__file__).resolve().parent.parent / "policy" / f"{name}.py").read_text(encoding="utf-8")
         assert "tools.hardware_checks" not in source and "import drivers" not in source
         assert "from drivers" not in source

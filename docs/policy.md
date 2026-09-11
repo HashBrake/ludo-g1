@@ -14,7 +14,7 @@ from policy.dataset import LudoDataset, split_cell_pairs
 
 sessions = [Path("data/raw/20260912T090000")]
 train_pairs, held_out = split_cell_pairs(sessions, 0.2, seed=0)
-data = LudoDataset(sessions, augment=True, seed=0, split=train_pairs)
+data = LudoDataset(sessions, n_obs_steps=2, augment=True, seed=0, split=train_pairs)
 sample = data[0]
 ```
 
@@ -24,17 +24,43 @@ with a chunk of the actions that followed it:
 
 | key | shape | dtype | meaning |
 |---|---|---|---|
-| `top` | `(5, h, w)` | float32 | Brio RGB in [0, 1], then the two goal heatmap channels |
-| `oblique` | `(3, h, w)` | float32 | Orbbec Ego RGB in [0, 1] |
-| `palm` | `(3, h, w)` | float32 | DexH15 palm RGB in [0, 1] |
-| `state` | `(9,)` | float32 | 7 arm joints, waist yaw, pinch (`config/robot.yaml` `action_order`) |
+| `top` | `(S, 5, h, w)` | float32 | Brio RGB in [0, 1], then the two goal heatmap channels |
+| `oblique` | `(S, 3, h, w)` | float32 | Orbbec Ego RGB in [0, 1] |
+| `palm` | `(S, 3, h, w)` | float32 | DexH15 palm RGB in [0, 1] |
+| `state` | `(S, 9)` | float32 | 7 arm joints, waist yaw, pinch (`config/robot.yaml` `action_order`) |
+| `obs_mask` | `(S,)` | float32 | 1 where the frame was recorded, 0 where the history was padded |
 | `task_id` | `(3,)` | float32 | one-hot over `config/training.yaml` `observation.task_ids` |
 | `action` | `(chunk, 9)` | float32 | absolute joint targets at `rates.dataset_hz` |
 | `action_mask` | `(chunk,)` | float32 | 1 where the action was recorded, 0 where the tail was padded |
 
-`chunk` defaults to `diffusion.chunk` (16); the ACT baseline passes `chunk=32` (`act.chunk`). The 15
-raw DexH15 joints and the 17 glove channels are in the dataset but are not in a sample: CLAUDE.md 5.3
-records them and does not feed them to the policy.
+`chunk` defaults to `diffusion.chunk` (16); the ACT baseline passes `chunk=32` (`act.chunk`). `S` is
+`n_obs_steps` and **the step dimension exists only above 1** (see below). The 15 raw DexH15 joints
+and the 17 glove channels are in the dataset but are not in a sample: CLAUDE.md 5.3 records them and
+does not feed them to the policy.
+
+### Observation history (T-034)
+
+`n_obs_steps` is how many observation frames a sample ends with — `diffusion.obs_history` is 2,
+`act.obs_history` is 1 — and it is an **explicit argument per policy**, not a default: `policy/train.py`
+passes `spec.n_obs_steps`, which is the config value for the Diffusion Policy and the constant 1 for
+ACT, whose `ACTConfig` refuses anything else. There is no value that is right for both models, so
+there is no default that is right either; at 1 a sample is rank 3 / rank 1 as it was before T-034.
+
+The frames come from lerobot `delta_timestamps` on the four observation keys (three cameras and the
+state) at `[-(S-1)/fps … 0]`, so they are **oldest first and end at the current frame**. At the start
+of an episode the deltas reach before its first frame; lerobot clamps them to it and reports
+`observation.state_is_pad`, which becomes `obs_mask`. A history therefore repeats the first frame
+rather than borrowing the previous episode's last one.
+
+That padding rule is the same one `DiffusionAdapter` applies to its live queue on the first call of a
+primitive, and the order is the same order it stacks in.
+`tests/test_diffusion.py::test_the_adapter_queue_and_the_dataset_history_agree` feeds two consecutive
+`Observation`s built from a recorded episode to the adapter and asserts its batch equals the
+dataset's own two-frame sample at that frame, tensor for tensor, including the padded first call.
+
+The goal channels are **rendered once per episode and repeated** across the history (they are a
+property of the command, not of the frame), and `task_id` carries no step dimension at all for the
+same reason; `policy/_shared.py`'s `with_steps` repeats it inside the model.
 
 ### The goal channels are rendered, not stored
 
@@ -66,6 +92,10 @@ From `config/training.yaml` `augmentation`:
 - **colour jitter** (brightness, contrast, saturation, hue in a random order) on all three RGB images;
 - **crop-and-resize** to `random_crop_ratio` on `random_crop_cameras` — `oblique` and `palm` only;
 - **gaussian blur** of a random sigma in `goal_heatmap_blur_px` on the two goal channels only.
+
+One draw per **sample**, not per frame: every frame of a history is jittered and cropped identically,
+because the frames are 33 ms apart through one fixed camera and a window that moved between them
+would be a camera that moved between them.
 
 The `top` RGB is never geometrically altered. The goal heatmaps live in that frame, so a crop, a flip
 or a rotation there would leave the policy conditioned on a cell that is no longer under the gaussian.
@@ -101,12 +131,41 @@ episodes as well names their pair explicitly: `split=[*train_pairs, (None, None)
 .venv/bin/python -m pytest tests/test_dataset.py::test_iteration_benchmark -q -s
 ```
 
-On this laptop, at the tests' 64x48 frames and with one torch thread: **81 samples/s** with
-`num_workers=0` and **145 samples/s** with `num_workers=2` (2026-09-11). Both legs run single-threaded
-because a DataLoader worker sets `torch.set_num_threads(1)` itself, and on tensors this small the
-default thread pool costs about three times what it saves — with the pool on, the `num_workers=0` leg
-measures 30 samples/s, which is thread contention, not the loader. Real 640x480 frames will be
-slower; that measurement belongs to the first real session, not to the mock.
+On this laptop, at the tests' 64x48 frames and with one torch thread (2026-09-12):
+
+| `n_obs_steps` | `num_workers=0` | `num_workers=2` |
+|---|---|---|
+| 1 (ACT) | 80 samples/s | 148 samples/s |
+| 2 (Diffusion Policy) | 45 samples/s | 83 samples/s |
+
+The history costs what it decodes: a two-step sample opens six PNGs where a one-step sample opens
+three, and the rate roughly halves (T-034; the same test measured 90 / 143 samples/s at one step
+before the change, so the one-step legs are unchanged within run-to-run noise). Every leg runs
+single-threaded because a DataLoader worker sets `torch.set_num_threads(1)` itself, and on tensors
+this small the default thread pool costs about three times what it saves — with the pool on, the
+`num_workers=0` leg measures 30 samples/s, which is thread contention, not the loader. Real 640x480
+frames will be slower, and a real training run will want workers; that measurement belongs to the
+first real session, not to the mock.
+
+## `policy/_shared.py`
+
+What both models of 5.7 feed on, normalise with and are measured by, in one module so that neither is
+a client of the other (T-030 review; before T-034 `policy/act.py` imported two of these through their
+private names from `policy/diffusion.py`):
+
+- **feeding** — `image_tensor` (an HWC frame to `(3, h, w)` float32 in [0, 1]), `observation_frame`
+  (one `runtime.policy_api.Observation` to the frame both wrappers take, goal channels concatenated
+  onto `top` exactly as the dataset does) and `with_steps` (the observation-step dimension: present in
+  the batch for the Diffusion Policy, repeated for what is constant over an episode);
+- **normalisation** — `Normalizer` (the statistics as buffers in the model's own `state_dict`, because
+  lerobot 0.4.4 keeps them in a processor pipeline built around a hub checkpoint) and `dataset_stats`;
+- **measurement** — `benchmark` and `synthetic_observation`, so that D-019 compares one measurement
+  with itself.
+
+`dataset_stats` counts **each camera's own pixels** since T-034; before that every camera was divided
+by `top`'s pixel count, which scaled the `palm` mean and std by (640·480)/(320·240) = 4 and would have
+mis-normalised the palm camera in the first real training run. It also counts every frame of a
+history, so a dataset with `n_obs_steps` 2 and one with 1 give the same statistics.
 
 ## `policy/diffusion.py`
 
@@ -150,15 +209,18 @@ the trajectory directly (`DiffusionModel.conditional_sample`) and returns all 16
 conventions would put a one-step-stale action first; training and inference here both use the
 dataset's.
 
-### Known gap: the observation history is repeated during training
+### The observation history is real on both sides (T-034)
 
-`diffusion.obs_history` is 2 and `policy/dataset.py` yields one frame per sample, so **training
-repeats the current frame twice** while `DiffusionAdapter` keeps a real queue of the last two
-observations. The model therefore never sees motion in its conditioning during training, and sees it
-at inference. This must be closed before any real training run — `LudoDataset` needs observation
-`delta_timestamps` the way it already has them for actions — and it is logged as a T-029 finding in
-`agents/BUILD_LOG.md`. EMA (`diffusion.ema_decay`) and the warmup scheduler of `diffusion.scheduler`
-are likewise not applied by `policy/train.py` yet.
+`diffusion.obs_history` is 2, and since T-034 both halves carry two real frames: `LudoDataset`
+queries the last two camera frames and states per sample and `DiffusionAdapter` queues the last two
+observations, in the same order and with the same start-of-episode padding (`policy/dataset.py`
+above, and the test that pins them to each other). Until then the dataset yielded one frame and the
+wrapper repeated it, which trained the model on a still image and ran it on motion — the T-029
+finding this closes. What `policy/_shared.py`'s `with_steps` still repeats is what is constant over an
+episode (the task one-hot) and a single frame handed in by a caller with no history.
+
+Still open from T-029: EMA (`diffusion.ema_decay`) and the warmup scheduler of `diffusion.scheduler`
+are not applied by `policy/train.py` (T-035).
 
 ### `DiffusionAdapter` (the `runtime.policy_api.Policy` side)
 
@@ -181,9 +243,10 @@ policy = ACTAdapter("data/checkpoints/<run>/bundle")   # inference, runtime/cont
 
 The baseline of CLAUDE.md 5.7: lerobot 0.4.4's `ACTPolicy` (ResNet-18, chunk 32, VAE objective,
 temporal ensembling) wrapped — never patched — around **the same observation the Diffusion Policy
-takes**. The adaptation is not merely similar, it is the same code: `policy/act.py` imports the 1x1
-goal projection's normalisation buffers (`_Normalizer`), the frame conversion (`_image_tensor`), the
-camera keys and the latency benchmark from `policy/diffusion.py`. 5.7 requires the baseline to be
+takes**. The adaptation is not merely similar, it is the same code: both wrappers import the
+normalisation buffers (`Normalizer`), the frame conversion (`image_tensor`, `observation_frame`), the
+camera keys and the latency benchmark from **`policy/_shared.py`** — since T-034 a module of their
+own, so that neither model is a client of the other. 5.7 requires the baseline to be
 trained on every dataset the primary is trained on, and a difference in inputs, normalisation or
 measurement would make the comparison say something other than "these two architectures differ".
 
@@ -193,7 +256,7 @@ measurement would make the comparison say something other than "these two archit
 |---|---|---|
 | camera encoders | one ResNet-18 per camera (`use_separate_rgb_encoder_per_camera`) | **one shared** ResNet-18; `ACT.__init__` builds a single `self.backbone` and there is no per-camera option — so `act.encoder_per_camera` was removed from `config/training.yaml`, it never existed |
 | 5-channel `top` | refused by `DiffusionConfig.validate_features` | not refused by the config, but the shared 3-channel backbone raises *"expected input… to have 3 channels, but got 5"* — the same 1x1 goal projection is still the route |
-| observation history | `n_obs_steps` 2, and training repeats the frame (known gap below) | `ACTConfig` **refuses** any `n_obs_steps` but 1, and `LudoDataset` yields one frame — so the gap does not exist here |
+| observation history | `n_obs_steps` 2 on both sides since T-034: the dataset queries two frames and the adapter queues two | `ACTConfig` **refuses** any `n_obs_steps` but 1, so `ACTSpec.n_obs_steps` is the constant 1, `LudoDataset` is built with it, and an `act.obs_history` other than 1 is refused in `ACTSpec.from_config` |
 | chunk alignment | lerobot slices from `n_obs_steps - 1`; the wrapper samples the trajectory directly | `action_delta_indices` is `range(chunk_size)` = [0 … 31], already the dataset's alignment |
 | normalisation | statistics as buffers, STATE/ACTION min/max to [-1, 1] | the same buffers and the same min/max (upstream ACT maps them to mean/std, but lerobot's processor pipeline does not run for either model, and two baselines that normalise differently do not compare) |
 | pretrained backbone | `None` upstream | upstream default is `ResNet18_Weights.IMAGENET1K_V1`, which downloads at construction; `act.pretrained_backbone_weights: null` matches the Diffusion Policy so the comparison is not also a comparison of initialisations |
@@ -249,7 +312,8 @@ Two runs are comparable exactly when their config hashes and manifest hash agree
 also writes `data/logs/train_<run>.heartbeat` (section 7).
 
 `--policy act` is the whole difference between the two models of 5.7: the same sessions, the same
-`LudoDataset` (at `act.chunk` = 32 instead of `diffusion.chunk` = 16), the same split, the same
+`LudoDataset` (at the policy's own `chunk` and `obs_history` — 32 and 1 for ACT, 16 and 2 for the
+Diffusion Policy, both recorded in `run.json`), the same split, the same
 statistics, the same loop, the same run directory, and `run.json`/`checkpoint.pt` record which model
 it was. Every default (steps, batch size, learning rate, weight decay, seed, encoder input size,
 statistics samples) comes from the chosen policy's block in `config/training.yaml`, so the flag

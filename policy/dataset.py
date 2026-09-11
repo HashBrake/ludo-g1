@@ -7,20 +7,36 @@ policies of 5.7 are trained on::
     from policy.dataset import LudoDataset, split_cell_pairs
 
     train_pairs, held_out = split_cell_pairs(sessions, 0.2, seed=0)   # eval/protocol.py holds these out
-    data = LudoDataset(sessions, augment=True, seed=0, split=train_pairs)
+    data = LudoDataset(sessions, n_obs_steps=2, augment=True, seed=0, split=train_pairs)
     sample = data[0]
 
 =============== ========================= ====================================================
 key             shape / dtype             meaning
 =============== ========================= ====================================================
-``top``         ``(5, h, w)`` float32     Brio RGB in [0, 1], then the two goal heatmap channels
-``oblique``     ``(3, h, w)`` float32     Orbbec Ego RGB in [0, 1]
-``palm``        ``(3, h, w)`` float32     DexH15 palm RGB in [0, 1]
-``state``       ``(9,)`` float32          7 arm joints, waist yaw, pinch (``robot.action_order``)
+``top``         ``(S, 5, h, w)`` float32  Brio RGB in [0, 1], then the two goal heatmap channels
+``oblique``     ``(S, 3, h, w)`` float32  Orbbec Ego RGB in [0, 1]
+``palm``        ``(S, 3, h, w)`` float32  DexH15 palm RGB in [0, 1]
+``state``       ``(S, 9)`` float32        7 arm joints, waist yaw, pinch (``robot.action_order``)
+``obs_mask``    ``(S,)`` float32          1 for a recorded frame, 0 where the history was padded
 ``task_id``     ``(3,)`` float32          one-hot over ``training.observation.task_ids``
 ``action``      ``(chunk, 9)`` float32    absolute joint targets at ``rates.dataset_hz``
 ``action_mask`` ``(chunk,)`` float32      1 for a recorded action, 0 for tail padding
 =============== ========================= ====================================================
+
+``S`` is ``n_obs_steps``, **and the step dimension is present only when it is above 1**: at the
+default of 1 the cameras and the state are a single frame of rank 3 and rank 1, exactly as lerobot
+itself yields a key with no ``delta_timestamps``. The Diffusion Policy of 5.7 asks for 2
+(``diffusion.obs_history``) and ACT for 1 (``act.obs_history``, the only value ``ACTConfig``
+permits), so the trainer passes each model its own; there is no single default that is right for
+both. ``task_id`` never carries the dimension: it is constant over an episode, and the model repeats
+it (``policy/_shared.py`` ``with_steps``).
+
+**The history is padded at the start of an episode, never across one.** A sample at frame ``f``
+carries frames ``f - S + 1 .. f`` oldest first; before the episode's first frame lerobot's
+``delta_timestamps`` clamping repeats that first frame and ``obs_mask`` is 0 there. That is the same
+rule ``policy/diffusion.py``'s ``DiffusionAdapter`` applies to its live queue on the first call of a
+primitive (``tests/test_diffusion.py`` pins the two against each other frame for frame), so the model
+sees the same thing at the start of an episode in training as it does on the robot.
 
 **The goal channels are rendered, not stored.** The recorder keeps 2.4 MB of gaussian per frame out
 of the dataset and stores the two cell pixels once per episode instead (``docs/teleop.md``); this
@@ -32,6 +48,10 @@ cached. The render is deterministic, so the same session always produces the sam
 ``action_mask`` is 0 there (lerobot's own ``delta_timestamps`` clamping does both). Dropping the last
 ``chunk - 1`` frames instead would throw away precisely the end of every primitive -- the release,
 the retreat -- which is the part the policy has the least of and needs the most.
+
+**One augmentation per sample, not per frame.** Every frame of a sample's history is jittered,
+cropped and blurred with the *same* draw: the frames are 33 ms apart through one fixed camera, and a
+crop that moved between them would be a camera that moved between them.
 
 **Augmentation (5.7) never touches the `top` geometry.** The goal heatmaps live in the ``top`` frame,
 so a crop or a flip there would leave the policy conditioned on a cell that is no longer under the
@@ -59,10 +79,16 @@ from runtime import config
 from runtime.goal import GoalRenderer
 from teleop.recorder import SIDECAR
 
-__all__ = ["CAMERAS", "CellPair", "LudoDataset", "episode_metadata", "split_cell_pairs"]
+__all__ = ["CAMERAS", "OBSERVATION_KEYS", "CellPair", "LudoDataset", "episode_metadata", "split_cell_pairs"]
 
 #: The three camera streams of CLAUDE.md 5.3, in the order the sample dict lists them.
 CAMERAS: tuple[str, ...] = ("top", "oblique", "palm")
+#: The lerobot keys an ``n_obs_steps`` history is queried on: the cameras and the state. ``task_id``
+#: is constant over an episode and the goal channels are rendered per episode, so neither is queried.
+OBSERVATION_KEYS: tuple[str, ...] = (*(f"observation.images.{name}" for name in CAMERAS), "observation.state")
+#: Where the padding flag of the history lives (lerobot writes one ``<key>_is_pad`` per queried key;
+#: they are computed from the same delta indices, so one stands for all of them).
+PAD_KEY = "observation.state_is_pad"
 #: One episode's ``(src_cell, dst_cell)``. ``None`` where the primitive addresses no such cell (a
 #: ROLL has neither; a RECOVER may have only one), so a pair is not always a pair of cells.
 CellPair = tuple[str | None, str | None]
@@ -135,6 +161,8 @@ def _color_jitter(image: torch.Tensor, generator: torch.Generator, strength: dic
 
     Written out rather than delegated to ``torchvision.transforms.ColorJitter`` because that draws
     from the global RNG: the per-item generator is what makes a sample reproducible from its index.
+    ``image`` is ``(C, H, W)`` or ``(S, C, H, W)``; torchvision's functionals broadcast over leading
+    dimensions, so one draw jitters the whole history identically (module docstring).
     """
     out = image
     for which in torch.randperm(4, generator=generator).tolist():
@@ -150,15 +178,22 @@ def _color_jitter(image: torch.Tensor, generator: torch.Generator, strength: dic
 
 
 def _crop_resize(image: torch.Tensor, generator: torch.Generator, ratio: float) -> torch.Tensor:
-    """A random ``ratio`` sub-window scaled back to the frame size (``oblique`` and ``palm`` only)."""
-    _, height, width = image.shape
+    """A random ``ratio`` sub-window scaled back to the frame size (``oblique`` and ``palm`` only).
+
+    ``image`` is ``(C, H, W)`` or ``(S, C, H, W)``, and the whole history is cropped at the *same*
+    window: one draw per sample, because a window that moved between two frames 33 ms apart would be
+    a camera that moved between them (module docstring).
+    """
+    height, width = image.shape[-2:]
     box_h, box_w = max(round(height * ratio), 1), max(round(width * ratio), 1)
     top = int(torch.randint(0, height - box_h + 1, (1,), generator=generator).item())
     left = int(torch.randint(0, width - box_w + 1, (1,), generator=generator).item())
-    window = image[:, top : top + box_h, left : left + box_w]
-    return torch.nn.functional.interpolate(
-        window.unsqueeze(0), size=(height, width), mode="bilinear", align_corners=False
-    ).squeeze(0)
+    window = image[..., top : top + box_h, left : left + box_w]
+    resized = torch.nn.functional.interpolate(
+        window if window.ndim == 4 else window.unsqueeze(0), size=(height, width),
+        mode="bilinear", align_corners=False,
+    )
+    return resized if image.ndim == 4 else resized.squeeze(0)
 
 
 def _blur_goal(goal: torch.Tensor, generator: torch.Generator, sigma_px: tuple[float, float]) -> torch.Tensor:
@@ -183,6 +218,7 @@ class LudoDataset(Dataset):
         sessions: Sequence[Path | str],
         *,
         chunk: int | None = None,
+        n_obs_steps: int = 1,
         augment: bool = False,
         seed: int | None = None,
         split: Iterable[CellPair] | None = None,
@@ -191,7 +227,10 @@ class LudoDataset(Dataset):
         """``sessions`` are session directories under ``data/raw/``.
 
         ``chunk`` defaults to ``config/training.yaml`` ``diffusion.chunk`` (16); the ACT baseline
-        passes its own (32). ``augment`` turns on the three augmentations of 5.7, each drawn from a
+        passes its own (32). ``n_obs_steps`` is how many observation frames a sample carries, ending
+        at the current one: ``policy/train.py`` passes the chosen policy's own ``obs_history``
+        (diffusion 2, ACT 1), because the two models differ on it and a shared default would be
+        wrong for one of them. ``augment`` turns on the three augmentations of 5.7, each drawn from a
         generator seeded with ``seed + index``, so sample *i* is the same sample on every epoch, in
         every worker, and after a restart; ``seed=None`` draws one base seed and records it in
         :attr:`seed`. ``split`` keeps only the episodes whose ``(src_cell, dst_cell)`` is listed --
@@ -205,6 +244,9 @@ class LudoDataset(Dataset):
         self.chunk = int(training["diffusion"]["chunk"]) if chunk is None else int(chunk)
         if self.chunk < 1:
             raise ValueError(f"LudoDataset needs chunk >= 1, got {self.chunk}")
+        self.n_obs_steps = int(n_obs_steps)
+        if self.n_obs_steps < 1:
+            raise ValueError(f"LudoDataset needs n_obs_steps >= 1, got {self.n_obs_steps}")
         self.fps = int(training["rates"]["dataset_hz"])
         self.task_ids: tuple[str, ...] = tuple(str(t) for t in training["observation"]["task_ids"])
         self.augment = bool(augment)
@@ -214,6 +256,11 @@ class LudoDataset(Dataset):
         keep = None if split is None else {(a, b) for a, b in split}
 
         delta = {"action": [i / self.fps for i in range(self.chunk)]}
+        if self.n_obs_steps > 1:
+            # Oldest first, ending at the current frame: [-(S-1)/fps ... 0]. lerobot clamps a delta
+            # that reaches before the episode to its first frame and reports `<key>_is_pad`.
+            history = [(step - self.n_obs_steps + 1) / self.fps for step in range(self.n_obs_steps)]
+            delta.update({key: list(history) for key in OBSERVATION_KEYS})
         self.datasets: list[LeRobotDataset] = []
         self.episodes: list[_Episode] = []
         self._index: list[tuple[int, int]] = []
@@ -242,7 +289,7 @@ class LudoDataset(Dataset):
     def __repr__(self) -> str:
         return (
             f"LudoDataset(sessions={len(self.datasets)}, episodes={len(self.episodes)}, frames={len(self)}, "
-            f"chunk={self.chunk}, augment={self.augment}, seed={self.seed})"
+            f"chunk={self.chunk}, n_obs_steps={self.n_obs_steps}, augment={self.augment}, seed={self.seed})"
         )
 
     def __len__(self) -> int:
@@ -329,17 +376,22 @@ class LudoDataset(Dataset):
         images = {name: item[f"observation.images.{name}"].to(torch.float32) for name in CAMERAS}
         goal = self._goal(episode_position, tuple(images["top"].shape[-2:]))
         if self.augment:
+            # One generator per sample, so every frame of the history draws the same augmentation.
             generator = torch.Generator().manual_seed((self.seed + index) % _SEED_MOD)
             for name in CAMERAS:
                 images[name] = _color_jitter(images[name], generator, self.augmentation["color_jitter"])
             for name in self.augmentation["crop_cameras"]:
                 images[name] = _crop_resize(images[name], generator, self.augmentation["crop_ratio"])
             goal = _blur_goal(goal, generator, self.augmentation["blur_px"])
+        if self.n_obs_steps > 1:  # the goal channels are one render per episode, repeated over it
+            goal = goal.unsqueeze(0).expand(self.n_obs_steps, -1, -1, -1)
+        pad = item.get(PAD_KEY)
         return {
-            "top": torch.cat([images["top"], goal], dim=0),
+            "top": torch.cat([images["top"], goal], dim=-3),
             "oblique": images["oblique"],
             "palm": images["palm"],
             "state": item["observation.state"].to(torch.float32),
+            "obs_mask": torch.ones(self.n_obs_steps) if pad is None else (~pad).to(torch.float32),
             "task_id": self._one_hot(int(item["task_id"].reshape(-1)[0])),
             "action": item["action"].to(torch.float32),
             "action_mask": (~item["action_is_pad"]).to(torch.float32),

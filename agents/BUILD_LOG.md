@@ -3030,3 +3030,109 @@ the ordering held in every repetition.
 pre-commit run was ruff clean and `490 passed, 4 skipped in 188.84s`. This line and the TASKS.md
 `result:` hash are the only content of the follow-up commit, which ran the full pre-commit gate --
 no `--no-verify`, per D-013 item 1.)
+
+## T-034  Observation history in the dataset, and the shared helpers in policy/_shared.py  (opus, 2026-09-12T02:00+07:00)
+
+### What was built
+- **`policy/_shared.py` (new, 266 lines).** What both models of 5.7 feed on, normalise with and are measured by,
+  promoted out of `policy/diffusion.py` so that neither model is a client of the other (T-030 review). Feeding:
+  `image_tensor`, `observation_frame` (the `_frame` body both adapters had, byte for byte identical -- now one
+  function they both call), `with_steps`. Normalisation: `Normalizer` (was `_Normalizer`), `dataset_stats`.
+  Measurement: `benchmark`, `synthetic_observation` (was `_synthetic_observation`). `IMAGE_KEYS`, `EPS`,
+  `BUNDLE_FILE`, `WEIGHTS_FILE` moved with them. `policy/diffusion.py` re-exports the names in its `__all__`
+  (`BUNDLE_FILE`, `EPS`, `IMAGE_KEYS`, `WEIGHTS_FILE`, `benchmark`, `dataset_stats`), because `policy/export.py`
+  imports two of them from there and export.py is outside this task's touch list. No private cross-imports left:
+  `tests/test_act.py` asserts `_Normalizer` and `_image_tensor` appear in neither wrapper.
+- **`policy/dataset.py`: `n_obs_steps`.** New keyword argument (default 1, `>= 1` enforced). Above 1 the three
+  camera keys and `observation.state` get lerobot `delta_timestamps` of `[-(S-1)/fps ... 0]`, so a sample carries
+  frames `f-S+1 .. f` **oldest first** with a leading step dimension: `top (S, 5, h, w)`, `oblique`/`palm`
+  `(S, 3, h, w)`, `state (S, 9)`. At 1 there is no step dimension at all (lerobot yields no history for a key
+  with no delta), so an ACT sample is exactly what it was before this task. New key `obs_mask (S,)`: 1 for a
+  recorded frame, 0 where lerobot's clamping repeated the episode's first frame. The goal channels stay one
+  render per episode (`_goal_cache` untouched) and are repeated across the history; `task_id` keeps no step
+  dimension (constant over an episode, repeated inside the model by `with_steps`).
+- **One augmentation draw per sample, not per frame.** `_color_jitter` and `_crop_resize` now take `(C, H, W)` or
+  `(S, C, H, W)` and apply the same jitter and the same crop window to every frame of a history: the frames are
+  33 ms apart through one fixed camera.
+- **`policy/train.py` passes the policy's own history**: `LudoDataset(..., n_obs_steps=spec.n_obs_steps)`, which
+  is `diffusion.obs_history` (2) for `PolicySpec` and the new constant `ACTSpec.n_obs_steps` property (1) for
+  ACT. `run.json` and the `train_start` log line now record `n_obs_steps`. `ACTSpec.from_config` refuses an
+  `act.obs_history` other than 1 with a `ConfigError` naming `configuration_act.py:148`, rather than building a
+  dataset ACT cannot take.
+- **`policy/diffusion.py`: the adapter's queue is now pinned to the dataset's history.** `act()` calls the new
+  `DiffusionAdapter._batch(observation)` (queue append, pad-left with the oldest frame, stack oldest first,
+  unsqueeze the batch), which is the same ordering and the same padding rule the dataset uses at the start of an
+  episode. `with_steps` still repeats what is genuinely constant over an episode; it no longer repeats the
+  cameras or the state during training. Docstrings and `docs/policy.md` no longer carry a "known gap".
+- **Defect found and fixed while moving `dataset_stats`.** It divided every camera's channel sums by `top`'s
+  pixel count, so the `palm` mean and std came out scaled by (640x480)/(320x240) = 4 (in the tests, 64x48 vs
+  48x32 = 2.0). Each camera now counts its own pixels, and every frame of a history counts once, so a dataset at
+  `n_obs_steps` 2 and one at 1 give the same statistics. No trained checkpoint exists, so nothing downstream was
+  built on the wrong numbers.
+- **Docs**: `docs/policy.md` gains a `policy/_shared.py` section and an "Observation history (T-034)" section
+  (ordering, padding, the per-policy argument, the parity test), the sample table gains `S` and `obs_mask`, the
+  throughput table gains the `n_obs_steps` legs, the diffusion "known gap" section is replaced by what closes it,
+  and the ACT comparison row is rewritten. `config/training.yaml`: comments only on `diffusion.obs_history` and
+  `act.obs_history` (no value changed; `config_hash` is taken after parsing, so the training hash is unchanged).
+
+### Commands run and measured results
+```
+.venv/bin/ruff check .                                                     # clean
+.venv/bin/python -m pytest tests/test_dataset.py -q -s -p no:randomly      # 24 passed in 67.8 s (18 before)
+.venv/bin/python -m pytest tests/test_diffusion.py -q -s -p no:randomly    # 11 passed in 45.8 s (10 before)
+.venv/bin/python -m pytest tests/test_act.py -q -s -p no:randomly          # 16 passed in 22.4 s (15 before)
+.venv/bin/python -m pytest -q                                              # 519 passed, 4 skipped in 947.4 s
+```
+- **Iteration benchmark (`tests/test_dataset.py::test_iteration_benchmark`, 1000 samples, batch 8, 64x48 mock
+  frames, 1 torch thread), before and after:**
+
+  | | `num_workers=0` | `num_workers=2` |
+  |---|---|---|
+  | before T-034 (one frame per sample) | 90 samples/s | 143 samples/s |
+  | after, `n_obs_steps=1` (ACT) | 80 samples/s | 148 samples/s |
+  | after, `n_obs_steps=2` (Diffusion Policy) | **45 samples/s** | **83 samples/s** |
+
+  The one-step legs are unchanged within run-to-run noise (both runs were taken with another builder's suite on
+  the machine). The two-step legs are the cost of the history: six PNG decodes per sample instead of three, so
+  the rate roughly halves. At 45 samples/s a 200 000-step run at batch 64 would be loader-bound on this laptop;
+  on Greennode it argues for `--workers` above 0, which is already a `policy/train.py` flag.
+- **The diffusion smoke train now runs on real history** (30 steps, batch 2, lr 1e-3, 48x64 frames, mock
+  session): training loss 0.9677 -> 0.7615 (mean of the last 10: 0.7205), fixed-probe loss 1.1773 -> 0.9804
+  (-16.7%). T-029's numbers on the repeated frame were 0.951 -> 0.770 and -16.9%: the model still trains, and no
+  claim is made that 30 steps on mock frames say anything about which is better (R5).
+- **ACT smoke train unchanged in shape** (it never had history): 23.0779 -> 0.9687, fixed probe -96.7%.
+- **The parity test** (`tests/test_diffusion.py::test_the_adapter_queue_and_the_dataset_history_agree`): two
+  consecutive frames of a recorded episode are turned into `Observation`s and fed to `DiffusionAdapter`; after
+  each call its assembled batch is compared with the dataset's own two-frame sample at that frame. Exact tensor
+  equality on `top`, `oblique`, `palm` and `state` at both steps, including the padded first call
+  (`obs_mask [0, 1]`), and on `task_id` after the model's repeat. This is the check Fable's note asked for: same
+  ordering (oldest first), same padding rule (repeat the first frame).
+
+### Findings and open questions
+1. **The history is not free at 640x480.** The mock measurement halves at 64x48 with PNG frames; the real frames
+   are 100x the pixels. If loader throughput binds the first real training run, the levers in order are
+   `--workers`, `recorder.use_videos: true` (which D-011's comment already anticipates, at the cost of lossy
+   frames) and caching decoded frames. Nothing to decide before a real session exists.
+2. **`obs_mask` is carried but not consumed by either model.** The padded frames are exact copies of the
+   episode's first frame -- the same thing the adapter feeds on the first call of a primitive -- so masking the
+   conditioning would make training and inference differ again. It is in the sample because the deliverable asks
+   for it, because the dataset card audit (section 8) can count padded starts, and because a future model that
+   wants to mask can. Recorded here rather than silently left unused.
+3. **`policy/dataset.py` is at 412 lines** after the history and the docstrings. Under the T-027 style note
+   (D-013 item 2) the augmentation helpers would be the thing to move to a sibling module next time the file is
+   touched; not done here because the task's touch list is deliberately narrow.
+
+### Deviations and notes
+- `runtime/policy_api.py` is **unchanged**: the `Observation` contract stays one instant, and the adapter keeps
+  its own queue, as lerobot's own policies do and as the task preferred.
+- `policy/export.py` was not touched; it still imports `BUNDLE_FILE`/`WEIGHTS_FILE` from `policy/diffusion.py`,
+  which re-exports them. If Fable prefers the direct import, it is a one-line follow-up in a task that owns that
+  file.
+- The default `n_obs_steps=1` is not "the ACT value": it is the value that makes a sample a single frame, which
+  is what every caller that does not care about history wants. Both models pass theirs explicitly through
+  `spec.n_obs_steps`, per Fable's note.
+- R1-R6 intact: nothing in `policy/` imports a driver or `tools/hardware_checks/` (the test now checks
+  `_shared.py` and `dataset.py` too), no scripted motion, no literal joint target, `config/safety.yaml`
+  untouched, `hardware/session.enable` neither created nor read, nothing under `third_party/` or in the
+  installed lerobot package modified (wrapped only; the history is lerobot's own `delta_timestamps`). Committed
+  through the full pre-commit gate, no `--no-verify` (D-013 item 1).

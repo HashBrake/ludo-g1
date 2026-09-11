@@ -128,6 +128,10 @@ diffusion:
   stats_samples: 256
   chunk: 16
   execute: 8             # receding horizon: execute 8 of the 16 predicted actions
+  # Observation frames per sample, ending at the current one. policy/train.py builds
+  # policy/dataset.py's LudoDataset with it (lerobot delta_timestamps on the cameras and the state,
+  # oldest first, the episode's first frame repeated where the history reaches before it), and
+  # policy/diffusion.py's DiffusionAdapter queues the same number live, in the same order (T-034).
   obs_history: 2
   scheduler: ddim
   train_steps: 100
@@ -161,6 +165,9 @@ act:
   expose: 16
   temporal_ensemble: true
   temporal_ensemble_coeff: 0.01
+  # 1, and only 1: ACTConfig.__post_init__ (configuration_act.py:148) refuses any other value, so
+  # ACTSpec.n_obs_steps is the constant 1 and ACTSpec.from_config refuses a different number here
+  # rather than building a dataset ACT cannot take (T-034).
   obs_history: 1
   # The transformer that sets the parameter count (upstream ACT defaults, recorded here for the same
   # reason diffusion.down_dims is). n_decoder_layers is 1 upstream, matching the original ACT code.

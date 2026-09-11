@@ -28,10 +28,12 @@ What lerobot 0.4.4's ACT does differently from its Diffusion Policy, and what th
   unchanged at initialisation, zero weight on the two goal channels, the gradient decides the rest.
 * **One observation step.** ``ACTConfig.__post_init__``
   (``lerobot/policies/act/configuration_act.py:148``) refuses any ``n_obs_steps`` but 1, so the
-  train/inference history mismatch recorded for the diffusion wrapper in T-029 does not exist here:
-  ``policy/dataset.py`` yields one frame per sample and ACT wants exactly one.
+  observation history T-034 gave ``policy/dataset.py`` is not for this model: :attr:`ACTSpec.n_obs_steps`
+  is the constant 1, ``policy/train.py`` builds the dataset with it, and a ``config/training.yaml``
+  ``act.obs_history`` other than 1 is refused at :meth:`ACTSpec.from_config` rather than silently
+  producing samples ACT cannot take.
 * **Normalisation** lives in lerobot's processor pipelines, as it does for the Diffusion Policy, and
-  is replaced here by the same :class:`policy.diffusion._Normalizer` buffers, so a bundle is
+  is replaced here by the same :class:`policy._shared.Normalizer` buffers, so a bundle is
   self-contained and both models normalise identically. Upstream ACT maps STATE and ACTION to
   MEAN_STD where the Diffusion Policy maps them to MIN_MAX; since neither pipeline runs, this
   wrapper uses MIN_MAX for both models. Two baselines that normalise differently do not compare.
@@ -89,12 +91,11 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from torch import Tensor, nn
 
 from engine.interface import Command
-from policy.dataset import CAMERAS
 
 # The observation adaptation, the statistics buffers and the latency measurement are *shared* with
 # the Diffusion Policy wrapper on purpose (5.7: the baseline must be comparable, see the docstring),
-# so they are imported rather than copied -- including the two module-private ones.
-from policy.diffusion import BUNDLE_FILE, IMAGE_KEYS, WEIGHTS_FILE, _image_tensor, _Normalizer, benchmark
+# so both models import them from policy/_shared.py rather than one importing them from the other.
+from policy._shared import BUNDLE_FILE, IMAGE_KEYS, WEIGHTS_FILE, Normalizer, benchmark, observation_frame
 from runtime import config
 from runtime.policy_api import GOAL_CHANNELS, ActionChunk, Observation
 from runtime.types import ACTION_DIM
@@ -153,6 +154,16 @@ class ACTSpec:
         """What lerobot sees as ``observation.state``: the 9-D state plus the task one-hot (5.3)."""
         return self.state_dim + self.task_dim
 
+    @property
+    def n_obs_steps(self) -> int:
+        """Always 1, and not a field: ``ACTConfig`` refuses anything else (module docstring).
+
+        It is a property rather than an absent attribute so that ``policy/train.py`` can ask either
+        spec of 5.7 for the history its model wants and build one :class:`policy.dataset.LudoDataset`
+        accordingly, without naming the policy a second time (T-034).
+        """
+        return 1
+
     @classmethod
     def from_config(cls, config_root: Path | str | None = None, **overrides: Any) -> ACTSpec:
         """Build the spec from ``config/training.yaml``; ``overrides`` are for tests, not for runs."""
@@ -160,6 +171,12 @@ class ACTSpec:
         block = training["act"]
         rates = training["rates"]
         weights = block["pretrained_backbone_weights"]
+        if int(block["obs_history"]) != 1:
+            raise config.ConfigError(
+                f"config/training.yaml act.obs_history must be 1, got {block['obs_history']}: lerobot's "
+                "ACTConfig.__post_init__ refuses any other value (configuration_act.py:148), so a dataset "
+                "built with more would feed ACT samples it cannot take"
+            )
         spec = cls(
             image_hw=tuple(block["encoder_image_hw"]),
             state_dim=int(training["observation"]["state_dim"]),
@@ -302,7 +319,7 @@ class GoalACTPolicy(nn.Module):
             self.goal_proj.weight.zero_()
             for channel in range(3):
                 self.goal_proj.weight[channel, channel, 0, 0] = 1.0
-        self.norm = _Normalizer(spec)
+        self.norm = Normalizer(spec)
 
     def __repr__(self) -> str:
         params = sum(p.numel() for p in self.parameters())
@@ -442,15 +459,12 @@ class ACTAdapter:
     # -- observation -> tensors -------------------------------------------------------------------
 
     def _frame(self, observation: Observation) -> dict[str, Tensor]:
-        """One observation as the tensors :class:`GoalACTPolicy` expects, on the device."""
-        frame = {name: _image_tensor(getattr(observation, name), self.device) for name in CAMERAS}
-        goal = torch.as_tensor(np.asarray(observation.goal), dtype=torch.float32, device=self.device)
-        if goal.shape[-2:] != frame["top"].shape[-2:]:
-            raise ValueError(f"goal {tuple(goal.shape)} does not match `top` {tuple(frame['top'].shape)}")
-        frame["top"] = torch.cat([frame["top"], goal], dim=0)
-        frame["state"] = torch.as_tensor(observation.state, dtype=torch.float32, device=self.device)
-        frame["task_id"] = torch.as_tensor(observation.task_id, dtype=torch.float32, device=self.device)
-        return frame
+        """One observation as the tensors :class:`GoalACTPolicy` expects, on the device.
+
+        The same frame :class:`policy.diffusion.DiffusionAdapter` builds, by the same function; ACT
+        takes one of them where the Diffusion Policy stacks ``n_obs_steps``.
+        """
+        return observation_frame(observation, self.device)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -472,12 +486,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-ensemble", action="store_true", help="skip the temporal ensemble (it is not the cost)")
     args = parser.parse_args(argv)
 
-    from policy.diffusion import _synthetic_observation  # the identical inputs, for the identical number
+    from policy._shared import synthetic_observation  # the identical inputs, for the identical number
 
     adapter = ACTAdapter(args.bundle, device=args.device,
                          temporal_ensemble=False if args.no_ensemble else None)
     sizes = config.load("training")["observation"]["images"]
-    observation = _synthetic_observation(sizes, adapter.spec.task_dim)
+    observation = synthetic_observation(sizes, adapter.spec.task_dim)
     result = benchmark(adapter, observation, trials=args.trials)
     budget_ms = 1e3 / float(config.load("training")["rates"]["policy_hz"])
     print(f"{adapter!r}")

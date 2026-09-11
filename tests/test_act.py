@@ -25,9 +25,10 @@ from torch.utils.data import DataLoader
 
 from engine.interface import Command, Primitive
 from eval.run_eval import make_policy
+from policy._shared import BUNDLE_FILE, IMAGE_KEYS, WEIGHTS_FILE, Normalizer, dataset_stats, observation_frame
 from policy.act import ACTAdapter, ACTSpec, GoalACTPolicy, TemporalEnsemble
 from policy.dataset import CAMERAS, LudoDataset
-from policy.diffusion import BUNDLE_FILE, IMAGE_KEYS, WEIGHTS_FILE, DiffusionAdapter, dataset_stats
+from policy.diffusion import DiffusionAdapter
 from policy.export import BUNDLE_FORMATS, export, open_bundle
 from policy.train import POLICIES, policy_kind, train
 from runtime import config
@@ -70,7 +71,8 @@ def spec(session) -> ACTSpec:
 
 @pytest.fixture(scope="module")
 def data(session, spec) -> LudoDataset:
-    return LudoDataset([session[0]], chunk=spec.chunk, config_root=session[1])
+    """At the policy's own observation history (T-034): ACT takes one frame per sample, and only one."""
+    return LudoDataset([session[0]], chunk=spec.chunk, n_obs_steps=spec.n_obs_steps, config_root=session[1])
 
 
 @pytest.fixture(scope="module")
@@ -115,13 +117,36 @@ def test_lerobot_act_has_one_backbone_three_channels_wide(spec, batch) -> None:
         model.lerobot.predict_action_chunk(prepared)
 
 
-def test_the_two_models_of_5_7_see_the_same_inputs() -> None:
+def test_the_two_models_of_5_7_see_the_same_inputs(spec) -> None:
     """CLAUDE.md 5.7: the baseline is trained on the same data; it must also be fed the same way."""
     training = config.load("training")
     assert training["act"]["encoder_image_hw"] == training["diffusion"]["encoder_image_hw"]
     assert training["act"]["obs_history"] == 1  # ACTConfig refuses anything else
     assert training["act"]["expose"] == training["diffusion"]["chunk"]  # same contract to the controller
     assert training["act"]["pretrained_backbone_weights"] is None  # as DiffusionConfig's default
+    # ... and the shared feeding code is one module both import, not one model importing from the
+    # other through its private names (T-030 review, done in T-034).
+    assert spec.n_obs_steps == 1 and spec.lerobot_config().n_obs_steps == 1
+    assert isinstance(GoalACTPolicy(spec).norm, Normalizer)
+    for module in ("act", "diffusion"):
+        source = (Path(__file__).resolve().parent.parent / "policy" / f"{module}.py").read_text(encoding="utf-8")
+        assert "from policy._shared import" in source
+        assert "_Normalizer" not in source and "_image_tensor" not in source
+
+
+def test_an_obs_history_act_cannot_take_is_refused(session, tmp_path) -> None:
+    """T-034: `act.obs_history` other than 1 is a config error, not a dataset ACT chokes on later."""
+    import yaml
+
+    out = tmp_path / "config"
+    out.mkdir()
+    for name in config.NAMES:
+        block = config.load(name, root=session[1])
+        if name == "training":
+            block["act"]["obs_history"] = 2
+        (out / f"{name}.yaml").write_text(yaml.safe_dump(block, sort_keys=False), encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="act.obs_history must be 1"):
+        ACTSpec.from_config(out)
 
 
 def test_forward_and_predict_shapes(spec, batch, data) -> None:
@@ -401,8 +426,12 @@ def test_nothing_in_policy_act_imports_a_driver_or_a_hardware_check() -> None:
     assert "from drivers" not in source
 
 
-def test_the_observation_is_the_one_of_5_3(spec) -> None:
-    """The adapter takes the same `Observation` the diffusion adapter does, nothing else."""
+def test_the_observation_is_the_one_of_5_3(spec, bundle) -> None:
+    """The adapter takes the same `Observation` the diffusion adapter does, through the same code."""
     obs = observation()
     assert isinstance(obs, Observation) and obs.goal.shape[0] == spec.goal_channels
     assert set(CAMERAS) == set(IMAGE_KEYS)
+    adapter = ACTAdapter(bundle[0])
+    built = adapter._frame(obs)
+    shared = observation_frame(obs, adapter.device)
+    assert set(built) == set(shared) and all(torch.equal(built[k], shared[k]) for k in built)

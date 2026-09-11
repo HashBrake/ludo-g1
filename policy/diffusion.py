@@ -48,11 +48,15 @@ Chunking (5.2)
 at the current frame), so this module samples the trajectory directly and takes it from index 0. The
 two conventions must not be mixed: training and inference here both use the dataset's.
 
-Observation history: ``diffusion.obs_history`` is 2, and ``policy/dataset.py`` yields one frame per
-sample, so **training repeats the current frame** ``n_obs_steps`` times while inference keeps a real
-queue of the last two observations. That is a train/inference mismatch; it is recorded in
-``agents/BUILD_LOG.md`` (T-029) and in ``docs/policy.md``, and it has to be closed by giving the
-dataset observation history before any real training run (Phase 3, T-031).
+Observation history (T-034)
+---------------------------
+``diffusion.obs_history`` is 2, and both halves now carry two real frames: ``policy/dataset.py``
+yields the last ``n_obs_steps`` camera frames and states per sample (lerobot ``delta_timestamps`` on
+the observation keys, oldest first, padded at the start of an episode with its first frame), and
+:class:`DiffusionAdapter` keeps a queue with the same order and the same padding rule. Until T-034
+the dataset yielded one frame and this module repeated it, which trained the model on a still image
+and ran it on motion; :func:`policy._shared.with_steps` still repeats what is genuinely constant over
+an episode (the task one-hot) and nothing else.
 """
 
 from __future__ import annotations
@@ -61,7 +65,7 @@ import argparse
 import json
 import time
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -74,31 +78,38 @@ from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 from torch import Tensor, nn
 
-from engine.interface import Command, Primitive
+from engine.interface import Command
+from policy._shared import (
+    BUNDLE_FILE,
+    EPS,
+    IMAGE_KEYS,
+    WEIGHTS_FILE,
+    Normalizer,
+    benchmark,
+    dataset_stats,
+    observation_frame,
+    synthetic_observation,
+    with_steps,
+)
 from policy.dataset import CAMERAS
 from runtime import config
 from runtime.policy_api import GOAL_CHANNELS, ActionChunk, Observation
 from runtime.types import ACTION_DIM
 
+#: Re-exported from :mod:`policy._shared`, which both models of 5.7 feed on (T-030 review): a caller
+#: that has a diffusion bundle in its hand should not have to know where the constants moved to.
 __all__ = [
     "BUNDLE_FILE",
+    "EPS",
     "IMAGE_KEYS",
     "WEIGHTS_FILE",
     "DiffusionAdapter",
     "GoalDiffusionPolicy",
     "PolicySpec",
+    "benchmark",
     "dataset_stats",
     "main",
 ]
-
-#: The lerobot feature key of each camera. Anything under ``observation.images.`` is a VISUAL feature
-#: to lerobot; the stacked tensor it builds internally is ``observation.images`` (no trailing name).
-IMAGE_KEYS: dict[str, str] = {name: f"observation.images.{name}" for name in CAMERAS}
-#: Division guard, the value ``NormalizerProcessorStep`` uses.
-EPS = 1e-8
-#: What an inference bundle holds (see :func:`policy.export.export`).
-BUNDLE_FILE = "bundle.json"
-WEIGHTS_FILE = "weights.pt"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -198,105 +209,6 @@ class PolicySpec:
 
 
 # --------------------------------------------------------------------------------------------------
-# normalisation (lerobot 0.4.4 keeps it in a processor pipeline; a bundle has to carry it itself)
-# --------------------------------------------------------------------------------------------------
-
-
-class _Normalizer(nn.Module):
-    """Dataset statistics as buffers, so they travel in the ``state_dict`` and onto the device.
-
-    VISUAL is mean/std and STATE/ACTION are min/max onto [-1, 1] -- the mapping
-    ``DiffusionConfig.normalization_mapping`` declares, with the formulas of
-    ``lerobot/processor/normalize_processor.py:325-359``. Until :meth:`load_stats` is called the
-    buffers are the identity, which is what an untrained model in a shape test wants.
-    """
-
-    def __init__(self, spec: PolicySpec) -> None:
-        super().__init__()
-        channels = {name: (3 + spec.goal_channels if name == "top" else 3) for name in CAMERAS}
-        for name, count in channels.items():
-            self.register_buffer(f"{name}_mean", torch.zeros(count, 1, 1))
-            self.register_buffer(f"{name}_std", torch.ones(count, 1, 1))
-        for what, size in (("state", spec.cond_state_dim), ("action", spec.action_dim)):
-            self.register_buffer(f"{what}_min", -torch.ones(size))
-            self.register_buffer(f"{what}_max", torch.ones(size))
-        self.register_buffer("fitted", torch.zeros((), dtype=torch.bool))
-
-    def load_stats(self, stats: Mapping[str, Tensor]) -> None:
-        """Install statistics from :func:`dataset_stats` (keys ``top_mean`` ... ``action_max``)."""
-        own = dict(self.named_buffers())
-        for key, value in stats.items():
-            if key not in own:
-                raise KeyError(f"unknown statistic {key!r}; known: {sorted(k for k in own if k != 'fitted')}")
-            if tuple(value.shape) != tuple(own[key].shape):
-                raise ValueError(f"statistic {key} has shape {tuple(value.shape)}, expected {tuple(own[key].shape)}")
-            own[key].copy_(value.to(own[key].dtype))
-        self.fitted.fill_(True)
-
-    def image(self, name: str, x: Tensor) -> Tensor:
-        mean, std = getattr(self, f"{name}_mean"), getattr(self, f"{name}_std")
-        return (x - mean) / (std + EPS)
-
-    def _min_max(self, what: str, x: Tensor, inverse: bool) -> Tensor:
-        low, high = getattr(self, f"{what}_min"), getattr(self, f"{what}_max")
-        span = torch.where(high - low == 0, torch.full_like(high, EPS), high - low)
-        return (x + 1) / 2 * span + low if inverse else 2 * (x - low) / span - 1
-
-    def state(self, x: Tensor) -> Tensor:
-        return self._min_max("state", x, inverse=False)
-
-    def action(self, x: Tensor) -> Tensor:
-        return self._min_max("action", x, inverse=False)
-
-    def unnormalize_action(self, x: Tensor) -> Tensor:
-        return self._min_max("action", x, inverse=True)
-
-
-def dataset_stats(dataset, samples: int = 256, seed: int = 0) -> dict[str, Tensor]:
-    """Per-channel image mean/std and state/action min/max over up to ``samples`` random samples.
-
-    A pass over every frame of a real session is minutes of PNG decoding for numbers that converge in
-    hundreds of samples, so this draws a reproducible random subset (``seed``) and says how many in
-    the run record. The state statistic covers the 12-D vector the policy sees (state + task one-hot).
-    """
-    count = min(int(samples), len(dataset))
-    if count < 1:
-        raise ValueError("dataset_stats needs at least one sample")
-    order = np.random.default_rng(int(seed)).permutation(len(dataset))[:count]
-    sums: dict[str, Tensor] = {}
-    squares: dict[str, Tensor] = {}
-    pixels = 0
-    lows: dict[str, Tensor] = {}
-    highs: dict[str, Tensor] = {}
-    for index in order:
-        sample = dataset[int(index)]
-        for name in CAMERAS:
-            image = sample[name].to(torch.float64)
-            sums[name] = image.sum(dim=(1, 2)) + sums.get(name, 0)
-            squares[name] = (image**2).sum(dim=(1, 2)) + squares.get(name, 0)
-        pixels += int(sample["top"].shape[1] * sample["top"].shape[2])
-        vectors = {
-            "state": torch.cat([sample["state"], sample["task_id"]]).to(torch.float64),
-            "action": sample["action"].to(torch.float64),
-        }
-        for what, value in vectors.items():
-            flat = value.reshape(-1, value.shape[-1])
-            low, high = flat.min(dim=0).values, flat.max(dim=0).values
-            lows[what] = low if what not in lows else torch.minimum(lows[what], low)
-            highs[what] = high if what not in highs else torch.maximum(highs[what], high)
-    stats: dict[str, Tensor] = {}
-    for name in CAMERAS:
-        mean = sums[name] / pixels
-        variance = torch.clamp(squares[name] / pixels - mean**2, min=0.0)
-        stats[f"{name}_mean"] = mean.to(torch.float32).reshape(-1, 1, 1)
-        stats[f"{name}_std"] = variance.sqrt().to(torch.float32).reshape(-1, 1, 1)
-    for what in ("state", "action"):
-        stats[f"{what}_min"] = lows[what].to(torch.float32)
-        stats[f"{what}_max"] = highs[what].to(torch.float32)
-    return stats
-
-
-# --------------------------------------------------------------------------------------------------
 # the model
 # --------------------------------------------------------------------------------------------------
 
@@ -319,7 +231,7 @@ class GoalDiffusionPolicy(nn.Module):
             self.goal_proj.weight.zero_()
             for channel in range(3):
                 self.goal_proj.weight[channel, channel, 0, 0] = 1.0
-        self.norm = _Normalizer(spec)
+        self.norm = Normalizer(spec)
 
     def __repr__(self) -> str:
         params = sum(p.numel() for p in self.parameters())
@@ -334,7 +246,7 @@ class GoalDiffusionPolicy(nn.Module):
         """Resize, normalise and (for `top`) project every camera to ``(B, S, 3, h, w)``."""
         out: dict[str, Tensor] = {}
         for name, key in IMAGE_KEYS.items():
-            x = _with_steps(batch[name], self.spec.n_obs_steps, base_ndim=4)
+            x = with_steps(batch[name], self.spec.n_obs_steps, base_ndim=4)
             b, s = x.shape[:2]
             flat = x.flatten(0, 1)
             if tuple(flat.shape[-2:]) != self.spec.image_hw:
@@ -350,8 +262,8 @@ class GoalDiffusionPolicy(nn.Module):
         return out
 
     def _state(self, batch: Mapping[str, Tensor]) -> Tensor:
-        state = _with_steps(batch["state"], self.spec.n_obs_steps, base_ndim=2)
-        task = _with_steps(batch["task_id"], self.spec.n_obs_steps, base_ndim=2)
+        state = with_steps(batch["state"], self.spec.n_obs_steps, base_ndim=2)
+        task = with_steps(batch["task_id"], self.spec.n_obs_steps, base_ndim=2)
         return self.norm.state(torch.cat([state, task], dim=-1))
 
     def _lerobot_batch(self, batch: Mapping[str, Tensor]) -> dict[str, Tensor]:
@@ -391,23 +303,6 @@ class GoalDiffusionPolicy(nn.Module):
         global_cond = model._prepare_global_conditioning(prepared)
         sample = model.conditional_sample(prepared[OBS_STATE].shape[0], global_cond=global_cond, noise=noise)
         return self.norm.unnormalize_action(sample)
-
-
-def _with_steps(x: Tensor, n_obs_steps: int, *, base_ndim: int) -> Tensor:
-    """Give ``x`` an observation-step dimension, repeating the frame if it has none.
-
-    ``base_ndim`` is the rank of a batch of single frames: 4 for ``(B, C, H, W)`` images, 2 for
-    ``(B, D)`` vectors. One more than that is a batch that already carries the step dimension.
-    ``policy/dataset.py`` yields one frame per sample, so training repeats it; the adapter stacks a
-    real queue and passes a tensor that already has the dimension. See the module docstring.
-    """
-    if x.ndim == base_ndim:
-        return x.unsqueeze(1).expand(-1, n_obs_steps, *([-1] * (base_ndim - 1)))
-    if x.ndim != base_ndim + 1:
-        raise ValueError(f"expected a tensor of rank {base_ndim} or {base_ndim + 1}, got shape {tuple(x.shape)}")
-    if x.shape[1] != n_obs_steps:
-        raise ValueError(f"expected {n_obs_steps} observation steps, got {x.shape[1]}")
-    return x
 
 
 # --------------------------------------------------------------------------------------------------
@@ -474,13 +369,7 @@ class DiffusionAdapter:
     def act(self, observation: Observation) -> ActionChunk:
         """One diffusion sample: ``chunk`` absolute 9-D actions at ``rates.action_hz``."""
         start = time.perf_counter()
-        self._queue.append(self._frame(observation))
-        while len(self._queue) < self._queue.maxlen:  # type: ignore[operator]
-            self._queue.appendleft(self._queue[0])
-        batch = {
-            key: torch.stack([frame[key] for frame in self._queue]).unsqueeze(0)
-            for key in (*CAMERAS, "state", "task_id")
-        }
+        batch = self._batch(observation)
         prepared = time.perf_counter()
         noise = None
         if self._generator is not None:
@@ -508,56 +397,32 @@ class DiffusionAdapter:
 
     def _frame(self, observation: Observation) -> dict[str, Tensor]:
         """One observation as the tensors :class:`GoalDiffusionPolicy` expects, on the device."""
-        frame = {name: _image_tensor(getattr(observation, name), self.device) for name in CAMERAS}
-        goal = torch.as_tensor(np.asarray(observation.goal), dtype=torch.float32, device=self.device)
-        if goal.shape[-2:] != frame["top"].shape[-2:]:
-            raise ValueError(f"goal {tuple(goal.shape)} does not match `top` {tuple(frame['top'].shape)}")
-        frame["top"] = torch.cat([frame["top"], goal], dim=0)
-        frame["state"] = torch.as_tensor(observation.state, dtype=torch.float32, device=self.device)
-        frame["task_id"] = torch.as_tensor(observation.task_id, dtype=torch.float32, device=self.device)
-        return frame
+        return observation_frame(observation, self.device)
 
+    def _batch(self, observation: Observation) -> dict[str, Tensor]:
+        """Queue the observation and stack the last ``n_obs_steps`` frames, oldest first.
 
-def _image_tensor(image: np.ndarray, device: torch.device) -> Tensor:
-    """``(h, w, 3)`` uint8 or float to ``(3, h, w)`` float32 in [0, 1], the dataset's convention."""
-    array = np.asarray(image)
-    tensor = torch.as_tensor(np.ascontiguousarray(array.transpose(2, 0, 1)), device=device)
-    return tensor.to(torch.float32) / 255.0 if array.dtype == np.uint8 else tensor.to(torch.float32)
+        The queue is the inference half of the history ``policy/dataset.py`` yields per sample, and
+        the two must agree on both conventions or the model sees one thing in training and another on
+        the robot (T-034). **Order**: oldest first, so appending on the right and stacking in queue
+        order is the dataset's ``[-(S-1)/fps ... 0]``. **Padding**: before the queue has filled -- the
+        first call of a primitive -- the oldest frame is repeated, which is what lerobot's
+        ``delta_timestamps`` clamping does at the start of an episode.
+        ``tests/test_diffusion.py::test_the_adapter_queue_and_the_dataset_history_agree`` pins both
+        against a recorded episode, frame for frame.
+        """
+        self._queue.append(self._frame(observation))
+        while len(self._queue) < self._queue.maxlen:  # type: ignore[operator]
+            self._queue.appendleft(self._queue[0])
+        return {
+            key: torch.stack([frame[key] for frame in self._queue]).unsqueeze(0)
+            for key in (*CAMERAS, "state", "task_id")
+        }
 
 
 # --------------------------------------------------------------------------------------------------
 # the latency benchmark (CLAUDE.md 5.8: 10 Hz, or the fallback ladder)
 # --------------------------------------------------------------------------------------------------
-
-
-def benchmark(
-    adapter: DiffusionAdapter, observation: Observation, trials: int = 20, warmup: int = 2
-) -> dict[str, float]:
-    """Mean/p95 wall-clock cost of :meth:`DiffusionAdapter.act` over ``trials`` calls."""
-    adapter.reset(Command(Primitive.MOVE, None, None, None))
-    for _ in range(max(int(warmup), 0)):
-        adapter.act(observation)
-    timings: list[dict[str, float]] = []
-    for _ in range(int(trials)):
-        adapter.act(observation)
-        timings.append(dict(adapter.last_timing))
-    out = {key: float(np.mean([t[key] for t in timings])) for key in timings[0]}
-    out["median_ms"] = float(np.median([t["act_ms"] for t in timings]))
-    out["p95_ms"] = float(np.percentile([t["act_ms"] for t in timings], 95))
-    out["trials"] = float(trials)
-    return out
-
-
-def _synthetic_observation(sizes: Mapping[str, Iterable[int]], task_dim: int, seed: int = 0) -> Observation:
-    """An observation of the configured frame sizes, for a latency measurement with no hardware."""
-    rng = np.random.default_rng(seed)
-    frames = {name: rng.integers(0, 256, (int(hw[1]), int(hw[0]), 3), dtype=np.uint8)
-              for name, hw in ((n, list(v)) for n, v in sizes.items())}
-    goal = rng.random((GOAL_CHANNELS, frames["top"].shape[0], frames["top"].shape[1])).astype(np.float32)
-    task = np.zeros(task_dim, dtype=np.float32)
-    task[0] = 1.0
-    return Observation(ts_ns=0, top=frames["top"], oblique=frames["oblique"], palm=frames["palm"],
-                       state=np.zeros(ACTION_DIM), goal=goal, task_id=task)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -573,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     adapter = DiffusionAdapter(args.bundle, device=args.device, seed=args.seed,
                                inference_steps=args.inference_steps)
     sizes = config.load("training")["observation"]["images"]
-    observation = _synthetic_observation(sizes, adapter.spec.task_dim)
+    observation = synthetic_observation(sizes, adapter.spec.task_dim)
     result = benchmark(adapter, observation, trials=args.trials)
     budget_ms = 1e3 / float(config.load("training")["rates"]["policy_hz"])
     print(f"{adapter!r}")
