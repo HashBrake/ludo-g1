@@ -873,7 +873,7 @@ acceptance:
 notes: After this passes, Fable proposes the measured envelope values for config/safety.yaml and Alois commits them (R3).
 
 ## T-025  Teleop operator UI on mocks
-status: in_progress
+status: review
 priority: P1
 phase: 2
 owner: opus
@@ -888,6 +888,29 @@ deliverables:
 acceptance:
   - tests pass; a 30 s headless mock session records 2 episodes with correct metadata (command in BUILD_LOG.md)
 notes: No hardware. The real teleop loop (input drivers -> IK -> Guard -> arm) is wired in Phase 2 after T-020/T-021.
+result:
+  commit: COMMIT_HASH
+  tests: 402 passed, 4 skipped (`.venv/bin/python -m pytest -q`, 78.1 s; was 391 passed). 11 new in
+    tests/test_operator_ui.py. ruff: `.venv/bin/ruff check .` clean.
+  30 s headless mock session (`.venv/bin/python -m pytest tests/test_operator_ui.py -q -s`, stub seed 2,
+    fake clock, 200 Hz poll / 30 Hz write): 30.0 s elapsed, 2 episodes ['roll', 'move'], 298 frames each,
+    success [True, False], perturbed [False, True], skew p99 [6.667, 6.667] ms, 0 dropped on all 7 streams,
+    0 aborted. Sidecar metadata checked field by field against the commands the engine handed out
+    (episode 1: src R-base-0, dst track-12, horse R0, operator alois).
+  goal markers (real 640x480 config, cells R-base-0 and track-17, uncalibrated so GoalRenderer.placeholder_px):
+    markers at (447.3, 47.9) and (362.1, 175.6), 542 px changed, max distance from a cell 15.6 px against
+    radius 14 + thickness 2 -- both centres drawn and nothing further than a marker radius changed.
+  state machine: 11 tests -- every key in every state, `n` out of recording, abort discards (no episode, no
+    sidecar) and the engine then issues a RECOVER, `q` aborts and run_window refuses headless, an exhausted
+    engine is inert, a duplicate key binding is a ConfigError, a camera set without `top` is a ValueError,
+    the banner text, and a tripwire proving the UI calls no send_targets/send_pinch (R1, R2).
+  config: config/training.yaml gains an `operator_ui:` block (keys, marker radius/thickness/dot, two BGR
+    colours, banner height and colours, font, window name). REQUIRED_KEYS untouched; unmeasured("training")
+    is still [].
+  not met: teleop/operator_ui.py is 261 lines against the "under 250" guidance; D-013 item 2's sibling-module
+    remedy was not available (the file list allows no new module), so the docstrings stayed. Also added a
+    `n` = mark-failure key the task did not list, so that a bad episode can be kept and labelled (5.6)
+    instead of only discarded; explained in BUILD_LOG.md.
 
 ## T-026  Dataset viewer: frame strips for Fable's audits
 status: in_progress

@@ -1979,3 +1979,95 @@ Blockers: `agents/BLOCKERS.md` -> `(none)`. No Phase 0 item reached the section 
 
 (T-015 commit: 381b9d7; this line and the TASKS.md result hash are the only content of the follow-up
 commit, which ran the full pre-commit gate — no `--no-verify`, per D-013.)
+
+---
+
+## T-025  Teleop operator UI on mocks  (opus, 2026-09-11)
+
+### What was built
+
+`teleop/operator_ui.py` (261 lines): `OperatorUI`, a state machine over one `Recorder` (T-017) and one
+`EngineClient` (5.5), plus the goal display. States `idle -> armed -> recording -> stopped -> idle`; keys
+`s` start, `x` stop, `y` mark success, `n` mark failure, `p` toggle perturbed, `a` abort, `q` quit, read
+from `config/training.yaml` `operator_ui.keys` (section 7: no constants in code). `handle_key` takes a
+character or a `cv2.waitKey` code and returns the new state; a key the current state has no meaning for is
+logged and ignored, never raised, because a mis-hit key during collection must not end a session.
+
+`render()` returns `(h + banner, w, 3)` uint8: the live `top` frame with the source cell circled in green
+and the target in magenta at the pixels `runtime/goal.py` reports (`Cell.top_px` when calibrated, its
+documented placeholder map until then), over a text band **below** the image — the operator never reads the
+board through text, and the image is the frame the recorder stores plus two circles. `headless=True` (the
+default) opens no window; `run_window(step=...)` is the cv2 loop and is untested (it needs a display).
+
+Every exit from a command (`y`, `n`, `a`) reports exactly one `Outcome` to the engine, because the engine
+hands out exactly one command per report (5.5); what follows (the stub's `RECOVER` + re-issue) is the
+engine's decision, not the UI's. Two new labels, `operator_marked_failure` and `operator_aborted`, are
+collection events and deliberately not CLAUDE.md 6.5 robot failure modes (documented in docs/teleop.md).
+
+R1/R2: the UI never builds a `MotionCommand`, never imports a driver module, and never calls one — the
+teleop loop sends and hands the *admitted* action to `OperatorUI.tick`. A tripwire test asserts it.
+
+`config/training.yaml` gains an `operator_ui:` block (keys, marker radius/thickness/dot, the two BGR
+colours, banner height and colours, font scale/thickness, window name). No placeholder:
+`unmeasured("training")` is still `[]` (test_config asserts it). `REQUIRED_KEYS` untouched, as instructed.
+
+### Commands run and measured results
+
+```
+.venv/bin/python -m pytest tests/test_operator_ui.py -q -s      # 11 passed, 9.35 s
+.venv/bin/python -m pytest -q                                   # 402 passed, 4 skipped, 78.11 s
+.venv/bin/ruff check .                                          # All checks passed!
+```
+
+Acceptance, the 30 s headless mock session (`test_thirty_second_headless_session_records_two_episodes`,
+stub seed 2, fake clock, 200 Hz poll / 30 Hz write, frames shrunk to 64x48 through a `config/` copy in
+`tmp_path`; printed by the test):
+
+```
+30 s session: 30.0 s, 2 episodes, ['roll', 'move'], [298, 298] frames, success=[True, False],
+perturbed=[False, True], skew p99 [6.667, 6.667] ms, aborted=0
+```
+
+- elapsed on the fake clock 30.0 s exactly (2 s armed, 10 s recording, 1 s stopped, 3 s reset, 10 s
+  recording, 1 s stopped, 3 s idle); 2 episodes written, 0 aborted.
+- `episodes_meta.jsonl` checked field by field against the two commands the engine actually handed out:
+  episode 0 `roll`, `src`/`dst` null, success true, perturbed false; episode 1 `move`, src `R-base-0`,
+  dst `track-12`, horse `R0`, success false (`n`), perturbed true (`p`); operator `alois` on both.
+- 298 frames per 10 s episode (not 300: the grid starts at the first board-camera sample at or after the
+  first command and writes one alignment lag behind, so two grid points fall outside the window).
+- skew p50/p99 6.667 ms on both, 0 dropped samples on all 7 streams.
+
+Goal markers (`test_render_marks_the_two_goal_cells_and_leaves_the_rest_of_the_frame_alone`, real 640x480
+config, cells `R-base-0` and `track-17`, `top_px` None so `GoalRenderer.placeholder_px` is the truth):
+
+```
+markers at [(447.3, 47.9), (362.1, 175.6)]: 542 px changed, max distance from a cell 15.6 px
+(radius 14 + thickness 2)
+```
+
+i.e. both markers are drawn (centre dot present at each cell pixel) and **no** pixel further than the
+marker radius from either cell differs from the raw frame — the display cannot quietly draw over the board.
+
+The other nine tests: the key walk through all four states (including keys that must be ignored and an
+unbound key), `n` straight out of `recording`, abort discards the episode (nothing written, no sidecar) and
+the engine then asks for a `RECOVER`, `q` aborts what is open and `run_window` refuses in headless mode, an
+exhausted engine leaves the UI inert under every key, a duplicated key binding in the config is a
+`ConfigError`, a camera set without `top` is a `ValueError`, the banner text, and the send tripwire.
+
+### Notes / deviations
+
+- `teleop/operator_ui.py` is 261 lines against the "under 250" guidance. D-013 item 2 says to move types
+  to a sibling module rather than cut docstrings, and the file list for this task allows no new module, so
+  I compressed what I could (one dispatch table, one `_ignored` helper, no `poll()` passthrough) and left
+  the docstrings. Style note only; no criterion depends on it.
+- `run_window` is the only untested code in the module: it needs a display, and this laptop's test run has
+  none. It is a 10-line loop over `render`, `imshow`, `waitKey`, `handle_key` and the injected `step`.
+- Disagreement, minor: the task lists "mark perturbed" but not "mark failure". An operator who ran an
+  episode to the end and judged it bad has only `a` (which discards the frames) without `n`, and CLAUDE.md
+  5.6 records `success` as a per-episode field, i.e. failed episodes are kept. I added `n` (mark failure,
+  keeps the episode) alongside `a` (abort, discards it) rather than overloading abort.
+- The UI takes its commands from `engine.next_command()` and re-arms after every episode, so during
+  collection the operator always sees a live goal; `engine/stub.py` therefore drives the collection order.
+- R1-R6 intact: no motion command (the mocks' guard admits with `simulated=True`, and the UI itself sends
+  nothing), no scripted motion in `teleop/` or `runtime/`, `config/safety.yaml` untouched, nothing under
+  `third_party/` touched, `hardware/session.enable` never created (still absent, still git-ignored).

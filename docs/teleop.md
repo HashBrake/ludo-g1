@@ -250,8 +250,96 @@ The long tests shrink the camera frames through a `config/` copy in `tmp_path` (
 ~8 ms to write and a 60 s episode writes 5400 of them); a separate test records at the real
 configured sizes and asserts the 3x480x640 / 3x240x320 shapes survive the round trip.
 
+# The operator UI
+
+`teleop/operator_ui.py` is what the operator looks at while collecting: the engine's command drawn on
+the board camera, and the keys that open, close and label an episode (CLAUDE.md 5.5, 5.6). It drives
+one `Recorder` and one `EngineClient` and does nothing else — it never builds a target, never touches
+a driver, and reads the board camera only to draw it (R2).
+
+```python
+from teleop.operator_ui import OperatorUI
+
+ui = OperatorUI(engine=engine, recorder=rec, cameras=cams, headless=False)
+ui.run_window(step=teleop_step)        # step() sends and returns the admitted action, or None
+```
+
+## The state machine
+
+```
+idle --(a command from the engine)--> armed --s--> recording --x--> stopped --y/n--> idle
+                                       `--a--> idle                  `--p--> perturbed toggles
+```
+
+The UI arms itself from `engine.next_command()` as soon as it has one, so the operator sees what to
+do before touching the glove. `stopped` is deliberate: an episode that has finished is still *open*
+until the operator gives it a verdict, because `success` is an operator label (5.6) and the frames
+are written when it is given, not before.
+
+Every way out of a command — `y`, `n` and `a` — reports exactly one `Outcome` to the engine, because
+the engine hands out exactly one command per report (5.5). What happens next is then the engine's
+decision: after an abort or a failure the stub issues a `RECOVER` and re-issues the original command,
+which is the retry logic of 5.5 and not something this file knows about.
+
+| key | action | states it works in | what it does |
+|---|---|---|---|
+| `s` | start | armed (and idle, which re-arms first) | `Recorder.start_episode(command)` |
+| `x` | stop | recording | stop writing frames; the episode stays open |
+| `y` | mark success | recording, stopped | `mark_success(True)`, write the episode, report success |
+| `n` | mark failure | recording, stopped | `mark_success(False)`, write it, report `operator_marked_failure` |
+| `p` | perturbed | recording, stopped | toggle `perturbed` (5.6): someone disturbed the scene |
+| `a` | abort | armed, recording, stopped | discard the episode (nothing is written), report `operator_aborted` |
+| `q` | quit | any | abort whatever is open, then stop `run_window` |
+
+The bindings are `config/training.yaml` `operator_ui.keys`, not constants (section 7); a key that the
+current state has no meaning for is logged and ignored, never an error, because a fat-fingered key
+during collection must not end the session. `handle_key` takes a character or a `cv2.waitKey` code.
+
+`Outcome.failure_mode` for the two operator verdicts is `operator_marked_failure` and
+`operator_aborted`. Neither is a failure mode of CLAUDE.md 6.5: those describe what the *robot* did
+and are labelled by `board/perception.py` in the autonomous loop, while these two describe what the
+*operator* decided during collection, and no eval result ever carries one.
+
+## What the frame shows
+
+`render()` returns `(h + banner, w, 3)` uint8: the current `top` frame with the source cell circled
+in green and the target cell in magenta, over a text band. The markers are drawn *in* the image and
+every word is *below* it, so the operator sees the board exactly as the recorder stores it, plus two
+circles, and never reads the board through text. A primitive with no cell (a `ROLL`) draws no marker
+for that channel, which is the same "absence of a goal" the goal heatmaps encode.
+
+The pixels come from `runtime/goal.py` — `Cell.top_px` once `board/calibration.py` has produced one,
+and the documented placeholder map until then — so the circle the operator aims at and the gaussian
+the policy is conditioned on are the same point by construction, not by two similar computations.
+
+The banner's three lines are the command (primitive, `src`, `dst`), the episode (state, elapsed,
+frames written, perturbed, episodes kept, aborted) and the key list. Everything about the drawing —
+radius, thickness, colours, banner height, font — is in `config/training.yaml` `operator_ui`.
+
+`headless=True` (the default, and what the tests use) returns those arrays and opens no window;
+`run_window` refuses to run in it. `run_window(step=...)` is the windowed loop: it calls `step()`
+once per iteration (the teleop loop's own send, returning the admitted action or `None`), ticks the
+recorder with it, shows the frame and reads one key. It needs a display and is not covered by tests.
+
+### Measured, `tests/test_operator_ui.py` on the laptop
+
+```
+.venv/bin/python -m pytest tests/test_operator_ui.py -q -s
+```
+
+| | |
+|---|---|
+| 30 s headless mock session (seed 2) | 2 episodes: `roll` success, `move` R-base-0 -> track-12 failure+perturbed |
+| frames per episode | 298 at 30 Hz over 10 s of recording each, 0 dropped on any stream |
+| skew | p50/p99 6.667 ms on both episodes (budget < 10 ms p99) |
+| goal markers, 640x480 frame | 542 px changed, all within 15.6 px of a cell centre (radius 14 + thickness 2) |
+| state machine | 11 tests: every key in every state, abort discards, quit aborts, idle engine is inert |
+
+The marker test reads the two cell pixels back through `runtime/goal.py`, renders, and asserts that
+*no* pixel further than the marker radius from either cell changed: the display cannot quietly draw
+anything else over the board.
+
 ## What is not here yet
 
-`teleop/operator_ui.py` (goal display, episode keys) is the rest of Phase 2 and is a separate task.
-So is the clutch and the 30 Hz loop that wires `pico_bridge` -> `pico_to_g1_base` -> `ArmIK` ->
-`runtime/safety.py` -> `drivers/g1_arm.py` -> `Recorder.tick`.
+The clutch and the 30 Hz loop that wires `pico_bridge` -> `pico_to_g1_base` -> `ArmIK` ->
+`runtime/safety.py` -> `drivers/g1_arm.py` -> `OperatorUI.tick`.

@@ -76,6 +76,34 @@ recorder:
   # which does not fit in 33 ms on one thread.
   image_writer_threads: 4
 
+# --- the operator UI (Phase 2): teleop/operator_ui.py ----------------------------------------------
+# Design choices, not measurements: which key does what, and how the goal display is drawn. The cells
+# themselves come from the engine and their pixels from runtime/goal.py, never from here.
+operator_ui:
+  # One character per action. `y` and `n` are quoted because unquoted they are YAML 1.1 booleans.
+  keys:
+    start: s
+    stop: x
+    mark_success: "y"
+    mark_failure: "n"
+    toggle_perturbed: p
+    abort: a
+    quit: q
+  # The two goal markers, drawn in the `top` frame at the cell pixels runtime/goal.py reports.
+  marker_radius_px: 14
+  marker_thickness_px: 2
+  marker_dot_px: 2
+  src_color_bgr: [0, 255, 0]        # source cell: green
+  dst_color_bgr: [255, 0, 255]      # target cell: magenta
+  # The text is drawn in a band *below* the image, never on top of it, so that what the operator
+  # sees of the board is the frame the recorder stored, pixel for pixel, plus the two markers.
+  banner_height_px: 76
+  banner_color_bgr: [24, 24, 24]
+  text_color_bgr: [235, 235, 235]
+  font_scale: 0.45
+  font_thickness: 1
+  window_name: LUDO-G1 teleop
+
 # --- primary policy: Diffusion Policy (5.7) ------------------------------------------------------
 diffusion:
   base: lerobot_diffusion_policy
