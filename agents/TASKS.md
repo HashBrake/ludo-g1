@@ -669,7 +669,7 @@ result:
     "under 250" guidance. Both explained in BUILD_LOG.md.
 
 ## T-017  Teleop recorder to LeRobot v2 on mocks (D-011)
-status: in_progress
+status: review
 priority: P1
 phase: 2
 owner: opus
@@ -689,3 +689,26 @@ deliverables:
 acceptance:
   - the three tests above pass with the printed skew and frame counts; full suite green; ruff clean
 notes: The operator UI and the real Pico/glove input are separate tasks. Never write outside data/raw/ (git-ignored).
+result:
+  commit: COMMIT_HASH
+  versions: lerobot 0.4.4 (the last release that installs on Python 3.10; 0.5.0+ need >= 3.12), torch 2.9.1+cpu,
+    torchvision 0.24.1+cpu, torchcodec 0.10.0. CPU wheels via three --find-links on the PyTorch CPU index; no
+    nvidia-* package installed. `uv pip install --dry-run -r requirements.txt` -> "Would make no changes".
+  tests: 391 passed, 4 skipped (`.venv/bin/python -m pytest -q`, 70.5 s; was 382 collected). 13 new in
+    tests/test_recorder.py. ruff: `.venv/bin/ruff check .` clean.
+  60 s mock episode (200 Hz poll / 30 Hz write, fake clock): 1800 frames, all 7 streams,
+    skew p50 6.666 ms / p99 6.667 ms (budget < 10 ms), 0 dropped on every stream, 0 skipped ticks,
+    0 alignment failures.
+  replay: 150 recorded actions back through a fresh MockArm -> worst |admitted - recorded| = 0.0 (budget 1e-6).
+  round trip: LeRobotDataset(repo_id, root=...) reloads 2 episodes / 1860 frames with all 8 feature keys and
+    the configured shapes (3x480x640 top and oblique, 3x240x320 palm, state 9, hand_joints 15, glove 17, action 9).
+  config: config/training.yaml gains a `recorder:` block (alignment_lag_periods 1, alignment_tolerance_ms 20.0,
+    drop_gap_periods 1.5, use_videos false, image_writer_threads 4). unmeasured("training") is still [].
+  not met: (1) the dataset is LeRobot **v3.0**, not v2: lerobot 0.4.4 is the newest release installable on
+    Python 3.10 and writes CODEBASE_VERSION "v3.0"; no installable release writes v2 (0.1.0 needs mujoco-py and
+    torchvision<0.18). config/training.yaml `dataset.format: lerobot_v2` is now inaccurate and needs Fable's
+    decision; this task may only add config keys, so I left it. (2) lerobot re-installs
+    opencv-python-headless alongside opencv-python, which D-008 had removed; a requirements file cannot drop it,
+    so `uv pip install --reinstall-package opencv-python -r requirements.txt` is now part of the install recipe
+    and the choice is Fable's. (3) teleop/recorder.py is 421 lines against the "under 300" guidance; the file
+    list did not allow the sibling module D-013 suggests. All three explained in BUILD_LOG.md.

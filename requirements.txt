@@ -1,6 +1,16 @@
 # Pinned environment for LUDO-G1 (Python 3.10 only; the DexH15 wheel is cp310, see agents/DECISIONS.md D-002 A1).
 # Create with:  uv venv --python 3.10 && uv pip install -r requirements.txt
-# Nothing heavier (torch, lerobot) until a task asks for it (T-001 notes); mujoco+mink arrived with T-012.
+#          then: uv pip install --reinstall-package opencv-python -r requirements.txt   (see OpenCV below)
+# mujoco+mink arrived with T-012; torch (CPU) and lerobot with T-017 (D-011).
+
+# --- the PyTorch CPU wheels (T-017, D-011) -------------------------------------------------------
+# torch/torchvision come from the PyTorch CPU index as `+cpu` local versions, so no CUDA package is
+# ever pulled onto this laptop (the GPU is too weak to train on and training runs on Greennode, 5.8).
+# These are --find-links, not --index-url: the rest of the file must keep resolving from PyPI, and a
+# `+cpu` local version exists on no other index, so the pins below are unambiguous either way.
+--find-links https://download.pytorch.org/whl/cpu/torch/
+--find-links https://download.pytorch.org/whl/cpu/torchvision/
+--find-links https://download.pytorch.org/whl/cpu/torchcodec/
 
 # direct dependencies
 numpy==2.2.6
@@ -13,6 +23,14 @@ scipy==1.15.3
 # mujoco is pinned to the latest 3.x; mink 1.3.0 requires mujoco>=3.1.6 and resolves to it.
 mujoco==3.13.0
 mink==1.3.0
+# Dataset format and, later, the policy implementations (D-011, CLAUDE.md 5.6, 5.7). 0.4.4 is the
+# LAST lerobot release that installs on Python 3.10: 0.5.0 and later require >= 3.12, and 3.10 is
+# fixed by the DexH15 cp310 wheel (D-002 A1). It writes datasets at its own CODEBASE_VERSION,
+# "v3.0" (.venv/.../lerobot/datasets/lerobot_dataset.py:83), not the "v2" CLAUDE.md 5.6 names; see
+# agents/BUILD_LOG.md T-017. torch is capped by lerobot at < 2.11 and cp310 CPU wheels stop at 2.9.1.
+lerobot==0.4.4
+torch==2.9.1+cpu
+torchvision==0.24.1+cpu
 
 # device SDKs (T-002, see docs/sdks.md section 1 for the install attempts and their outcomes)
 # DexH15 / palm camera. cp310-only wheel vendored on disk under third_party/ (git-ignored payload-free,
@@ -31,46 +49,138 @@ pico_bridge @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.
 # NOT INSTALLED: pyorbbecsdk. The PyPI 1.3.2 wheel is mis-tagged cp310-manylinux but ships only a macOS
 # .so/.dylib, so `import pyorbbecsdk` fails. The Orbbec Ego enumerates as plain UVC; see docs/sdks.md 8.2.
 
+# --- OpenCV: two distributions now own site-packages/cv2/ ----------------------------------------
+# lerobot 0.4.4 hard-requires opencv-python-headless (>=4.9,<4.13) and unitree_sdk2py requires
+# opencv-python, so a plain `uv pip install -r requirements.txt` installs both and whichever lands
+# last owns cv2/. That is the hazard D-008 removed headless to avoid, and it is back because a
+# requirements file cannot drop a dependency of a package it installs. Fix, after every install:
+#     uv pip install --reinstall-package opencv-python -r requirements.txt
+# then check:  .venv/bin/python -c "import cv2; print(cv2.__version__)"   -> 5.0.0, not 4.12.0
+# Flagged for Fable in agents/BUILD_LOG.md (T-017): the alternative is to drop to the headless build
+# everywhere and give up cv2.imshow in teleop/operator_ui.py.
+opencv-python-headless==4.12.0.88
+
 # transitive, pinned for reproducibility
+# lerobot 0.4.4 pins these three below what T-012 resolved: av < 16 (it was 17.1.0), packaging < 26
+# (26.3) and rerun-sdk < 0.27 (0.37.2). All three are transitive for us; the suite is green on them.
+# opencv-python is pulled in by unitree_sdk2py and is the GUI build D-008 kept; since T-017 it shares
+# site-packages/cv2/ with lerobot's headless build, so reinstall it last (see the OpenCV block above).
 absl-py==2.5.0
+accelerate==1.15.0
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
 aioice==0.10.2
 aiortc==1.15.0
+aiosignal==1.4.0
+annotated-types==0.8.0
+anyio==4.15.1
+async-timeout==5.0.1
 attrs==26.1.0
-av==17.1.0
+av==15.1.0
+certifi==2026.7.22
 cffi==2.1.1
+charset-normalizer==3.5.1
 click==8.5.0
+cloudpickle==3.1.2
+cmake==4.1.3
 cryptography==50.0.1
 cyclonedds==0.10.2
 daqp==0.9.1
+datasets==4.8.5
+deepdiff==8.6.2
+diffusers==0.35.2
+dill==0.4.1
 dnspython==2.8.0
+draccus==0.10.0
+einops==0.8.2
 etils==1.13.0
+evdev==1.9.3
 exceptiongroup==1.3.1
-fsspec==2026.7.0
+farama-notifications==0.0.6
+filelock==3.32.6
+frozenlist==1.8.0
+fsspec==2026.2.0
+gitdb==4.0.12
+gitpython==3.1.62
 glfw==2.10.2
 google-crc32c==1.8.0
+gymnasium==1.3.0
+h11==0.16.0
+hf-transfer==0.1.9
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface-hub==0.35.3
+idna==3.19
 ifaddr==0.2.0
+imageio==2.37.4
+imageio-ffmpeg==0.6.0
+importlib-metadata==9.0.1
 importlib-resources==7.1.0
 iniconfig==2.3.0
+inquirerpy==0.3.4
+jinja2==3.1.6
+jsonlines==4.0.0
 markdown-it-py==4.2.0
+markupsafe==3.0.3
 mdurl==0.1.2
-# pulled in by unitree_sdk2py. D-008: this GUI build is the only opencv distribution installed;
-# opencv-python-headless was removed in T-012 so that one distribution owns cv2/.
+mergedeep==1.3.4
+mpmath==1.3.0
+multidict==6.8.0
+multiprocess==0.70.19
+mypy-extensions==1.1.0
+networkx==3.4.2
 opencv-python==5.0.0.93
-packaging==26.3
+orderly-set==5.5.0
+packaging==25.0
+pandas==2.3.3
+pfzy==0.3.4
 pillow==12.3.0
+platformdirs==4.11.8
 pluggy==1.6.0
+prompt-toolkit==3.0.53
+propcache==0.5.2
+protobuf==6.33.6
 psutil==7.2.2
 pyarrow==25.0.1
 pycparser==3.0
+pydantic==2.13.5
+pydantic-core==2.46.5
 pyee==13.0.1
 pygments==2.21.0
 pylibsrtp==1.0.0
+pynput==1.8.2
 pyopengl==3.1.10
 pyopenssl==26.4.0
+pyserial==3.5
+python-dateutil==2.9.0.post0
+python-xlib==0.33
+pytz==2026.3.post1
+pyyaml-include==1.4.1
 qpsolvers==4.13.0
-rerun-sdk==0.37.2
+regex==2026.9.10
+requests==2.34.2
+rerun-sdk==0.26.2
 rich==15.0.0
 rich-click==1.9.9
+safetensors==0.8.0
+sentry-sdk==2.69.1
+setuptools==80.10.2
+six==1.17.0
+smmap==5.0.3
+sympy==1.14.0
+termcolor==3.3.0
+toml==0.10.2
 tomli==2.4.1
+torchcodec==0.10.0
+tqdm==4.70.1
 typing-extensions==4.16.0
+typing-inspect==0.9.0
+typing-inspection==0.4.4
+tzdata==2026.3
+urllib3==2.7.0
+wandb==0.24.2
+wcwidth==0.8.3
+xxhash==4.0.1
+yarl==1.24.5
 zipp==4.1.0

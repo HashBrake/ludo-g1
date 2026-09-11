@@ -50,6 +50,32 @@ runtime:
   # Heartbeat line rate to data/logs/controller_<session>.heartbeat (section 7).
   heartbeat_s: 1.0
 
+# --- the teleop recorder (5.2, 5.6): teleop/recorder.py --------------------------------------------
+# Design choices, not measurements. The per-path latencies the recorder compensates with are in
+# config/robot.yaml `latency.*` and are Phase 1 measurements; nothing here is one.
+recorder:
+  # How many dataset periods behind `now` the frame written on a tick is. With a lag of one period
+  # every stream has samples on both sides of the alignment instant, so runtime/clock.py `align`
+  # picks the *nearest* sample rather than the newest-not-after: worst-case offset drops from a whole
+  # stream period to half of one. 0 would double the skew and buy 33 ms of latency nobody needs,
+  # because the recorder is not in the control loop.
+  alignment_lag_periods: 1
+  # How far from the alignment instant a stream's nearest sample may be before the frame is dropped.
+  # Half a period of the slowest stream (the 30 Hz cameras) is 16.7 ms; this is that plus slack. It
+  # is NOT the skew budget: CLAUDE.md Phase 2 asks for < 10 ms p99, which is what the card reports.
+  alignment_tolerance_ms: 20.0
+  # A gap between two consecutive samples of one stream longer than this many dataset periods is a
+  # dropped frame on the dataset card. The dataset period is the yardstick for every stream: a
+  # device faster than 30 Hz is polled once per tick and subsampled on purpose (5.2).
+  drop_gap_periods: 1.5
+  # false: camera frames are stored as lossless PNG image features instead of encoded video. Video
+  # would be smaller, but the frames are what the goal-heatmap audit (CLAUDE.md section 8) and the
+  # replay checks read back, and a lossy codec changes them. Flip it when disk, not fidelity, binds.
+  use_videos: false
+  # Threads lerobot's image writer uses. One 640x480 PNG costs ~8 ms here and a tick writes three,
+  # which does not fit in 33 ms on one thread.
+  image_writer_threads: 4
+
 # --- primary policy: Diffusion Policy (5.7) ------------------------------------------------------
 diffusion:
   base: lerobot_diffusion_policy

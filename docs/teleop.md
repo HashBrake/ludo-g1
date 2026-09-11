@@ -111,8 +111,147 @@ The distance itself is not computed here. The PxCap Pro reports 17 encoder angle
 positions (`docs/sdks.md` 6); turning those into a tip-to-tip distance is the glove driver's job and
 is a Phase 1 item.
 
+# The recorder
+
+`teleop/recorder.py` captures episodes to a LeRobot dataset under `data/raw/<session_id>/`
+(CLAUDE.md 5.6, agents/DECISIONS.md D-011). It reads streams and writes files; it never sends a
+command, and the action it stores is the one the caller already sent, *after* the guard clamped it.
+
+```python
+from teleop.recorder import Recorder
+
+rec = Recorder("20260912T0900", arm=arm, hand=hand, cameras={"top": top, "oblique": oblique},
+               glove=glove, operator="alois")          # palm frames come from the hand driver
+rec.start_episode(command)                             # engine.interface.Command
+while running:
+    if now >= next_tick:
+        admitted = arm.send_targets(target)            # R1/R3: the Guard decides
+        hand.send_pinch(admitted.pinch)
+        rec.tick(admitted)                             # polls, then writes at most one frame
+        next_tick = rec.next_grid_ns(now) or now + rec.period_ns
+    else:
+        rec.poll()                                     # read-only, allowed with no session
+rec.mark_success(); rec.mark_perturbed(False)
+rec.stop_episode()                                     # writes the episode, sidecar and card
+rec.close()                                            # flushes lerobot's parquet writers
+```
+
+## The lerobot release, and what "v2" means now
+
+`lerobot==0.4.4` is the **last release that installs on Python 3.10**, which the DexH15 cp310 wheel
+fixes for this project (D-002 A1); 0.5.0 and later require >= 3.12. Its dataset API is
+`from lerobot.datasets.lerobot_dataset import LeRobotDataset` (`.venv/lib/python3.10/site-packages/
+lerobot/datasets/lerobot_dataset.py:1641` for `create`, `:1171` `add_frame`, `:1225` `save_episode`,
+`:1131` `finalize`), and it writes `CODEBASE_VERSION = "v3.0"` (same file, `:83`) — **not** the "v2"
+CLAUDE.md 5.6 and this task name. No installable release writes v2 any more; see agents/BUILD_LOG.md
+(T-017) for the disagreement and the alternatives that were rejected.
+
+Two consequences of that release worth knowing:
+
+- `finalize()` is not optional. lerobot buffers episode metadata and only writes the parquet footer
+  when the writers close; a dataset that was never finalised fails to load and then silently falls
+  back to the Hugging Face Hub. `Recorder.close()` is that call.
+- `add_frame` rejects a `timestamp` key even though it pops one (`validate_frame` counts it as an
+  extra feature), so the frame timestamp is always `frame_index / fps`. That is exact here: frames
+  are written on a fixed grid, one per grid point.
+
+## Features (CLAUDE.md 5.3)
+
+| feature | dtype | shape | source |
+|---|---|---|---|
+| `observation.images.top` | image | 3x480x640 | Brio, `config/cameras.yaml` `top.policy_resolution` |
+| `observation.images.oblique` | image | 3x480x640 | Orbbec Ego left RGB |
+| `observation.images.palm` | image | 3x240x320 | DexH15 palm camera, via the hand driver |
+| `observation.state` | float32 | 9 | 7 arm joints, waist yaw, pinch scalar (`action_order`) |
+| `observation.hand_joints` | float32 | 15 | raw DexH15 joints, recorded but not fed to the policy |
+| `observation.glove` | float32 | 17 | raw PxCap Pro encoder angles, degrees |
+| `task_id` | int64 | 1 | index into `observation.task_ids` |
+| `action` | float32 | 9 | the admitted `MotionCommand`, absolute targets |
+
+Image storage is PNG, not video (`config/training.yaml` `recorder.use_videos: false`). lerobot 0.4.4
+encodes through PyAV, so video would work without an `ffmpeg` binary (there is none on this laptop),
+but the frames are what the goal-heatmap audit (CLAUDE.md section 8) and the replay checks read back
+and a lossy codec changes them. Flip the key when disk, not fidelity, is what binds.
+
+**The goal heatmaps are not a feature.** They are a pure function of the command's two cells and
+`observation.goal_sigma_px`, constant for a whole episode, and would cost 2x480x640 float32 =
+2.4 MB per frame — 70 MB/s, ~1.4 GB for one 20 s episode, against ~2 kB for the two pixel pairs. The
+cells and their pixels go in the per-episode sidecar and `policy/dataset.py` re-renders them with
+`runtime.goal.GoalRenderer`, which is the same object `runtime/controller.py` uses at inference.
+
+## Alignment: poll fast, write at 30 Hz, lock the grid to the board camera
+
+Three decisions, all in `config/training.yaml` `recorder:`, each worth a sentence:
+
+1. **Poll faster than you write.** Polling only at 30 Hz does not just thin a 100 Hz stream, it
+   misplaces it: the samples that survive are whichever fell just before a tick, so the nearest one
+   to an alignment instant can be a whole device period away. Measured on the mocks over a 10 s
+   episode, same code, only the poll rate changed:
+
+   | poll rate | skew p50 | skew p99 | dropped |
+   |---|---|---|---|
+   | 30 Hz | 13.333 ms | 20.000 ms | state 700, glove 200 |
+   | 100 Hz | 6.667 ms | 6.667 ms | none |
+   | 200 Hz | 6.667 ms | 6.667 ms | none |
+
+   `Recorder.poll()` is read-only and allowed with no session (R1), so call it at least as fast as
+   the fastest device runs (`rates.state_hz`, 100 Hz).
+2. **Write one lag behind** (`alignment_lag_periods: 1`). The frame a tick writes is for the grid
+   point one dataset period back, so every stream has samples on *both* sides of the alignment
+   instant and `runtime.clock.align` picks the nearest rather than the newest-not-after. Without it
+   the worst-case offset is a whole device period instead of half of one.
+3. **The grid is the board camera's** (`Recorder.next_grid_ns`). A 30 Hz stream is at best half a
+   period from an arbitrary 30 Hz grid, so a grid pinned to whenever the operator pressed start puts
+   16.7 ms of skew on `top` — the frame the goal channels and the board state live in — for nothing.
+   The grid starts at the first `top` sample at or after the first command, and the teleop loop puts
+   its commands on the same grid, which is what keeps the recorded action next to the observation it
+   belongs with.
+
+Latency compensation is `runtime.clock.shift` with `config/robot.yaml` `latency.*`: a sample stamped
+at `ts` describes an event `L` earlier, so its timestamp moves back by `L`. `action` is a command,
+not an observation, and is not shifted. Every one of those latencies is `0.0` and `UNMEASURED` until
+Phase 1 measures it, and the dataset card says so on every card it writes.
+
+## What a session directory holds
+
+```
+data/raw/<session_id>/
+  meta/, data/, images/     the lerobot v3.0 dataset (loads with LeRobotDataset(repo_id, root=...))
+  episodes_meta.jsonl       one JSON object per episode: the metadata of CLAUDE.md 5.6
+  README.md                 the dataset card, rewritten after every saved episode
+```
+
+lerobot v3.0 has no free-form per-episode metadata field, so `episodes_meta.jsonl` is where the 5.6
+fields it does not model go: `task_id`, `src_cell`, `dst_cell`, `success` (operator-marked),
+`perturbed`, `operator`, `latency_config_hash` (= `config_hash("robot")`, which is where the
+latencies live), `safety_config_hash`, `board_config_hash`, plus the frame count, the goal pixels,
+the per-stream sample counts, the skew percentiles and the dropped-sample counts.
+
+The card reports stream rates, frame counts, dropped frames per stream, skew p50/p99 and the three
+config hashes. `dropped` counts samples missing from a stream, judged against that stream's own
+nominal rate (`drop_gap_periods: 1.5`), so it catches both a device that stalled and a caller that
+polled more slowly than the device — both are losses as far as the dataset is concerned.
+
+### Measured, `tests/test_recorder.py` on the laptop
+
+```
+.venv/bin/python -m pytest tests/test_recorder.py -q -s
+```
+
+| | |
+|---|---|
+| 60 s mock episode, 200 Hz poll / 30 Hz write | 1800 frames, all 7 streams |
+| skew | p50 6.666 ms, p99 6.667 ms (budget: < 10 ms p99) |
+| dropped frames | 0 on every stream; 0 skipped ticks, 0 alignment failures |
+| replay through a fresh `MockArm` | worst \|admitted - recorded\| = 0.0 over 150 actions (budget 1e-6) |
+| round trip | `LeRobotDataset` reloads 2 episodes, 1860 frames, all 8 feature keys |
+
+The long tests shrink the camera frames through a `config/` copy in `tmp_path` (a 640x480 PNG costs
+~8 ms to write and a 60 s episode writes 5400 of them); a separate test records at the real
+configured sizes and asserts the 3x480x640 / 3x240x320 shapes survive the round trip.
+
 ## What is not here yet
 
-`teleop/recorder.py` (LeRobot v2 episode capture) and `teleop/operator_ui.py` (goal display, episode
-keys) are the rest of Phase 2 and are separate tasks. So is the clutch and the 30 Hz loop that wires
-`pico_bridge` -> `pico_to_g1_base` -> `ArmIK` -> `runtime/safety.py` -> `drivers/g1_arm.py`.
+`teleop/operator_ui.py` (goal display, episode keys) is the rest of Phase 2 and is a separate task.
+So is the clutch and the 30 Hz loop that wires `pico_bridge` -> `pico_to_g1_base` -> `ArmIK` ->
+`runtime/safety.py` -> `drivers/g1_arm.py` -> `Recorder.tick`.

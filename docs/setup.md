@@ -22,9 +22,10 @@ uv pip install -r requirements.txt
 `uv venv` downloads and uses a managed CPython 3.10 if the system one is not suitable; either is fine
 as long as the version is 3.10.x.
 
-`requirements.txt` is fully pinned (direct and transitive). Torch and LeRobot arrive only when a task
-asks for them; MuJoCo, mink and `pico_bridge` arrived with T-012, for the arm IK path
-(agents/DECISIONS.md D-006).
+`requirements.txt` is fully pinned (direct and transitive). MuJoCo, mink and `pico_bridge` arrived
+with T-012 for the arm IK path (agents/DECISIONS.md D-006); torch (CPU) and LeRobot with T-017
+(D-011). **Run the OpenCV reinstall line after every install** — see "Two OpenCV distributions" below;
+it is not optional any more.
 
 ### Versions resolved for the arm IK path (T-012, 2026-09-11)
 
@@ -52,23 +53,43 @@ uv accepts `--hash=sha256:...` on a URL requirement even when the other requirem
 and it does enforce it: installing the same URL with one hex digit changed aborts with
 `Hash mismatch for pico-bridge` (checked in T-012).
 
-### One OpenCV distribution only
+### Versions resolved for the recorder (T-017, 2026-09-12)
 
-`opencv-python-headless` was removed in T-012 (agents/DECISIONS.md D-008); `opencv-python`, which
-`unitree_sdk2py` depends on and which `teleop/operator_ui.py` will need, is the only distribution that
-owns `cv2/`:
+| Package | Pin | Note |
+|---|---|---|
+| `lerobot` | `0.4.4` | the **last** release that installs on Python 3.10 (0.5.0+ require >= 3.12) |
+| `torch` | `2.9.1+cpu` | last cp310 CPU wheel on the PyTorch index; lerobot caps torch at < 2.11 |
+| `torchvision` | `0.24.1+cpu` | resolved with it, same index |
+| `torchcodec` | `0.10.0` | pulled in by lerobot, from PyPI |
 
-```bash
-uv pip list | grep -i opencv        # -> opencv-python 5.0.0.93, one line
-.venv/bin/python -c "import cv2; print(cv2.__file__)"
-```
+`lerobot` writes datasets at its own `CODEBASE_VERSION`, which is `v3.0`
+(`.venv/lib/python3.10/site-packages/lerobot/datasets/lerobot_dataset.py:83`), not the "v2" of
+CLAUDE.md 5.6; agents/BUILD_LOG.md (T-017) records why there is no alternative. The whole install is
+CPU-only — no `nvidia-*` package is pulled in — because the two torch pins carry the `+cpu` local
+version, which exists only on the PyTorch CPU index that the three `--find-links` lines at the top of
+`requirements.txt` add. Those lines are `--find-links`, not `--index-url`, so everything else keeps
+resolving from PyPI.
 
-Both distributions install into the same `site-packages/cv2/`, so uninstalling one deletes files the
-other still needs. After removing the headless build, reinstall the GUI one before trusting `cv2`:
+`lerobot` also moved three transitive pins down: `av` 17.1.0 -> 15.1.0, `packaging` 26.3 -> 25.0,
+`rerun-sdk` 0.37.2 -> 0.26.2. All three are transitive for this project and the suite is green on
+them.
+
+### Two OpenCV distributions, and the order that fixes it
+
+D-008 removed `opencv-python-headless` in T-012 so that one distribution owned `site-packages/cv2/`.
+`lerobot` 0.4.4 hard-requires `opencv-python-headless (>=4.9,<4.13)` and `unitree_sdk2py` requires
+`opencv-python`, so **both** are installed again, and a requirements file cannot drop a dependency of
+a package it installs. Whichever lands last owns `cv2/`, so finish every install with:
 
 ```bash
 uv pip install --reinstall-package opencv-python -r requirements.txt
+.venv/bin/python -c "import cv2; print(cv2.__version__)"   # -> 5.0.0, not 4.12.0
 ```
+
+The GUI build is the one to keep: `teleop/operator_ui.py` needs `cv2.imshow`, and `cv2` 5.0.0 serves
+`lerobot` perfectly well (the constraint it violates is on the *distribution* name, not the module).
+Never uninstall either one on its own: both write into the same `cv2/` directory, so removing one
+deletes files the other still needs.
 
 ## Vendored G1 model
 

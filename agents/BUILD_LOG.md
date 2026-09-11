@@ -1647,3 +1647,121 @@ on this laptop, so the scripts were not statically linted.
 - No hardware needed, no blockers.
 
 (T-014 commit: 5c79b4d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+---
+
+## T-017  Teleop recorder to LeRobot on mocks  (opus, 2026-09-12T03:40+07:00)
+
+### What I built
+- `requirements.txt`: `lerobot==0.4.4`, `torch==2.9.1+cpu`, `torchvision==0.24.1+cpu` (+ `torchcodec==0.10.0`
+  and 74 other transitive pins). The two torch pins carry the `+cpu` local version and come from three
+  `--find-links` lines pointing at the PyTorch CPU index, so nothing else changes index and no `nvidia-*`
+  package is installed. `docs/setup.md` records the resolved versions and why each is what it is.
+- `teleop/recorder.py`: `Recorder(session_id, *, arm, hand, cameras, glove, ...)` with `poll()`,
+  `tick(action)`, `start_episode(command)`, `mark_success`, `mark_perturbed`, `stop_episode`, `close()`,
+  `next_grid_ns(after_ns)`. Writes a LeRobot dataset under `<root>/<session_id>/`, plus
+  `episodes_meta.jsonl` (the per-episode metadata of CLAUDE.md 5.6) and a regenerated `README.md`
+  dataset card.
+- `tests/test_recorder.py`: 13 tests, mocks + fake clock, everything under `tmp_path`.
+- `config/training.yaml`: a new `recorder:` block (5 keys, all design choices, no placeholders).
+- `docs/teleop.md`: a "The recorder" section; `docs/setup.md`: resolved versions and the OpenCV order.
+
+### Commands run and measured results
+```
+$ uv pip install --python .venv/bin/python \
+    --find-links https://download.pytorch.org/whl/cpu/torch/ \
+    --find-links https://download.pytorch.org/whl/cpu/torchvision/ \
+    --find-links https://download.pytorch.org/whl/cpu/torchcodec/ \
+    "torch==2.9.1+cpu" "lerobot==0.4.4"
+  -> 105 packages installed in 51 s; torch 2.9.1+cpu, torchvision 0.24.1+cpu, torchcodec 0.10.0, lerobot 0.4.4
+$ uv pip install --python .venv/bin/python --reinstall-package opencv-python "opencv-python==5.0.0.93"
+$ uv pip install --python .venv/bin/python --dry-run -r requirements.txt
+  -> "Resolved 134 packages ... Would make no changes"   (the file reproduces the venv exactly)
+$ .venv/bin/ruff check .                 -> All checks passed!
+$ .venv/bin/python -m pytest -q          -> 391 passed, 4 skipped in 70.48 s   (was 382 collected / 378 passed)
+$ .venv/bin/python -m pytest tests/test_recorder.py -q -s
+```
+Printed by the tests:
+```
+frames=1800 skew p50=6.666 ms p99=6.667 ms dropped={'top': 0, 'oblique': 0, 'palm': 0, 'state': 0,
+  'hand': 0, 'glove': 0, 'action': 0} skipped_ticks=0 align_failures=0
+replay: 150 actions, worst |admitted - recorded| = 0.000e+00
+```
+| criterion | budget | measured |
+|---|---|---|
+| 60 s mock episode, all streams | 7 streams | 1800 frames, 7 streams, 61/61/61/201/61/101/61 samples per 2 s |
+| skew p99 | < 10 ms | **6.667 ms** (p50 6.666 ms) |
+| dropped frames | 0 | **0** on every stream, 0 skipped ticks, 0 alignment failures |
+| replay through a fresh MockArm | < 1e-6 | **0.0** exactly, over 150 actions |
+| reload with LeRobotDataset | keys + frame count | 2 episodes, 1860 frames, all 8 feature keys, shapes as configured |
+
+Poll-rate sweep that justifies the design (same code, 10 s episode, only the poll rate changed):
+
+| poll rate | skew p50 | skew p99 | dropped |
+|---|---|---|---|
+| 30 Hz | 13.333 ms | 20.000 ms | state 700, glove 200 |
+| 100 Hz | 6.667 ms | 6.667 ms | none |
+| 200 Hz | 6.667 ms | 6.667 ms | none |
+
+### Design decisions inside the task's latitude
+1. **Poll fast, write at 30 Hz.** Polling only at the dataset rate misplaces a faster stream rather than
+   thinning it (the surviving samples are whichever fell just before a tick), which is what the 20 ms row
+   above is. `poll()` is read-only and allowed with no session (R1); `tick()` calls it too, so a caller
+   that only ticks still records, with the coarser skew the card then reports.
+2. **Write one dataset period behind** (`recorder.alignment_lag_periods: 1`) so every stream has samples on
+   both sides of the alignment instant and `clock.align` picks the nearest, not the newest-not-after.
+3. **The frame grid is the board camera's**, starting at the first `top` sample at or after the first
+   command; `next_grid_ns()` hands it to the teleop loop so commands land on the same grid. An arbitrary
+   grid costs up to 16.7 ms of skew on `top` alone (measured: 16.665 ms before this change).
+4. **The goal heatmaps are not a per-frame feature** (Fable's "pick the cheaper, defend it"). They are
+   constant over an episode and a pure function of two cells plus `goal_sigma_px`: 2x480x640 float32 is
+   2.4 MB/frame = 70 MB/s, ~1.4 GB for one 20 s episode, against ~2 kB for the two pixel pairs in the
+   sidecar. `policy/dataset.py` re-renders with the same `runtime.goal.GoalRenderer` the controller uses.
+5. **PNG, not video** (`recorder.use_videos: false`). lerobot 0.4.4 encodes through PyAV so video would work
+   without an `ffmpeg` binary (there is none on this laptop), but the frames are what the goal-heatmap audit
+   (section 8) and the replay checks read back, and a lossy codec changes them. One test proves the mock
+   frame counter survives the round trip bit-exactly, which a video dataset could not.
+6. `action` is aligned as a stream like any other and is **not** latency-shifted: it is a command, not an
+   observation. The six observation streams are shifted by `-latency.*` from `config/robot.yaml`, all of
+   which are `0.0` and `UNMEASURED`; the card prints the full UNMEASURED list on every session.
+
+### Disagreements and things not meeting the criteria
+1. **"LeRobot v2" is not reachable.** The task, D-011 and CLAUDE.md 5.6 name v2; `lerobot==0.4.4` writes
+   `CODEBASE_VERSION = "v3.0"` (`.venv/lib/python3.10/site-packages/lerobot/datasets/lerobot_dataset.py:83`).
+   I did the task as written apart from this, because the alternatives are worse and one is impossible:
+   0.5.0/0.5.1/0.6.0/0.6.1 all require Python >= 3.12 and this project is fixed at 3.10 by the DexH15 cp310
+   wheel (D-002 A1), so 0.4.4 is the newest installable release; the only older release on PyPI is 0.1.0,
+   which requires `mujoco-py`, `torchvision<0.18` and `opencv-python<5` and cannot be installed here at all.
+   Hand-writing v2 parquet is exactly what D-011 rejected. **For Fable:** `config/training.yaml`
+   `dataset.format: lerobot_v2` is now inaccurate and I did not change it (the task limits me to *adding*
+   config keys). It should become `lerobot_v3` or be dropped; the dataset card and docs say `v3.0`.
+2. **OpenCV: D-008 is broken again and I could not prevent it.** lerobot hard-requires
+   `opencv-python-headless (>=4.9,<4.13)`; `unitree_sdk2py` requires `opencv-python`. Both own
+   `site-packages/cv2/`, and a requirements file cannot drop a dependency of a package it installs (uv
+   overrides would need a second file, outside this task's file list). After a plain install `cv2` was
+   4.12.0 headless; `uv pip install --reinstall-package opencv-python -r requirements.txt` restores 5.0.0,
+   and that line is now in `requirements.txt`, `docs/setup.md` and the create-the-venv recipe. **This is a
+   decision for Fable**, not a builder's: either keep the reinstall step, or accept the headless build
+   everywhere and give up `cv2.imshow` in `teleop/operator_ui.py`. The venv currently has cv2 5.0.0 and the
+   full suite is green on it.
+3. **`teleop/recorder.py` is 421 lines against Fable's "under 300"** (44 blank, 12 comment, the rest code and
+   docstrings). D-013 guideline 2 says to move report types to a sibling module rather than cut docstrings,
+   but this task's file list does not allow creating one; I moved the long rationale out of the module
+   docstring into `docs/teleop.md` instead, which took it from 434 to 421. If Fable wants 300, the cut is
+   `EpisodeMeta` + `_card()` + `_drops()` into `teleop/dataset_card.py` (~110 lines).
+4. `lerobot` moved three transitive pins down: `av` 17.1.0 -> 15.1.0, `packaging` 26.3 -> 25.0, `rerun-sdk`
+   0.37.2 -> 0.26.2. All transitive; suite green; recorded in `requirements.txt` and `docs/setup.md`.
+5. The suite now prints 2079 `DeprecationWarning`s from `datasets/features/features.py:561` (a numpy scalar
+   conversion inside HuggingFace `datasets`, not our code). Silencing it needs a `filterwarnings` entry in
+   `pyproject.toml`, which is outside this task's file list; flagging it rather than doing it.
+6. Two lerobot behaviours worth knowing, both documented in `docs/teleop.md`: `finalize()` is mandatory or
+   the dataset will not load back (and then silently reaches for the Hugging Face Hub), and `add_frame`
+   rejects a `timestamp` key even though it pops one, so frame timestamps are always `frame_index / fps` --
+   exact here, because frames are written one per fixed grid point.
+
+### Safety
+R1-R6 intact. The recorder sends nothing: one test wraps the arm and hand drivers in a tripwire that fails if
+`send_targets`/`send_pinch` is ever called through the recorder, and records 10 frames with it in place. No
+scripted motion in `teleop/`; the test's operator stand-in trajectory lives in `tests/`. `config/safety.yaml`
+untouched, `hardware/session.enable` never created, nothing under `third_party/` touched. Every test wrote
+under `tmp_path`; `data/raw/` is still empty. No hardware needed, no blockers.
