@@ -283,7 +283,7 @@ acceptance:
   - synthetic test with 15 degrees of in-plane rotation and a mild perspective tilt passes the same bound
   - CLI on a real still (data/calib/board_empty.png, H-001) prints four tag ids and the error; if the still is not available yet, say so in BUILD_LOG.md and leave H-001 open; the synthetic tests are the acceptance for this cycle
 notes: `top` observation crop and the goal heatmaps depend on this frame; never apply geometric augmentation to it later (5.7).
-result: (opus, 2026-09-11T20:05+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-11T20:05+07:00, commit 63d998f)
   - Detector recorded: OpenCV `cv2.aruco` + `getPredefinedDictionary(DICT_APRILTAG_36h11)` with
     CORNER_REFINE_SUBPIX. pupil-apriltags NOT used and NOT added: opencv-python 5.0.0 already ships the
     36h11 dictionary (bytesList.shape == (587, 5, 4)). No dependency added.

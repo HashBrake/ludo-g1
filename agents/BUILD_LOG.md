@@ -1027,3 +1027,4 @@ a 0.707 px systematic bias would otherwise slide under the 1.0 px acceptance bou
   modified. A `tools/` helper for this is still worth a small task (third time it has been done by hand).
 - The `tests/test_greennode_local.py` flake reported under T-007 did not reproduce in the runs here.
 - No blockers. The only unmet criterion is acceptance 3, which needs H-001 and a Brio.
+(T-008 commit: 63d998f; this line and the TASKS.md result hash are the only content of the follow-up commit.)
