@@ -42,17 +42,30 @@ die:
 # --- AprilTags -----------------------------------------------------------------------------------
 # Four tags, one per corner of the board, defining the board frame and the Brio homography. Nothing
 # here was measured: the board was not photographed during T-002.
+# board/calibration.py (T-008) reads this block. Every value is a Form-2 placeholder (docs/config.md):
+# a usable number next to a `_status: UNMEASURED`, so the detector can run on a still today, plus a
+# loud warning from the CLI naming every key still unmeasured. Whoever prints and mounts the board
+# replaces these with the printed truth and flips the statuses to MEASURED.
 apriltags:
-  family: UNMEASURED          # e.g. tag36h11
-  size_mm: UNMEASURED         # black square edge length, not the white border
+  family: tag36h11            # cv2.aruco.DICT_APRILTAG_36h11; the only family board/calibration.py defaults to
+  family_status: UNMEASURED
+  size_mm: 40.0               # black square edge length (border bit included), not the white quiet zone
+  size_mm_status: UNMEASURED
   # Tag id at each corner, named in the board frame (-x-y is the near-left corner).
   ids:
-    corner_neg_x_neg_y: UNMEASURED
-    corner_pos_x_neg_y: UNMEASURED
-    corner_pos_x_pos_y: UNMEASURED
-    corner_neg_x_pos_y: UNMEASURED
-  # Centre of each tag in the board frame, mm. Set by whoever prints and mounts the board.
+    corner_neg_x_neg_y: 0
+    corner_pos_x_neg_y: 1
+    corner_pos_x_pos_y: 2
+    corner_neg_x_pos_y: 3
+  ids_status: UNMEASURED
+  # Centre of each tag in the board frame, mm, as a mapping with the same four corner keys as `ids`.
+  # The literal UNMEASURED means "derive them from size_mm and tag_inset_mm", which is what
+  # board/calibration.py does until the real centres are measured off the printed board.
   centres_mm: UNMEASURED
+  # Distance from each board edge to the nearest edge of the corner tag, mm. Only used while
+  # centres_mm is UNMEASURED: centre = (+-(size_mm[i]/2 - tag_inset_mm - size_mm/2)) per axis.
+  tag_inset_mm: 10.0
+  tag_inset_mm_status: UNMEASURED
 
 # --- layout ---------------------------------------------------------------------------------------
 # The placeholder layout is a standard 15 x 15 Ludo cross at a 40 mm pitch (15 * 40 = 600 mm), with

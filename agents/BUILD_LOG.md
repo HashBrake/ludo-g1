@@ -912,3 +912,118 @@ Gate: `.venv/bin/ruff check .` -> "All checks passed!"; `.venv/bin/python -m pyt
   the heartbeat for a moment, would close it.
 - No disagreement with the task as written beyond the two design calls above. No blockers.
 (T-007 commit: 5cab3e6; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+
+## T-008  Board calibration from AprilTags and a Brio still  (opus, 2026-09-11T20:05+07:00)
+
+Built the one mapping everything downstream needs: board millimetres (the `config/board.yaml` frame)
+to pixels in the full Brio frame, fitted from the four corner AprilTags of a single top-down still.
+
+### What changed
+- `board/calibration.py`. `load_tag_geometry()` reads the `apriltags` block (family, size, the id at
+  each corner, the centres, or centres derived from `tag_inset_mm` while `centres_mm` is UNMEASURED);
+  `detect_tags()` runs `cv2.aruco.ArucoDetector` over
+  `getPredefinedDictionary(DICT_APRILTAG_36h11)` with `CORNER_REFINE_SUBPIX`; `calibrate_image()` /
+  `calibrate_file()` pair the 4 corners of each of the 4 tags with their board-frame positions
+  (16 points) and fit with `cv2.findHomography(..., cv2.RANSAC)`, requiring all 16 as inliers.
+  `Calibration` exposes `board_to_px`, `px_to_board`, `cell_px(cell_id)`, `cell_px_all()` (shaped for
+  `engine.cells.load_cells(top_px=...)`), `board_bbox_px()` and `save()`/`load()`.
+  **Detector recorded: OpenCV `cv2.aruco`, not `pupil-apriltags`.** The pinned `opencv-python` 5.0.0
+  already carries `DICT_APRILTAG_36h11` (`bytesList.shape == (587, 5, 4)`), so no dependency was added.
+- `tools/hardware_checks/brio_still.py`. Read-only: opens the `top` V4L2 node from
+  `config/cameras.yaml` (or `--device`), asks 3840x2160 MJPG (fourcc before resolution, or the driver
+  caps at ~1080p), discards 10 frames for exposure settling, turns autofocus off, writes lossless PNG,
+  prints the achieved resolution/fps/focus/exposure. Exit 3 = no usable camera, 2 = usage, 0 = written.
+  It opens a camera and nothing else; no motion command is reachable from it and no session is needed.
+- `tests/test_calibration.py`, 21 tests.
+- `docs/board.md`.
+- `config/board.yaml`, `apriltags` block only. **This is outside the file list I was given** and is
+  logged as a deviation: the task's design guidance explicitly told me to add a `tag_inset_mm`
+  UNMEASURED placeholder there, and the block as it stood (every leaf the literal `UNMEASURED`) gave
+  the detector no family, no tag size and no ids to run with. Everything I put in is Form-2
+  (docs/config.md): a usable number next to `_status: UNMEASURED` -- `family: tag36h11`,
+  `size_mm: 40.0`, ids `0..3` anticlockwise from the (-x,-y) corner, `tag_inset_mm: 10.0` (tag centres
+  at (+-270, +-270) mm). `centres_mm` stays the literal `UNMEASURED`, and a mapping put there later
+  overrides the `tag_inset_mm` derivation. `unmeasured("board")` still reports all five, and both the
+  CLI (a `WARNING` line) and the written yaml (`unmeasured_board_keys`) name them, because a wrong
+  `size_mm` fits a homography with a perfectly good reprojection error and a wrongly scaled board.
+  No other config file touched; `config/safety.yaml` untouched.
+
+### Commands run and measured results
+```
+.venv/bin/ruff check .                -> All checks passed!
+.venv/bin/python -m pytest -q         -> 246 passed, 1 skipped in 23.71s   (225 passed before T-008)
+.venv/bin/python -m pytest -q tests/test_calibration.py  -> 21 passed in 2.85s
+```
+Acceptance 1 and 2, `test_synthetic_board_recovers_every_cell_centre[translation|rot15_tilt]`. Four
+tags rendered with `generateImageMarker` at their configured board positions at 2 px/mm (1400x1400
+board image, 80 px tags), warped by a known homography, detected, and compared at the centre of all
+88 cells of `config/board.yaml` -- not only at the 16 corners the fit saw:
+
+| case | reprojection rms | max corner | worst cell centre | mean cell |
+|---|---|---|---|---|
+| translation only | 0.1202 px | 0.1287 px | **0.0079 px** | 0.0046 px |
+| 15 deg rotation + projective tilt (~7% across, image 1737x1716) | 0.2312 px | 0.3206 px | **0.0541 px** | 0.0313 px |
+
+Bounds were rms < 0.5 px and cell error < 1.0 px: both PASS on both cases, by 2-4x on rms and ~20x on
+the cells. Measured with the snippet in the task report; the test asserts the same numbers.
+
+Acceptance 3, **not met, and it cannot be met this cycle**: no Brio is attached.
+`.venv/bin/python tools/hardware_checks/list_devices.py` lists four SunplusIT integrated-webcam nodes
+(`174f:11b4`) and the two Orbbec Ego nodes (`2bc5:1201`), and no `046d` (Logitech) device at all.
+`data/calib/board_empty.png` does not exist. **H-001 stays OPEN, unedited** -- its post-check command
+(`.venv/bin/python -m board.calibration --image data/calib/board_empty.png`) is exactly the CLI that
+was delivered, so nothing in it changed. What ran instead, on a synthetic still:
+```
+.venv/bin/python -m board.calibration --image <scratch>/synthetic_board.png --out <scratch>/board_calib.yaml
+  tag 0  corner_neg_x_neg_y at (  241.12,  1299.32) px      ... four tag ids printed
+  reprojection  rms 0.231 px, max 0.321 px  (16 tag corners)
+  board bbox    x=152 y=128 w=1484 h=1472  (for cameras.yaml top.crop)
+  WARNING       config/board.yaml still has placeholder tag geometry: apriltags.family, ...
+  exit 0, wrote board_calib.yaml
+.venv/bin/python tools/hardware_checks/brio_still.py --out <scratch>/x.png        -> exit 3
+.venv/bin/python tools/hardware_checks/brio_still.py --device /dev/video99 ...    -> exit 3
+```
+**No `config/board_calib.yaml` is committed.** The only ones produced came from synthetic data and
+were written to the scratchpad; `ls config/` shows the same six files as before.
+
+### One measurement worth Fable's attention
+The first synthetic run passed (cell error 0.715 px < 1.0 px) but every cell was off by *the same*
+0.707 px = sqrt(0.5), which is a half pixel on each axis, not noise. Cause: my ground truth, not the
+code. Numpy puts the first row of the blitted marker at row index `y`; OpenCV's continuous image
+coordinates put the *centre* of that pixel at `y`, so the marker edge the detector localises is at
+`y - 0.5`. The fit absorbed it as a translation, which is why the rms stayed at 0.12 px while every
+cell was biased. Ground truth corrected (`_render_board` returns the placement map shifted by half a
+pixel, and says why); errors dropped to 0.008 / 0.054 px. The test now also guards at 0.25 px, since
+a 0.707 px systematic bias would otherwise slide under the 1.0 px acceptance bound unnoticed.
+
+### Design calls
+- **Four tags or nothing.** Three tags define a homography; `calibrate_image` refuses anyway and names
+  the missing corner(s). A board calibrated from three corners is a board whose fourth corner nobody
+  checked, and checking is the whole point of the measurement. Same for RANSAC: all 16 corners must be
+  inliers, otherwise the tags, the board geometry, or a tag's mounting orientation disagree and that is
+  an error, not a quiet best fit.
+- **Tags are assumed mounted upright in the board frame** (tag "up" along board +y, "right" along +x),
+  which is what makes `cv2.aruco` corner *k* correspond to a known board point. A quarter-turn-off tag
+  is still detected but pairs with the wrong points, and the rms jumps by roughly the tag size -- the
+  all-inliers rule turns that into a refusal rather than a silent 40 mm error. Documented in the module
+  header and `docs/board.md`. A per-tag rotation field in the config is the fix if a real board needs it.
+- `config/board_calib.yaml` is a **generated artefact**, deliberately not added to
+  `runtime.config.REQUIRED_KEYS`: it is not hand-maintained and re-running the CLI is the way to change
+  it. It is read back with `board.calibration.load()`. It records `board_config_hash`, so a calibration
+  computed against different board geometry is detectable.
+- `top_crop` (the board's pixel bounding box) is written into the calibration but **not** into
+  `config/cameras.yaml`. `docs/config.md` says `top.crop` is filled in by this module; I print and store
+  the number for a human to paste, rather than writing a config file this task did not list.
+
+### Notes
+- No scripted motion, no motion command, no import of `tools/hardware_checks/` from `policy/` or
+  `runtime/` (`board/calibration.py` imports only `cv2`, `numpy`, `yaml`, `engine.cells`,
+  `runtime.config`; the import in the *test* is the only one, and tests are neither). R1-R6 intact.
+- `tools/hardware_checks/brio_still.py` carries the same `sys.path` bootstrap as `enable_session.py`,
+  so H-001's `python tools/hardware_checks/brio_still.py ...` works from any directory; verified from `/`.
+- Same worktree environment step as T-007/T-009: `_internal/` and `pxcap_pro_local` under
+  `third_party/pxcap_pro_teleop_sdk/pxcap_pro_local/` recreated as symlinks into the main tree so
+  `tests/test_docs_sdks.py` can see the git-ignored payload. Nothing under `third_party/` staged or
+  modified. A `tools/` helper for this is still worth a small task (third time it has been done by hand).
+- The `tests/test_greennode_local.py` flake reported under T-007 did not reproduce in the runs here.
+- No blockers. The only unmet criterion is acceptance 3, which needs H-001 and a Brio.
