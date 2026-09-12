@@ -61,8 +61,8 @@ from typing import Any
 
 import numpy as np
 
-from drivers.dexh15 import SERIAL_GLOBS, find_port
 from drivers.interfaces import GloveSample
+from drivers.serial_discovery import SERIAL_GLOBS, find_port
 from runtime import clock, config
 from runtime.clock import Stamped
 

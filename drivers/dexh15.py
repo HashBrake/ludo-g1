@@ -46,6 +46,7 @@ from typing import Any
 import numpy as np
 
 from drivers.interfaces import HandState
+from drivers.serial_discovery import SERIAL_GLOBS, find_port
 from runtime import clock, config
 from runtime.clock import Stamped
 
@@ -60,9 +61,6 @@ __all__ = [
     "find_port",
     "resolve_port",
 ]
-
-#: Serial node patterns the DexH15 Modbus adapter can appear as (docs/sdks.md 4.2, H-003).
-SERIAL_GLOBS: tuple[str, ...] = ("ttyUSB*", "ttyACM*")
 
 
 class HandUnavailable(RuntimeError):
@@ -99,48 +97,6 @@ class HandProbe:
     hardware_version: str
     firmware_version: str
     pinch_measurable: bool
-
-
-# ------------------------------------------------------------------------------------------------
-# device discovery: the same three-step order as drivers/cameras.py, on serial nodes
-# ------------------------------------------------------------------------------------------------
-
-
-def _usb_id_for(node: Path) -> str | None:
-    """``vendor:product`` of the USB device a ``/dev/tty*`` node hangs off, from sysfs. Read-only."""
-    try:
-        sysfs: Path | None = (Path("/sys/class/tty") / node.name / "device").resolve()
-    except OSError:
-        return None
-    for _ in range(10):
-        if sysfs is None or str(sysfs) == sysfs.anchor:
-            return None
-        try:
-            vendor = (sysfs / "idVendor").read_text().strip()
-            return f"{vendor.lower()}:{(sysfs / 'idProduct').read_text().strip().lower()}"
-        except OSError:
-            sysfs = sysfs.parent
-    return None
-
-
-def find_port(usb_id: str) -> str | None:
-    """The lowest-numbered serial node with this USB ``vendor:product`` id, by-id link preferred."""
-    wanted = usb_id.strip().lower()
-    nodes: list[Path] = []
-    for pattern in SERIAL_GLOBS:
-        nodes.extend(Path("/dev").glob(pattern))
-    by_id: dict[str, str] = {}
-    links = Path("/dev/serial/by-id")
-    if links.is_dir():
-        for link in sorted(links.iterdir()):
-            try:
-                by_id.setdefault(str(link.resolve()), str(link))
-            except OSError:
-                continue
-    for node in sorted(nodes, key=lambda p: (len(p.name), p.name)):
-        if _usb_id_for(node) == wanted:
-            return by_id.get(str(node), str(node))
-    return None
 
 
 def resolve_port(override: str | None = None, root: Path | str | None = None) -> str:

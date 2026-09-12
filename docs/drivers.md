@@ -291,6 +291,8 @@ Reading the hand is not a motion command: no hardware session is needed (R1, CLA
 `/dev/ttyUSB*` or `/dev/ttyACM*` node whose USB `vendor:product` matches `device.usb_id`
 (`067b:23a3`). Everything else — baud (4 000 000), slave address (`0x78`) — comes from the same file
 and is still a placeholder: the hand has never been plugged in (agents/HARDWARE_NEEDED.md H-003).
+The node search itself (`SERIAL_GLOBS`, `find_port`) lives in `drivers/serial_discovery.py`, shared
+with the glove since T-042; `drivers.dexh15.find_port` still resolves to it.
 
 ### The palm camera
 
