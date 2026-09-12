@@ -434,7 +434,8 @@ rig. On hardware that is a lurch. D-018's answer is two changes, and both are no
   command with a fresh velocity reference that is further than this from the **measured** state, with
   the rule `first_command_step`. The 0.443 rad target above is refused by it today; a test measures
   exactly that and asserts the arm did not move. See `docs/safety.md`.
-* `teleop/loop.py`'s `Clutch`, which is what a session engages through.
+* `teleop/clutch.py`'s `Clutch`, which is what a session engages through (split out of
+  `teleop/loop.py` by T-042; the loop imports it back, so `teleop.loop.Clutch` still resolves).
 
 ```
 disengaged --e (only if every joint is within clutch_engage_tolerance_rad)--> engaging
