@@ -1891,7 +1891,7 @@ result: (opus, 2026-09-12, branch wt/t044, commit 676ce6e)
     config/safety.yaml untouched. Only the five files in the touch list changed.
 
 ## T-045  HUMAN_APPROVED status and per-step gating in the pre-flight (D-022)
-status: review
+status: accepted
 priority: P1
 phase: 1
 owner: opus

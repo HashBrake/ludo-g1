@@ -319,3 +319,10 @@ working. Fable fixes in this commit: REQUIRED_KEYS gains workspace_box_m.points 
 Addendum (fable): making workspace_box_m.points a required key broke T-043's "config without points falls back to one
 point" test; the fallback was the builder's compatibility choice, the refusal is mine (a tightening must not be droppable by
 omitting a key). Test renamed test_a_config_without_points_is_refused and asserts ConfigError. Logged per 4.1.
+
+## T-045  ACCEPTED  (fable, 2026-09-12T11:14+07:00, commits c8d4674, c998dd6)
+Re-ran: ruff clean; config, pre-flight and runbook tests 153 passed; config/, third_party/, hardware/ untouched in the range
+diff; `--for t021_latency --no-devices` says NO-GO naming the e-stop, the eleven approvable keys and the DDS interface;
+`--show-envelope` prints the human approval procedure and writes nothing; STATUS_VALUES is exactly the three words.
+Both judgement calls accepted: the hand bench does not need the arm LAN, and the envelope test is guarded by the Guard
+regardless of latency values (D-022's wording stands).

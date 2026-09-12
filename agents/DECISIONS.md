@@ -183,3 +183,16 @@ first session, and commits the status change (the value itself stays as the plac
 passes an envelope key at HUMAN_APPROVED for the first motion session and still fails it at UNMEASURED; latency and
 pico_to_pelvis keys do not gate T-021 (they gate T-023 and Phase 2 recording instead). Alois: the values to approve are in
 config/safety.yaml (all envelope keys) and config/robot.yaml control.kp/kd/weight_ramp_s; say HUMAN: with any change.
+
+## D-023  Loop stop under R4(b) and the audit at the stop  (2026-09-12T11:14+07:00)
+Audit (section 8) at this commit: hardware/session.enable git-ignored and absent from history; config/safety.yaml has three
+commits (creation T-003, added key T-033, added key T-043), each with zero deletions; no import of tools/ in runtime/,
+drivers/, policy/, board/, teleop/, engine/, eval/; no literal joint arrays outside tools/ and tests/; the single motion
+test is skipped without a session; Guard is constructed only by the two mock actuators (no real writer exists yet); no
+ChannelPublisher, rt/arm_sdk, rt/lowcmd, enableMotor or setJointPositionsAngle call outside NotImplementedError stubs;
+four HARDWARE_NEEDED entries with post-checks; no open blocker. Data/Training/Evaluation rows: no real dataset or checkpoint
+exists; the mock pipeline (recorder, viewer, dataset, two policies, eval JSON, watchdog) is complete and every success rate
+it prints is 0/N by construction (HoldPolicy), as R5 requires.
+Stop: every task left in todo (T-021..T-024) needs a human hardware action (H-002..H-004, Q-004, a session), and no further
+non-hardware task is productive: the mock-side system is built end to end and further mock work would not change what the
+first hardware day needs. R4(b) applies. The loop resumes the moment a HUMAN: line or a completed H-item appears.
