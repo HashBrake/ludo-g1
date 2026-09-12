@@ -218,14 +218,35 @@ def test_ik_solve_time_per_tick(long_run: Rig, capsys) -> None:
     assert stats.ik_p99_ms < 1e3 / 30.0, "the IK alone does not fit in a 30 Hz tick"
 
 
-def test_the_commanded_wrist_stays_inside_the_workspace_box(long_run: Rig) -> None:
-    """What the guard admitted is what the box allows -- checked again here, independently."""
+def test_the_commanded_points_stay_inside_the_workspace_box(long_run: Rig, capsys) -> None:
+    """What the guard admitted is what the box allows -- checked again here, independently.
+
+    Both checked points, over every admitted command of the session, not just the last one: T-043
+    added the DexH15 fingertip to ``workspace_box_m.points`` and the placeholder
+    ``tool.pinch_offset_m`` puts it 120 mm out in front of the wrist, so it is the point with the
+    less slack. The extremes of both are printed: they are what says how much room this session had.
+    """
     box = config.load("safety", root=long_run.cfg)["workspace_box_m"]
     margin = float(box["margin_m"])
     low = np.asarray(box["min"], dtype=float) + margin
     high = np.asarray(box["max"], dtype=float) - margin
-    point = fk.left_arm_fk(long_run.loop.last_admitted.joints)
-    assert np.all(point >= low) and np.all(point <= high), f"wrist at {point} is outside {low}..{high}"
+    names = tuple(str(p) for p in box["points"])
+    tracks = {name: [] for name in names}
+    for cmd in long_run.loop.admitted:
+        points = fk.left_arm_points(cmd.joints)
+        for name in names:
+            tracks[name].append(points[name])
+    with capsys.disabled():
+        print(f"\nTeleop loop, {len(long_run.loop.admitted)} admitted commands, box "
+              f"{np.round(low, 3).tolist()}..{np.round(high, 3).tolist()} m:")
+        for name in names:
+            track = np.asarray(tracks[name])
+            print(f"  {name:20s} min {np.round(track.min(axis=0), 4).tolist()} "
+                  f"max {np.round(track.max(axis=0), 4).tolist()} m, "
+                  f"closest approach to a face {float(np.min([track - low, high - track])) * 1e3:.1f} mm")
+    for name in names:
+        track = np.asarray(tracks[name])
+        assert np.all(track >= low) and np.all(track <= high), f"{name} left {low}..{high}"
 
 
 def test_no_admitted_command_ever_steps_more_than_one_tick_allows(long_run: Rig, capsys) -> None:
@@ -355,13 +376,15 @@ def test_an_out_of_box_pose_is_never_commanded_and_nothing_moves(tmp_path, capsy
     rig = Rig(tmp_path, center=None)
     before = rig.arm.read_state().payload.joints
     box = config.load("safety", root=rig.cfg)["workspace_box_m"]
-    point = fk.left_arm_fk(rig.raw_ik_target())
+    points = fk.left_arm_points(rig.raw_ik_target())
+    point = points[str(box["point"])]
     stats = rig.loop.run(2.0)
     after = rig.arm.read_state().payload.joints
     with capsys.disabled():
         print(f"Teleop loop, out-of-box pose: {stats.ticks} ticks, {stats.sent} holds admitted, "
-              f"{sum(stats.refused.values())} refused {dict(stats.refused)}; the IK target's wrist is at "
-              f"{np.round(point, 3).tolist()} m, outside {box['min']}..{box['max']}")
+              f"{sum(stats.refused.values())} refused {dict(stats.refused)}; the IK target is at "
+              + ", ".join(f"{name} {np.round(points[name], 3).tolist()}" for name in points)
+              + f" m, outside {box['min']}..{box['max']}")
     assert np.any(point < np.asarray(box["min"], float)) or np.any(point > np.asarray(box["max"], float))
     assert rig.engage() is False, "the clutch must not engage into an unreachable pose"
     assert stats.ticks > 50 and stats.sent == stats.ticks  # every command was a zero-motion hold

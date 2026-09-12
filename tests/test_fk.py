@@ -15,6 +15,13 @@ Three things are checked, in increasing order of how much they would cost if the
    overrides it, and ``Guard.admit`` with it rejects a target whose wrist leaves
    ``config/safety.yaml``'s box. (An envelope with *no* fk fails closed; that is
    ``tests/test_safety.py``'s to assert and it still does.)
+
+T-043 added the second checked point, the DexH15 fingertip (:data:`runtime.fk.PINCH_POINT`), and the
+last section of this file is about it: it is the wrist frame offset by ``config/robot.yaml``
+``tool.pinch_offset_m`` **rotated** by the wrist body's orientation, cross-checked here against a
+quaternion evaluation that never touches ``xmat``; it moves when the wrist rolls, pitches or yaws,
+which the wrist origin does not (D-010); and a pose whose wrist is inside the box but whose fingertip
+is outside is refused, naming the fingertip.
 """
 
 from __future__ import annotations
@@ -116,6 +123,30 @@ def mujoco_reference(joints: np.ndarray) -> np.ndarray:
     return np.array(data.xpos[bid], dtype=np.float64)
 
 
+def mujoco_reference_pinch(joints: np.ndarray, offset: np.ndarray) -> np.ndarray:
+    """The pinch point from a fresh model, rotating the offset with ``xquat`` instead of ``xmat``.
+
+    ``runtime/fk.py`` composes ``xpos + xmat @ offset``. Here the same point is built from the body
+    *quaternion* and the Hamilton-product rotation written at the top of this file, so nothing but
+    mujoco's own kinematics is shared with the implementation.
+    """
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_path(str(fk.MJCF))
+    data = mujoco.MjData(model)
+    robot = config.load("robot")
+    entries = list(robot["arm"]["joints"]) + list(robot["waist"]["joints"])[:1]
+
+    data.qpos[:] = model.qpos0
+    for i in reversed(range(JOINT_DIM)):
+        data.qpos[int(entries[i]["mjcf_qpos_index"])] = float(joints[i])
+    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+    data.qpos[0:3] = 0.0
+    mujoco.mj_kinematics(model, data)
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_wrist_yaw_link")
+    return np.array(data.xpos[bid], dtype=np.float64) + _quat_rotate(np.array(data.xquat[bid]), np.asarray(offset))
+
+
 def session_file(path: Path) -> Path:
     now = datetime.now(BKK).replace(microsecond=0)
     path.write_text(
@@ -199,8 +230,8 @@ def test_every_commanded_joint_reaches_the_point() -> None:
 
     Two of them cannot move the wrist-yaw *origin* however far they turn: wrist yaw rotates that
     frame about itself, and wrist roll turns about the x axis that the remaining 0.038 + 0.046 m of
-    the chain lies along. Both still move the wrist's orientation, which is why the tool offset to
-    the fingertip is a Phase 1 measurement (docs/safety.md).
+    the chain lies along. Both still move the wrist's *orientation*, so both move the fingertip
+    pinch point, which is why that point is checked too (T-043, D-010, and the last section here).
     """
     spin_in_place = {"left_wrist_roll_joint", "left_wrist_yaw_joint"}
     base = fk.left_arm_fk(np.zeros(JOINT_DIM))
@@ -271,14 +302,17 @@ def test_call_time_is_fast_enough_for_the_control_loop() -> None:
 
 
 def test_from_config_injects_the_real_fk_by_default() -> None:
+    """The default is the multi-point fk, and its wrist entry is what ``left_arm_fk`` returns."""
     env = Envelope.from_config()
-    assert env.fk is fk.left_arm_fk
-    assert np.array_equal(env.fk(np.zeros(JOINT_DIM)), fk.left_arm_fk(np.zeros(JOINT_DIM)))
+    assert env.fk is fk.left_arm_points
+    points = env.fk(np.zeros(JOINT_DIM))
+    assert tuple(points) == fk.kinematics().names_out
+    assert np.array_equal(points[env.box_point], fk.left_arm_fk(np.zeros(JOINT_DIM)))
 
 
 def test_an_explicit_fk_still_overrides_the_default() -> None:
     mock = Envelope.from_config(lambda _q: np.array([0.4, 0.25, -0.05]))
-    assert mock.fk is not fk.left_arm_fk
+    assert mock.fk is not fk.left_arm_points
 
 
 def test_guard_with_the_real_fk_rejects_a_target_whose_wrist_leaves_the_box(tmp_path: Path) -> None:
@@ -322,3 +356,183 @@ def test_where_the_all_zero_pose_sits_relative_to_the_placeholder_box() -> None:
         "docs/safety.md and agents/BUILD_LOG.md record that the all-zero pose is inside the current "
         "placeholder box; if this fails the box changed and both must be re-checked"
     )
+
+
+# --------------------------------------------------------------------------------------------------
+# the second checked point: the DexH15 fingertip (T-043, D-010)
+# --------------------------------------------------------------------------------------------------
+
+
+def tool_offset() -> np.ndarray:
+    return np.asarray(config.load("robot")["tool"]["pinch_offset_m"], dtype=np.float64)
+
+
+def test_the_pinch_offset_is_read_from_the_config_and_is_still_a_placeholder() -> None:
+    """The offset is configuration, not a constant in code (section 7), and T-022 measures it."""
+    assert np.array_equal(fk.kinematics().tool_offset, tool_offset())
+    assert tool_offset().shape == (3,)
+    assert "tool.pinch_offset_m" in config.unmeasured("robot")
+
+
+def test_left_arm_points_returns_exactly_the_points_the_box_is_checked_at() -> None:
+    box = config.load("safety")["workspace_box_m"]
+    points = fk.left_arm_points(np.zeros(ARM_DOF), 0.0)
+    assert tuple(points) == (str(box["point"]), fk.PINCH_POINT) == fk.kinematics().names_out
+    assert set(str(p) for p in box["points"]) <= set(points), "every configured point must be produced"
+    for name, value in points.items():
+        assert value.shape == (3,) and value.dtype == np.float64, name
+
+
+def test_the_wrist_entry_is_left_arm_fk_unchanged() -> None:
+    """T-043 must not have moved the wrist point: teleop/retarget.py's IK is checked against it."""
+    lower, upper = safety_limits()
+    rng = np.random.default_rng(43)
+    for _ in range(10):
+        q = rng.uniform(lower, upper)
+        assert np.array_equal(fk.left_arm_points(q)[fk.kinematics().point], fk.left_arm_fk(q))
+        assert np.array_equal(fk.left_arm_points(q[:ARM_DOF], float(q[ARM_DOF]))[fk.kinematics().point],
+                              fk.left_arm_fk(q[:ARM_DOF], float(q[ARM_DOF])))
+
+
+def test_the_pinch_point_agrees_with_a_quaternion_evaluation_over_random_configurations() -> None:
+    """``xpos + xmat @ offset`` against ``xpos + quat_rotate(xquat, offset)`` on a fresh model."""
+    lower, upper = safety_limits()
+    offset = tool_offset()
+    rng = np.random.default_rng(20260912)
+    worst = 0.0
+    for _ in range(20):
+        q = rng.uniform(lower, upper)
+        got = fk.left_arm_points(q)[fk.PINCH_POINT]
+        worst = max(worst, float(np.max(np.abs(got - mujoco_reference_pinch(q, offset)))))
+    print(f"worst pinch-point disagreement over 20 random configurations: {worst:.3e} m")
+    assert worst < 1e-9
+
+
+def test_the_pinch_point_is_the_offset_expressed_in_the_wrist_frame_not_the_pelvis_frame() -> None:
+    """Rotated, not added: at a rolled wrist the offset is not parallel to the pelvis axes.
+
+    Adding the offset in the pelvis frame would leave the pinch point a fixed vector from the wrist
+    in *every* pose, which is exactly the bug that would make wrist roll invisible again.
+    """
+    offset = tool_offset()
+    q = np.zeros(JOINT_DIM)
+    q[4] = 1.0  # wrist roll
+    points = fk.left_arm_points(q)
+    delta = points[fk.PINCH_POINT] - points[fk.kinematics().point]
+    assert float(np.linalg.norm(delta)) == pytest.approx(float(np.linalg.norm(offset)), abs=1e-9)
+    assert float(np.max(np.abs(delta - offset))) > 0.01, "the offset was added, not rotated"
+
+
+def test_every_wrist_joint_moves_the_pinch_point_by_more_than_a_centimetre(capsys) -> None:
+    """D-010's gap closed: wrist roll and yaw move nothing at the wrist origin and the fingertip.
+
+    0.3 rad on one joint at a time from the all-zero pose. The threshold is 10 mm, which is about
+    the width of the pinch on a horse: a joint that moves the checked point less than that is a
+    joint the box still cannot see.
+    """
+    base = fk.left_arm_points(np.zeros(JOINT_DIM))
+    wrist_joints = {"left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint"}
+    moved: dict[str, tuple[float, float]] = {}
+    for i, name in enumerate(fk.kinematics().names):
+        q = np.zeros(JOINT_DIM)
+        q[i] = 0.3
+        points = fk.left_arm_points(q)
+        moved[name] = (
+            float(np.linalg.norm(points[fk.kinematics().point] - base[fk.kinematics().point])),
+            float(np.linalg.norm(points[fk.PINCH_POINT] - base[fk.PINCH_POINT])),
+        )
+    with capsys.disabled():
+        print(f"\n0.3 rad on one joint, offset {tool_offset().tolist()} m: displacement of each checked point")
+        for name, (wrist, pinch) in moved.items():
+            print(f"  {name:28s} wrist {wrist * 1e3:7.2f} mm   pinch_point {pinch * 1e3:7.2f} mm")
+    for name in wrist_joints:
+        assert moved[name][1] > 0.01, f"{name} moves the pinch point only {moved[name][1] * 1e3:.2f} mm"
+    assert moved["left_wrist_roll_joint"][0] < 1e-9 and moved["left_wrist_yaw_joint"][0] < 1e-9
+    for name, (_wrist, pinch) in moved.items():
+        assert pinch > 0.01, f"{name} moves the pinch point only {pinch * 1e3:.2f} mm"
+
+
+def test_the_returned_points_are_fresh_copies() -> None:
+    points = fk.left_arm_points(np.zeros(JOINT_DIM))
+    for value in points.values():
+        value[:] = 99.0
+    again = fk.left_arm_points(np.zeros(JOINT_DIM))
+    assert max(float(np.max(np.abs(v))) for v in again.values()) < 99.0
+
+
+@pytest.mark.parametrize("args", [(np.zeros(6), 0.0), (np.zeros(8), 0.0), (np.zeros(7),), (np.zeros(9),)])
+def test_left_arm_points_refuses_a_wrong_sized_input(args: tuple) -> None:
+    with pytest.raises(ValueError, match="left_arm_points"):
+        fk.left_arm_points(*args)
+
+
+def test_left_arm_points_refuses_a_non_finite_joint() -> None:
+    q = np.zeros(JOINT_DIM)
+    q[2] = np.nan
+    with pytest.raises(ValueError, match="non-finite"):
+        fk.left_arm_points(q)
+
+
+def test_a_configured_point_the_fk_cannot_produce_is_a_config_error(monkeypatch) -> None:
+    """A typo in ``workspace_box_m.points`` must fail at build, not silently check fewer points."""
+    real = config.load
+
+    def patched(name: str, root=None):
+        data = real(name, root)
+        if name == "safety":
+            data["workspace_box_m"]["points"] = ["left_wrist_yaw_link", "fingertip_typo"]
+        return data
+
+    monkeypatch.setattr(fk.config, "load", patched)
+    with pytest.raises(config.ConfigError, match="fingertip_typo"):
+        fk._Kinematics()
+
+
+@pytest.mark.parametrize("offset", [None, [0.12, 0.0], "0.12", [0.12, 0.0, float("nan")]])
+def test_a_missing_or_malformed_tool_offset_is_a_config_error(monkeypatch, offset) -> None:
+    real = config.load
+
+    def patched(name: str, root=None):
+        data = real(name, root)
+        if name == "robot":
+            if offset is None:
+                data.pop("tool")
+            else:
+                data["tool"]["pinch_offset_m"] = offset
+        return data
+
+    monkeypatch.setattr(fk.config, "load", patched)
+    with pytest.raises(config.ConfigError, match="tool.pinch_offset_m"):
+        fk._Kinematics()
+
+
+def test_guard_refuses_a_pose_whose_wrist_is_inside_the_box_but_whose_fingertip_is_not(
+    tmp_path: Path, capsys
+) -> None:
+    """The whole point of T-043: shoulder pitch back tips the hand over the box's z ceiling.
+
+    The wrist origin is still comfortably inside; the fingertip, 120 mm out and 50 mm down the wrist
+    frame, is not. Before T-043 this command was admitted.
+    """
+    guard = Guard(SessionGate(session_file(tmp_path / "session.enable")), Envelope.from_config())
+    env = guard.envelope
+    q = np.zeros(JOINT_DIM)
+    q[0] = -0.70  # shoulder pitch: swings the forearm up and the hand over the top of the box
+    points = fk.left_arm_points(q)
+    wrist, pinch = points[env.box_point], points[fk.PINCH_POINT]
+    with capsys.disabled():
+        print(f"\nwrist-in / fingertip-out pose (shoulder pitch {q[0]} rad): wrist {np.round(wrist, 4).tolist()} m "
+              f"INSIDE, pinch_point {np.round(pinch, 4).tolist()} m outside "
+              f"{env.box_min.tolist()}..{env.box_max.tolist()}")
+    assert np.all(wrist >= env.box_min) and np.all(wrist <= env.box_max), "the wrist must be inside to prove anything"
+    with pytest.raises(SafetyViolation) as excinfo:
+        guard.admit(command(q), state(q), now_ns=0)
+    assert excinfo.value.rule == "workspace_box"
+    assert "pinch_point" in str(excinfo.value)
+    assert "on axis z by" in str(excinfo.value)
+    assert guard.admitted == 0
+
+    # ... and the same pose is admitted by an envelope that only knows the wrist, which is what the
+    # box did before T-043. This is the tightening, measured.
+    wrist_only = Envelope.from_config(fk.left_arm_fk)
+    assert wrist_only.check(command(q), state(q), now_ns=0).clamped == ()

@@ -51,6 +51,26 @@ waist:
     - {name: waist_yaw_joint, index: 12, limit_rad: [-2.618, 2.618], mjcf_line: 160, mjcf_qpos_index: 19}
   locked: UNMEASURED
 
+# --- tool ----------------------------------------------------------------------------------------
+# Geometry of the DexH15 relative to the arm, expressed in the WRIST FRAME: the body frame of
+# `left_wrist_yaw_link` in third_party/unitree_g1_mjcf/g1_29dof.xml, whose origin is where the hand
+# bolts on. Its axes are the axes of the three wrist joints (roll about +x, pitch about +y, yaw about
+# +z -- jnt_axis in that file); at the all-zero pose the frame coincides with the pelvis frame to
+# 2e-4, so there +x runs out along the forearm away from the elbow, +y to the robot's left and +z up.
+# runtime/fk.py rotates the offset below by the wrist body's own orientation, so the point it places
+# turns with the wrist instead of sliding along fixed pelvis axes.
+tool:
+  # The fingertip pinch point: where the thumb and index pads meet when the pinch scalar closes on a
+  # horse (CLAUDE.md 5.4). runtime/safety.py checks the workspace box here as well as at the wrist
+  # origin, which is the second checked point D-010 asked for: wrist roll and wrist yaw do not move
+  # the wrist origin at all, so a wrist-only box constrained 6 of the 8 commanded joints (T-043).
+  # PLACEHOLDER, not a measurement of this hand: 120 mm out along the wrist x axis and 50 mm down its
+  # z axis, i.e. the rough reach of a DexH15 with a pinch closed, chosen with enough lever arm off
+  # each wrist axis (>= 35 mm) that all three wrist joints actually move it. T-022 measures the real
+  # offset on the hardware and replaces these three numbers.
+  pinch_offset_m: [0.12, 0.0, -0.05]
+  pinch_offset_m_status: UNMEASURED
+
 # The 9-D action vector of CLAUDE.md 5.3 in order: 7 arm joints, waist yaw, pinch scalar. Anything
 # that builds or consumes an action uses this list, never a hard-coded ordering.
 action_order:

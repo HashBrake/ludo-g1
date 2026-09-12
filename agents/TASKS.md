@@ -1788,7 +1788,7 @@ result: six commits, one per origin file, each through the full pre-commit gate 
   added line, the new module's own __all__. Method and commands in BUILD_LOG.md.
 
 ## T-043  Second checked point: the fingertip pinch point in the workspace box (D-010, tightening)
-status: in_progress
+status: review
 priority: P1
 phase: 1
 owner: opus
@@ -1810,6 +1810,28 @@ acceptance:
   - tests pass with printed numbers; `git diff config/safety.yaml` shows only the added `points` key and its comment (Fable
     checks nothing was loosened); docs/safety.md updated
 notes: A tightening (two points must be inside instead of one). The real offset is measured in Phase 1 on the hand (T-022).
+result:
+  - commit: (recorded below after the gated commit); agents/BUILD_LOG.md 2026-09-12T09:42+07:00 has the full entry
+  - runtime/fk.py `left_arm_points` returns {left_wrist_yaw_link, pinch_point}; pinch_point = xpos + xmat @
+    config/robot.yaml tool.pinch_offset_m (rotated, so it follows wrist roll/pitch/yaw). `left_arm_fk` unchanged, so
+    teleop/retarget.py and tests/test_retarget.py are untouched and still solve against the wrist.
+  - 0.3 rad on one joint, displacement of pinch_point (wrist origin in brackets): shoulder_pitch 121.38 (84.97),
+    shoulder_roll 72.88 (57.95), shoulder_yaw 95.58 (59.71), elbow 92.61 (55.07), wrist_roll 14.94 (0.00),
+    wrist_pitch 51.82 (13.75), wrist_yaw 35.87 (0.00), waist_yaw 105.39 (74.43) mm. All 8 joints > 1 cm; the three
+    wrist joints were the criterion.
+  - Wrist-in/fingertip-out: shoulder pitch -0.70 rad puts the wrist at [0.2831, 0.1, 0.2647] m INSIDE and the
+    fingertip at [0.4059, 0.0756, 0.2998] m outside by 19.8 mm on z -> refused, "pinch_point at ... on axis z by
+    0.0198 m". The same command is admitted by a wrist-only envelope (asserted in the same test).
+  - Cross-check against an independent xquat evaluation on a fresh model, 20 random configurations: worst 1.110e-16 m.
+    left_arm_fk call time 10.9 us mean of 1000 (8.4 us at T-011).
+  - Teleop mock session: 917 ticks at 30.000 Hz, 0 refusals with the placeholder offset, so mock.pose_center_m was NOT
+    changed. Closest approach to a box face over the session: wrist 19.5 mm, pinch_point 16.1 mm.
+  - `git diff --stat config/safety.yaml`: 1 file changed, 7 insertions(+), 0 deletions(-) -- the `points` key and its
+    comment, nothing else, nothing loosened. config/robot.yaml gained the `tool:` block (UNMEASURED, T-022 measures it).
+  - Deviations (detail in BUILD_LOG): the placeholder offset is [0.12, 0.0, -0.05] not the task's [0.12, 0.0, -0.03],
+    which moves the fingertip only 8.97 mm under wrist roll and fails the > 1 cm criterion; xmat instead of xquat in the
+    implementation (xquat is the test's cross-check); tests/test_mock_drivers.py needed a 1-assertion change (the
+    fingertip leaves the box before the wrist on its ramp) or the full-suite pre-commit gate could not pass.
 
 ## T-044  Phase 1 session runbook
 status: in_progress

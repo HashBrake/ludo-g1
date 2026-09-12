@@ -84,6 +84,15 @@ def fk_linear(joints: np.ndarray) -> np.ndarray:
     return np.array([0.40, 0.25, -0.05]) + np.asarray(joints[:3], dtype=np.float64)
 
 
+def fk_two_points(joints: np.ndarray) -> dict[str, np.ndarray]:
+    """Mock multi-point fk (T-043): a wrist that never moves, and a tool the joints translate.
+
+    The shape :func:`runtime.fk.left_arm_points` returns -- a name for every entry of
+    ``workspace_box_m.points`` -- with the real kinematics replaced by something a test can aim.
+    """
+    return {"left_wrist_yaw_link": fk_center(joints), "pinch_point": fk_linear(joints)}
+
+
 def envelope(fk=fk_center, root: Path | None = None) -> Envelope:
     return Envelope.from_config(fk, root=root)
 
@@ -99,6 +108,7 @@ def bare_envelope() -> Envelope:
         box_max=env.box_max,
         box_frame=env.box_frame,
         box_point=env.box_point,
+        box_points=env.box_points,
         velocity_limit_rad_s=env.velocity_limit_rad_s,
         command_rate_limit_hz=env.command_rate_limit_hz,
         command_gap_reset_s=env.command_gap_reset_s,
@@ -478,6 +488,115 @@ def test_the_box_is_checked_on_the_clamped_target_not_the_raw_one() -> None:
     with pytest.raises(SafetyViolation) as excinfo:
         env.check(command(q), state(np.clip(q, env.lower, env.upper)), now_ns=0)
     assert excinfo.value.rule == "workspace_box"
+
+
+def test_the_box_refusal_names_the_point_the_axis_and_the_overshoot() -> None:
+    env = envelope(fk_linear)
+    q = np.zeros(JOINT_DIM)
+    q[1] = 0.4  # y to 0.65 m, past the box maximum of 0.58 m
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(q), state(q), now_ns=0)
+    message = str(excinfo.value)
+    assert "left_wrist_yaw_link at [0.4, 0.65, -0.05]" in message
+    assert "on axis y by 0.0700 m" in message
+
+
+# --------------------------------------------------------------------------------------------------
+# R3: the box is checked at every point of workspace_box_m.points (T-043, D-010)
+# --------------------------------------------------------------------------------------------------
+
+
+def test_the_configured_points_include_the_single_point_and_the_fingertip() -> None:
+    box = config.load("safety")["workspace_box_m"]
+    env = envelope()
+    assert env.box_points == tuple(str(p) for p in box["points"])
+    assert env.box_point in env.box_points, "dropping the wrist point would be a loosening"
+    assert len(env.box_points) == 2, "T-043: the wrist origin and the DexH15 fingertip"
+    assert repr(env).startswith(f"Envelope(points={list(env.box_points)}")
+
+
+def test_a_second_point_outside_the_box_is_refused_even_when_the_first_is_inside() -> None:
+    """The tightening: the wrist is parked in the middle of the box and the tool is not."""
+    env = envelope(fk_two_points)
+    q = np.zeros(JOINT_DIM)
+    q[0] = 0.4  # only fk_linear (the pinch point) moves; fk_center stays in the middle
+    assert np.all(fk_center(q) >= env.box_min) and np.all(fk_center(q) <= env.box_max)
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(q), state(q), now_ns=0)
+    assert excinfo.value.rule == "workspace_box"
+    assert "pinch_point at" in str(excinfo.value)
+
+
+def test_the_first_point_is_still_checked_when_the_second_is_inside() -> None:
+    """Both directions of "both must be inside": here the wrist leaves and the tool does not."""
+    def fk_wrist_out(joints: np.ndarray) -> dict[str, np.ndarray]:
+        return {"left_wrist_yaw_link": fk_linear(joints), "pinch_point": fk_center(joints)}
+
+    env = envelope(fk_wrist_out)
+    q = np.zeros(JOINT_DIM)
+    q[0] = 0.4
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(q), state(q), now_ns=0)
+    assert "left_wrist_yaw_link at" in str(excinfo.value)
+
+
+def test_both_points_inside_is_admitted() -> None:
+    env = envelope(fk_two_points)
+    assert env.check(command(0.0), state(0.0), now_ns=0).clamped == ()
+
+
+def test_an_fk_that_omits_a_configured_point_fails_closed() -> None:
+    """A dict fk that forgets the fingertip must not silently degrade to a one-point box."""
+    env = envelope(lambda joints: {"left_wrist_yaw_link": fk_center(joints)})
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(0.0), state(0.0), now_ns=0)
+    assert excinfo.value.rule == "workspace_box"
+    assert "missing ['pinch_point']" in str(excinfo.value)
+
+
+def test_an_fk_that_returns_a_bad_point_fails_closed() -> None:
+    env = envelope(lambda joints: {"left_wrist_yaw_link": fk_center(joints), "pinch_point": [np.nan, 0.0, 0.0]})
+    with pytest.raises(SafetyViolation) as excinfo:
+        env.check(command(0.0), state(0.0), now_ns=0)
+    assert "expected 3 finite metres" in str(excinfo.value) and "pinch_point" in str(excinfo.value)
+
+
+def test_a_single_point_fk_checks_only_the_configured_point() -> None:
+    """The legacy contract (:data:`runtime.safety.FkFn`): a bare (3,) is one point, named ``point``.
+
+    It is what the mock fks in this file return. Nothing on a real motion path uses it:
+    ``Envelope.from_config`` injects ``runtime.fk.left_arm_points``, which returns every point.
+    """
+    env = envelope(fk_center)
+    assert env.check(command(0.0), state(0.0), now_ns=0).clamped == ()
+    with pytest.raises(SafetyViolation, match="left_wrist_yaw_link"):
+        envelope(lambda _q: np.array([9.0, 0.25, -0.05])).check(command(0.0), state(0.0), now_ns=0)
+
+
+def test_envelope_refuses_a_points_list_without_the_single_point(tmp_path: Path) -> None:
+    def drop(safety: dict) -> None:
+        safety["workspace_box_m"]["points"] = ["pinch_point"]
+
+    with pytest.raises(config.ConfigError, match="does not contain"):
+        envelope(root=_config_root(tmp_path, drop))
+
+
+@pytest.mark.parametrize("bad", [[], "left_wrist_yaw_link", 3])
+def test_envelope_refuses_a_points_list_that_is_not_a_non_empty_list(tmp_path: Path, bad) -> None:
+    def replace(safety: dict) -> None:
+        safety["workspace_box_m"]["points"] = bad
+
+    with pytest.raises(config.ConfigError, match="must be a non-empty list"):
+        envelope(root=_config_root(tmp_path, replace))
+
+
+def test_a_config_without_points_falls_back_to_the_single_point(tmp_path: Path) -> None:
+    """``points`` was added by T-043; a config that predates it still builds, checking one point."""
+    def drop(safety: dict) -> None:
+        del safety["workspace_box_m"]["points"]
+
+    env = envelope(fk_center, root=_config_root(tmp_path, drop))
+    assert env.box_points == (env.box_point,)
 
 
 def test_an_envelope_without_fk_fails_closed() -> None:

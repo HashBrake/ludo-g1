@@ -4600,3 +4600,127 @@ what 5.5 asks for, and the detector's threshold and hold are config, not a traje
 `config/safety.yaml` untouched. Nothing under `third_party/` modified: the lerobot policies are
 wrapped and hooked from outside, never patched. Committed through the full pre-commit gate, no
 `--no-verify` (D-013).
+
+## T-043  Second checked point: the DexH15 fingertip in the workspace box  (2026-09-12T09:42+07:00)
+
+D-010 recorded that wrist roll and wrist yaw do not move the wrist origin at all, so the box
+constrained 6 of the 8 commanded joints and the hand could be tipped anywhere with the box none the
+wiser. The box is now checked at two points and a command is refused if either leaves. A tightening.
+
+### What changed
+
+- **`runtime/fk.py`** -- `left_arm_points(q7, waist_yaw) -> dict[str, np.ndarray]`, the new default
+  fk of the envelope, returning `{left_wrist_yaw_link: xpos, pinch_point: xpos + xmat @ offset}`.
+  `xmat` is the wrist body's rotation into the pelvis frame, so the offset is *rotated*, not added,
+  and the point follows wrist roll, pitch and yaw. (The task named `xquat`; `xmat` is the same
+  rotation in the field mujoco already fills, and the test cross-checks it against a `xquat`
+  evaluation on a separate model -- worst disagreement 1.1e-16 m.) `left_arm_fk` is unchanged in
+  behaviour and still returns the wrist point alone: `teleop/retarget.py` and its tests are
+  untouched. Both call shapes and every input check are shared through one `_joints` helper.
+  `_Kinematics` refuses to build if `tool.pinch_offset_m` is missing or is not 3 finite metres, or if
+  `workspace_box_m.points` names a point the module does not produce.
+- **`runtime/safety.py`** -- `Envelope.box_points` (from `workspace_box_m.points`, defaulting to
+  `[point]` when the key is absent) and the box loop now runs over every returned point.
+  `Envelope.from_config` refuses to build if `points` is not a non-empty list or does not contain
+  `point` (dropping it would be a loosening). The injected-fk contract accepts either a mapping --
+  which must cover every configured name, or the command is refused -- or a bare `(3,)`, which is a
+  single-point fk and is checked under `point` alone; that keeps the mock fks in `tests/` working and
+  nothing on a real motion path uses it. The refusal now names the point, the axis and the overshoot:
+  `pinch_point at [0.4059, 0.0756, 0.2998] m is outside the box [...] on axis z by 0.0198 m`.
+- **`config/safety.yaml`** -- one added key, `workspace_box_m.points: [left_wrist_yaw_link,
+  pinch_point]`, with its comment. `git diff --stat config/safety.yaml` = `7 +++++++`, 7 insertions,
+  0 deletions; nothing else in the file was touched and nothing was loosened.
+- **`config/robot.yaml`** -- a new `tool:` block with `pinch_offset_m: [0.12, 0.0, -0.05]` and
+  `pinch_offset_m_status: UNMEASURED`, plus the definition of the wrist frame it is expressed in.
+  `mock.pose_center_m` was **not** changed: it did not need to be (see the measurement below).
+- Tests in `tests/test_fk.py` (a new section), `tests/test_safety.py` (a new section), and
+  `tests/test_teleop_loop.py` (both points over the whole session). `docs/safety.md` rewritten where
+  it said "one point".
+
+### Measurements
+
+Displacement of each checked point for 0.3 rad on one joint from the all-zero pose, printed by
+`tests/test_fk.py::test_every_wrist_joint_moves_the_pinch_point_by_more_than_a_centimetre`
+(`.venv/bin/python -m pytest -q tests/test_fk.py -s`), offset `[0.12, 0.0, -0.05]` m:
+
+| joint | wrist origin | pinch_point |
+|---|---|---|
+| left_shoulder_pitch_joint | 84.97 mm | 121.38 mm |
+| left_shoulder_roll_joint | 57.95 mm | 72.88 mm |
+| left_shoulder_yaw_joint | 59.71 mm | 95.58 mm |
+| left_elbow_joint | 55.07 mm | 92.61 mm |
+| **left_wrist_roll_joint** | **0.00 mm** | **14.94 mm** |
+| left_wrist_pitch_joint | 13.75 mm | 51.82 mm |
+| **left_wrist_yaw_joint** | **0.00 mm** | **35.87 mm** |
+| waist_yaw_joint | 74.43 mm | 105.39 mm |
+
+All 8 joints now move a checked point by more than 10 mm; the criterion was > 1 cm for the three
+wrist joints. Other numbers:
+
+- Zero pose: wrist `[0.199774, 0.148661, 0.095233]` m, fingertip `[0.3198, 0.1486, 0.0452]` m, both
+  inside the placeholder box `[0.17, -0.08, -0.38] .. [0.63, 0.58, 0.28]`.
+- Wrist-in / fingertip-out pose, shoulder pitch **-0.70 rad**: wrist `[0.2831, 0.1, 0.2647]` m
+  INSIDE, fingertip `[0.4059, 0.0756, 0.2998]` m outside by 19.8 mm on z. Refused as
+  `workspace_box` naming `pinch_point`; the same command is **admitted** by an envelope built with
+  the old wrist-only fk, which is the tightening measured in one test.
+- Pinch point against an independent `xquat` evaluation on a fresh model, 20 random configurations
+  inside the safety limits: worst disagreement **1.110e-16 m**. Wrist point against its existing
+  independent evaluation: unchanged at **0.000e+00 m**.
+- `left_arm_fk` mean call time over 1000 calls: **10.9 us** (8.4 us at T-011; the second point costs
+  ~2.5 us), against 16.7 ms at the 60 Hz command rate limit.
+- Teleop mock session, 0.5 s holding + 30 s engaged, 917 ticks at 30.000 Hz: **0 refusals**, so the
+  placeholder offset needed no change to `mock.pose_center_m`. Extremes over the 917 admitted
+  commands: wrist `[0.1895, 0.1487, 0.095]` .. `[0.1998, 0.1587, 0.1002]` m, closest approach to a
+  box face 19.5 mm; fingertip `[0.1861, 0.1486, 0.045]` .. `[0.3198, 0.2787, 0.0502]` m, closest
+  approach 16.1 mm. Tracking error 0.00283 rad and IK p99 0.781 ms are unchanged.
+- `git diff --stat config/safety.yaml`: `config/safety.yaml | 7 +++++++`, 1 file changed,
+  7 insertions(+), 0 deletions(-).
+
+### Commands run
+
+```
+.venv/bin/ruff check .
+.venv/bin/python -m pytest -q tests/test_fk.py -s          # 40 passed
+.venv/bin/python -m pytest -q tests/test_safety.py         # 74 passed
+.venv/bin/python -m pytest -q tests/test_teleop_loop.py tests/test_mock_drivers.py -s   # 68 passed
+.venv/bin/python -m pytest -q                              # the full suite, in the pre-commit gate
+git diff --stat config/safety.yaml
+```
+
+### Disagreement and deviations
+
+1. **One file outside the allowed list had to change: `tests/test_mock_drivers.py`** (4 lines, one
+   assertion plus a comment). `test_a_target_that_walks_out_of_the_workspace_box_raises_safety_violation`
+   ramps shoulder pitch backwards until the box refuses, and asserted the message named
+   `left_wrist_yaw_link`. With the second point the fingertip leaves the box 5 ramp steps (0.1 rad)
+   before the wrist origin does, so the message now names `pinch_point`. The rule assertion is
+   unchanged and the test still tests what it tested. This is not optional: the pre-commit hook runs
+   the whole suite (D-013 forbids `--no-verify`), so leaving it red would have blocked the commit
+   entirely. Same category as the three test files T-033 had to touch for the same reason.
+2. **`xmat` instead of `xquat`.** The task said the rotation comes from the wrist body's `xquat`.
+   `data.xmat` is the same rotation as a matrix, is filled by the same `mj_kinematics` call, and needs
+   no quaternion algebra in the safety path. `xquat` is used in the *test* as the independent
+   cross-check instead, which is worth more there than in the implementation.
+3. **The placeholder offset is `[0.12, 0.0, -0.05]`, not the task's example `[0.12, 0.0, -0.03]`.**
+   With -0.03 the lever arm off the wrist roll axis is 30 mm and roll moves the fingertip only
+   **8.97 mm** for 0.3 rad, which fails the acceptance criterion (> 1 cm) -- and, more to the point,
+   would leave wrist roll nearly invisible to the box, which is the thing D-010 asked to fix. -0.05
+   gives 14.94 mm. Both numbers are guesses about an unmeasured hand; T-022 replaces them.
+4. **Two doc lines outside `docs/safety.md` are now stale** and I did not touch them because the file
+   list did not allow it: `docs/README.md:13` ("workspace box on the FK wrist point") and
+   `docs/config.md:111` ("applied to the wrist point"). Both are one-line edits. `docs/teleop.md`
+   lines 50 and 55 are still correct -- the IK targets the wrist and `left_arm_fk` is unchanged.
+5. `runtime/config.py` `REQUIRED_KEYS` does **not** list `workspace_box_m.points` or
+   `tool.pinch_offset_m`; per the task Fable adds them at review, as for T-033. Until then the
+   envelope falls back to the single point if the key is deleted (there is a test for that
+   fallback), while `runtime/fk.py` refuses to build without `tool.pinch_offset_m`.
+
+### Safety
+
+R1: nothing here sends anything. No motion command was issued, no hardware was touched, and
+`hardware/session.enable` was never created, edited or read; the tests that build a session file
+write it under `tmp_path`. R2: no scripted motion; the added numbers are a tool *offset* in a config
+file, not a trajectory. R3: `config/safety.yaml` gained exactly one key, which makes the envelope
+strictly stricter -- two points must now be inside where one had to be before -- and every existing
+number in that file is untouched (diff above: 7 insertions, 0 deletions). Nothing under
+`third_party/` was modified. Committed through the full pre-commit gate, no `--no-verify` (D-013).

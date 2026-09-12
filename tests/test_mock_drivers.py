@@ -295,7 +295,10 @@ def test_a_target_that_walks_out_of_the_workspace_box_raises_safety_violation() 
             q[0] = -0.02 * step
             arm.send_targets(command(q))
     assert exc.value.rule == "workspace_box"
-    assert "left_wrist_yaw_link" in exc.value.message
+    # T-043: the box is checked at every point of config/safety.yaml workspace_box_m.points, and on
+    # this ramp (shoulder pitch back, the hand tipping up over the box ceiling) the DexH15 fingertip
+    # leaves 5 steps before the wrist origin does. Which point it names is the tightening working.
+    assert "pinch_point" in exc.value.message
 
 
 def test_a_refused_command_does_not_move_the_simulated_arm() -> None:

@@ -38,6 +38,13 @@ workspace_box_m:
   # Applied to the wrist point (left_wrist_yaw_link origin). The hand and the horse stick out beyond
   # it, so the box is drawn with this margin of slack already removed from the reachable volume.
   point: left_wrist_yaw_link
+  # Every point in this list must be inside the box or the command is refused (T-043, D-010). A
+  # TIGHTENING: two points must be inside instead of one, and `point` above stays and must stay in
+  # this list. `pinch_point` is the DexH15 fingertip, which runtime/fk.py places by rotating
+  # config/robot.yaml `tool.pinch_offset_m` into the wrist frame; it is what constrains wrist roll
+  # and wrist yaw, neither of which moves the wrist origin. Removing a name from this list would be
+  # a loosening: human commit only, R3.
+  points: [left_wrist_yaw_link, pinch_point]
   margin_m: 0.02
   margin_m_status: UNMEASURED
 

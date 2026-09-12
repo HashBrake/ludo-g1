@@ -106,23 +106,28 @@ The envelope may only ever be tighter than the hardware.
    command of a stream — the reference is instead the **measured state**, aged by exactly
    `command_gap_reset_s`. That fresh case is the one rule 5 caps first, so in practice the velocity
    rule governs a stream that is already running and rule 5 governs how one starts.
-7. **Workspace box.** `fk(joints)` gives the position of `workspace_box_m.point`
-   (`left_wrist_yaw_link`) in `workspace_box_m.frame` (`g1_pelvis`); it must lie inside
-   `[min + margin_m, max - margin_m]`, or the command is *rejected*. The box is checked on the
-   **clamped** targets, so what is checked is exactly what would be sent. The frame, the point and
-   the fk are the next section.
+7. **Workspace box.** `fk(joints)` gives the position of every point named in
+   `workspace_box_m.points` — today the wrist origin `left_wrist_yaw_link` and the DexH15 fingertip
+   `pinch_point` — in `workspace_box_m.frame` (`g1_pelvis`); **each** must lie inside
+   `[min + margin_m, max - margin_m]`, or the command is *rejected* and the refusal names the point
+   that left, the axis, and by how far. The box is checked on the **clamped** targets, so what is
+   checked is exactly what would be sent. The frame, the points and the fk are the next section.
 
 Only then is the command recorded as the new reference and returned. A rejected command never becomes
 the reference.
 
-`fk` is injected (`Callable[[np.ndarray (8,)], np.ndarray (3,)]`, radians in, metres out).
-`Envelope.from_config()` injects the real one, `runtime.fk.left_arm_fk`, when no `fk` is passed;
-passing one explicitly overrides it, which is what the envelope's own tests do. An envelope built
-**without** one — the `Envelope(...)` constructor's default — fails closed: every `check()` raises
-`workspace_box`, because an unverifiable box is not a passed box. An `fk` that raises, or that
-returns anything but three finite numbers, is treated the same way.
+`fk` is injected (`Callable[[np.ndarray (8,)], dict[str, np.ndarray (3,)]]`, radians in, named metres
+out). `Envelope.from_config()` injects the real one, `runtime.fk.left_arm_points`, when no `fk` is
+passed; passing one explicitly overrides it, which is what the envelope's own tests do. A callable
+that returns a bare `(3,)` instead of a mapping is a **single-point fk**: only
+`workspace_box_m.point` is checked, under that name. That shape is what the mock fks in
+`tests/test_safety.py` return and nothing on a real motion path uses it. An envelope built
+**without** an fk at all — the `Envelope(...)` constructor's default — fails closed: every `check()`
+raises `workspace_box`, because an unverifiable box is not a passed box. An `fk` that raises, that
+omits one of `workspace_box_m.points`, or that returns anything but three finite numbers for a
+point, is treated the same way.
 
-### The box: frame, point, and the kinematics behind it
+### The box: frame, points, and the kinematics behind it
 
 **Frame (`g1_pelvis`).** The origin is the G1's pelvis body origin, the frame the robot's own state is
 naturally expressed in: **+x forward out of the chest, +y to the robot's left, +z up**. It is attached
@@ -131,12 +136,31 @@ this frame, which is exactly why the waist is one of the 8 joints the fk takes. 
 is bolted down, so this frame is also fixed relative to the table; the transform from it to the board
 frame is a Phase 1 measurement and is not needed here.
 
-**Point (`left_wrist_yaw_link`).** The box is checked on **one** point: the origin of the left wrist
-yaw link, which is where the DexH15 bolts on. The offset from there to the fingertip pinch point is
-`UNMEASURED` until Phase 1 (`config/hand.yaml`), so **the hand, the fingers and a held horse stick out
-past the box and are not themselves checked**. `config/safety.yaml` says the box is drawn with that
-slack already removed from the reachable volume, and `margin_m` (20 mm) is taken off every face on top
-of it. When Phase 1 measures the tool offset, the right fix is a second checked point, not a wider box.
+**Points (`workspace_box_m.points`).** The box is checked at **two** points, and a command is refused
+if either one is outside (T-043, the second point D-010 asked for; adding it was a tightening, so an
+agent could make it — removing a name from that list would be a loosening and needs a human commit).
+
+* **`left_wrist_yaw_link`** — the origin of the left wrist yaw link, which is where the DexH15 bolts
+  on. This is `workspace_box_m.point`, it must stay in `points` (the envelope refuses to build
+  otherwise), and it is what `runtime.fk.left_arm_fk` returns and what `teleop/retarget.py`'s IK
+  solves for.
+* **`pinch_point`** — the DexH15 fingertip pinch point: that same origin plus `config/robot.yaml`
+  `tool.pinch_offset_m` **rotated into the pelvis frame by the wrist body's own orientation**, so it
+  turns with the wrist. It is not a body of the MJCF; `runtime/fk.py` places it.
+
+Why the second point exists: wrist **roll** and wrist **yaw** cannot move the wrist origin at all
+(roll turns about the axis the rest of the chain lies along, yaw rotates that frame about itself), so
+a box checked at the wrist alone constrained only 6 of the 8 commanded joints, and the hand could be
+tipped anywhere with the box none the wiser (D-010). At 0.3 rad on one joint from the all-zero pose
+the fingertip moves **14.9 mm** for wrist roll, **51.8 mm** for pitch and **35.9 mm** for yaw
+(printed by `tests/test_fk.py`), so all 8 joints are now constrained.
+
+`tool.pinch_offset_m` is an `UNMEASURED` placeholder — `[0.12, 0.0, -0.05]` m in the wrist frame,
+about the reach of a DexH15 with a pinch closed — until **T-022** measures it on the hand. Until
+then the fingertip is checked at a plausible place rather than the right one, and **the rest of the
+hand, the other fingers and a held horse still stick out past the box and are not themselves
+checked**: `config/safety.yaml` says the box is drawn with that slack already removed from the
+reachable volume, and `margin_m` (20 mm) is taken off every face on top of it.
 
 **The box itself, in words** (all values in `config/safety.yaml`, all `UNMEASURED` placeholders):
 an axis-aligned box, 500 mm deep × 700 mm wide × 700 mm tall before the margin, spanning x
@@ -147,23 +171,28 @@ an axis-aligned box, 500 mm deep × 700 mm wide × 700 mm tall before the margin
 nothing else: not the robot's own torso, not the operator's side of the table, not above head height.
 The z span is a guess until the rig height is measured.
 
-**The kinematics (`runtime/fk.py`, T-011).** `left_arm_fk(q7, waist_yaw)` — also callable as
-`left_arm_fk(joints8)` in `action_order` — evaluates the vendored MJCF
+**The kinematics (`runtime/fk.py`, T-011, T-043).** `left_arm_points(q7, waist_yaw)` — also callable
+as `left_arm_points(joints8)` in `action_order`, and returning `{point name: (3,) metres}` —
+evaluates the vendored MJCF
 `third_party/unitree_g1_mjcf/g1_29dof.xml` (T-012, checksums in its `MANIFEST.txt`) with mujoco:
 the 8 commanded joints are written to the `mjcf_qpos_index` addresses `config/robot.yaml` records,
 every other joint is held at the model's `qpos0` (zero for all of them), the floating base is pinned
 to the origin with an identity quaternion so the result is already pelvis-relative, and
-`mj_kinematics` is called — kinematics only, no dynamics, contacts or gravity. The model is compiled
-once and cached; a call costs **8.4 µs** (mean of 1000, T-011), against a 16.7 ms budget at the 60 Hz
-command rate limit. It is the same model the arm IK solves on (D-006), so the box and the IK cannot
-disagree about geometry.
+`mj_kinematics` is called — kinematics only, no dynamics, contacts or gravity. The wrist body's
+position (`xpos`) is the first point and `xpos + xmat @ tool.pinch_offset_m` is the second. The model
+is compiled once and cached; a call costs **10.9 µs** (mean of 1000, T-043; 8.4 µs at T-011, before
+the second point), against a 16.7 ms budget at the 60 Hz command rate limit. It is the same model the
+arm IK solves on (D-006), so the box and the IK cannot disagree about geometry.
+`left_arm_fk(q7, waist_yaw)` still returns the wrist point alone and is unchanged, which is what
+`teleop/retarget.py` and anything else asking "where is the wrist" wants.
 
 **Where the all-zero pose sits.** At all 8 joints zero the wrist is at
-**(0.1998, 0.1487, 0.0952) m**, which is **inside** the current placeholder box (`tests/test_fk.py`
-prints and asserts this). The G1's zero pose is not the arm hanging down — shoulder pitch zero points
-the upper arm forward — so a zeroed arm reaching into the box is expected, not a sign the box is
-wrong. It does mean the box does **not** by itself stop a command that parks the arm at zero; that is
-a fact for the envelope review, and the numbers stay as committed until a human changes them (R3).
+**(0.1998, 0.1487, 0.0952) m** and the fingertip at **(0.3198, 0.1486, 0.0452) m**, both **inside**
+the current placeholder box (`tests/test_fk.py` prints and asserts this). The G1's zero pose is not
+the arm hanging down — shoulder pitch zero points the upper arm forward — so a zeroed arm reaching
+into the box is expected, not a sign the box is wrong. It does mean the box does **not** by itself
+stop a command that parks the arm at zero; that is a fact for the envelope review, and the numbers
+stay as committed until a human changes them (R3).
 
 `Envelope.reset()` drops the rate and velocity reference; a driver calls it when it releases and
 re-takes the arm. `Envelope.watchdog_timeout_s` is exposed here for the driver that implements the

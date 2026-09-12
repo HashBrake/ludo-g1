@@ -12,7 +12,9 @@ Three pieces, documented for humans in ``docs/safety.md``:
     R3. Joint limits, waist clamp, workspace box, joint velocity limit, first-command step cap,
     command rate limit and the pinch scalar range and slew, all read from ``config/safety.yaml``.
     Out-of-limit joint targets and an out-of-range pinch are clamped and reported; a step, velocity,
-    box, rate or non-finite violation raises :class:`SafetyViolation`.
+    box, rate or non-finite violation raises :class:`SafetyViolation`. The box is checked at every
+    point of ``workspace_box_m.points`` -- the wrist origin and the DexH15 fingertip pinch point
+    (T-043) -- and a command is refused if any one of them is outside.
 
 :class:`Guard`
     The two together. ``Guard.admit`` is what a driver calls; there is no other way in, and there is
@@ -27,7 +29,7 @@ monotonic. The two clocks are never mixed.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,11 +53,17 @@ REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
 _log = get_logger("runtime.safety")
 
-#: Forward kinematics of the 8 commanded joints to the workspace-box point (``workspace_box_m.point``
-#: in the ``workspace_box_m.frame`` frame), in metres. :func:`runtime.fk.left_arm_fk` is the real one
-#: and is what :meth:`Envelope.from_config` uses when none is passed; tests inject a mock. An envelope
-#: built without one fails closed: every check raises.
-FkFn = Callable[[np.ndarray], np.ndarray]
+#: Forward kinematics of the 8 commanded joints to the workspace-box points, in metres, in the
+#: ``workspace_box_m.frame`` frame. Two return shapes are accepted (T-043):
+#:
+#: * a mapping name -> ``(3,)``, which must cover every name in ``workspace_box_m.points``, and each
+#:   of those points is checked against the box. :func:`runtime.fk.left_arm_points` is the real one
+#:   and is what :meth:`Envelope.from_config` uses when none is passed;
+#: * a bare ``(3,)``, a single-point fk: only ``workspace_box_m.point`` is checked, under that name.
+#:   Tests inject one of these; nothing on a real motion path does.
+#:
+#: An envelope built without an fk at all fails closed: every check raises.
+FkFn = Callable[[np.ndarray], "np.ndarray | Mapping[str, np.ndarray]"]
 
 
 class SafetyViolation(RuntimeError):
@@ -304,6 +312,7 @@ class Envelope:
         box_max: np.ndarray,
         box_frame: str,
         box_point: str,
+        box_points: tuple[str, ...] | None = None,
         velocity_limit_rad_s: float,
         command_rate_limit_hz: float,
         command_gap_reset_s: float,
@@ -322,6 +331,7 @@ class Envelope:
         self.box_max = np.asarray(box_max, dtype=np.float64)
         self.box_frame = box_frame
         self.box_point = box_point
+        self.box_points = (box_point,) if box_points is None else tuple(str(p) for p in box_points)
         self.velocity_limit_rad_s = float(velocity_limit_rad_s)
         self.command_rate_limit_hz = float(command_rate_limit_hz)
         self.command_gap_reset_s = float(command_gap_reset_s)
@@ -335,6 +345,11 @@ class Envelope:
         self._last_pinch: float | None = None
         if np.any(self.upper < self.lower):
             raise config.ConfigError("config/safety.yaml: a joint limit has upper < lower")
+        if self.box_point not in self.box_points:
+            raise config.ConfigError(
+                f"config/safety.yaml: workspace_box_m.points {list(self.box_points)} does not contain "
+                f"workspace_box_m.point {self.box_point!r}; dropping it would loosen the box (R3)"
+            )
         if np.any(self.box_max <= self.box_min):
             raise config.ConfigError(
                 f"config/safety.yaml: workspace box is empty after margin: {self.box_min} .. {self.box_max}"
@@ -346,7 +361,7 @@ class Envelope:
 
     def __repr__(self) -> str:
         return (
-            f"Envelope(point={self.box_point!r} in {self.box_frame!r}, "
+            f"Envelope(points={list(self.box_points)} in {self.box_frame!r}, "
             f"box={self.box_min.tolist()}..{self.box_max.tolist()}, "
             f"v<={self.velocity_limit_rad_s} rad/s, rate<={self.command_rate_limit_hz} Hz, "
             f"fk={'set' if self.fk is not None else 'MISSING'})"
@@ -358,18 +373,18 @@ class Envelope:
     def from_config(cls, fk: FkFn | None = None, *, root: Path | str | None = None) -> Envelope:
         """Build the envelope from ``config/safety.yaml``, cross-checked against ``config/robot.yaml``.
 
-        ``fk=None`` means the real forward kinematics, :func:`runtime.fk.left_arm_fk` (T-011); pass
-        one explicitly to override it, which is what the tests do. Constructing an :class:`Envelope`
-        directly still defaults to no fk at all, and such an envelope fails closed.
+        ``fk=None`` means the real forward kinematics, :func:`runtime.fk.left_arm_points` (T-011,
+        T-043); pass one explicitly to override it, which is what the tests do. Constructing an
+        :class:`Envelope` directly still defaults to no fk at all, and such an envelope fails closed.
 
         Refuses to build (``ConfigError``) when the two files disagree on the commanded joints or
         their order, or when a safety limit is wider than the mechanical range of its joint: the
         envelope may only ever be tighter than the hardware.
         """
         if fk is None:
-            from runtime.fk import left_arm_fk  # imported here so mujoco is not pulled in to read a state
+            from runtime.fk import left_arm_points  # imported here so mujoco is not pulled in to read a state
 
-            fk = left_arm_fk
+            fk = left_arm_points
         safety = config.load("safety", root=root)
         robot = config.load("robot", root=root)
         names = _joint_names(robot)
@@ -411,6 +426,11 @@ class Envelope:
         box_max = np.asarray([float(v) for v in box["max"]], dtype=np.float64) - margin
         if box_min.shape != (3,) or box_max.shape != (3,):
             raise config.ConfigError("config/safety.yaml: workspace_box_m.min/max must hold 3 numbers")
+        points = box.get("points", [box["point"]])
+        if isinstance(points, str) or not isinstance(points, (list, tuple)) or not points:
+            raise config.ConfigError(
+                f"config/safety.yaml: workspace_box_m.points must be a non-empty list of point names, got {points!r}"
+            )
 
         hand = safety["hand"]
         return cls(
@@ -421,6 +441,7 @@ class Envelope:
             box_max=box_max,
             box_frame=str(box["frame"]),
             box_point=str(box["point"]),
+            box_points=tuple(str(p) for p in points),
             velocity_limit_rad_s=float(safety["joint_velocity_limit_rad_s"]),
             command_rate_limit_hz=float(safety["command_rate_limit_hz"]),
             command_gap_reset_s=float(safety["command_gap_reset_s"]),
@@ -519,14 +540,17 @@ class Envelope:
                 f"reference: {source})",
             )
 
-        # 6. workspace box on the commanded point
-        point = self._forward(clipped)
-        if np.any(point < self.box_min) or np.any(point > self.box_max):
-            raise self._reject(
-                "workspace_box",
-                f"{self.box_point} at {np.round(point, 4).tolist()} m is outside the box "
-                f"{self.box_min.tolist()} .. {self.box_max.tolist()} in frame {self.box_frame}",
-            )
+        # 6. workspace box, on every checked point of the commanded pose (T-043)
+        for name, point in self._forward(clipped).items():
+            outside = np.maximum(self.box_min - point, point - self.box_max)
+            axis = int(np.argmax(outside))
+            if outside[axis] > 0:
+                raise self._reject(
+                    "workspace_box",
+                    f"{name} at {np.round(point, 4).tolist()} m is outside the box "
+                    f"{self.box_min.tolist()} .. {self.box_max.tolist()} in frame {self.box_frame} "
+                    f"on axis {'xyz'[axis]} by {outside[axis]:.4f} m",
+                )
 
         self._last_ns = now_ns
         self._last_joints = clipped
@@ -551,23 +575,45 @@ class Envelope:
         gap = self.command_gap_reset_s
         return state.joints, gap, f"measured state, fresh after {gap:g} s", True
 
-    def _forward(self, joints: np.ndarray) -> np.ndarray:
-        """The workspace-box point for ``joints``. Fails closed when fk is missing or misbehaves."""
+    def _forward(self, joints: np.ndarray) -> dict[str, np.ndarray]:
+        """The workspace-box points for ``joints``, by name, in ``workspace_box_m.points`` order.
+
+        Fails closed when the fk is missing, raises, omits a configured point, or returns anything
+        but three finite metres for one. An fk that returns a bare array is a single-point fk and
+        only ``workspace_box_m.point`` is checked; see :data:`FkFn`.
+        """
         if self.fk is None:
             raise self._reject(
                 "workspace_box",
                 "no forward kinematics injected, so the workspace box cannot be checked "
-                "(Envelope.from_config() injects runtime.fk.left_arm_fk by default)",
+                "(Envelope.from_config() injects runtime.fk.left_arm_points by default)",
             )
         try:
-            point = np.asarray(self.fk(joints), dtype=np.float64).reshape(-1)
+            result = self.fk(joints)
+            if isinstance(result, Mapping):
+                missing = [name for name in self.box_points if name not in result]
+                if missing:
+                    raise self._reject(
+                        "workspace_box",
+                        f"forward kinematics returned points {sorted(result)}, missing {missing} of "
+                        f"workspace_box_m.points {list(self.box_points)}",
+                    )
+                raw = {name: result[name] for name in self.box_points}
+            else:
+                raw = {self.box_point: result}
+            points: dict[str, np.ndarray] = {}
+            for name, value in raw.items():
+                point = np.asarray(value, dtype=np.float64).reshape(-1)
+                if point.shape != (3,) or not np.all(np.isfinite(point)):
+                    raise self._reject(
+                        "workspace_box", f"forward kinematics returned {point!r} for {name}, expected 3 finite metres"
+                    )
+                points[name] = point
+            return points
         except SafetyViolation:
             raise
         except Exception as exc:
             raise self._reject("workspace_box", f"forward kinematics raised {type(exc).__name__}: {exc}") from exc
-        if point.shape != (3,) or not np.all(np.isfinite(point)):
-            raise self._reject("workspace_box", f"forward kinematics returned {point!r}, expected 3 finite metres")
-        return point
 
     def _reject(self, rule: str, message: str) -> SafetyViolation:
         _log.warning("safety_reject", rule=rule, detail=message)
