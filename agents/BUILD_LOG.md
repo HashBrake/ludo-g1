@@ -4323,3 +4323,157 @@ R2: no scripted motion and no literal joint target; `policy/` and `runtime/` imp
 its sibling `stream_stats`. R3: `config/safety.yaml` read, never written -- its hash is unchanged.
 Nothing under `third_party/` touched. Committed through the full pre-commit gate, no `--no-verify`
 (D-013).
+
+---
+
+## T-042  Module splits per D-013 (no behaviour change)  (opus, 2026-09-12T15:40+07:00)
+
+Six pure moves, one commit per origin file, each through the full pre-commit gate (ruff + the whole
+suite; no `--no-verify`, D-013). No test file changed: every origin module imports the moved names
+back, so every public *and* private name a test imports still resolves from where it did.
+
+### What moved, and the line counts
+
+| commit | origin (before -> after) | new module | what moved |
+|---|---|---|---|
+| `be208d4` | `drivers/g1_arm.py` 332 -> 297 | `drivers/dds.py` 60 | `ArmUnavailable`, `_DDS_LOCK`, `_DDS_BINDING`, `dds_binding`, `default_subscriber` |
+| `7fd9ce0` | `drivers/dexh15.py` 485 -> 441, `drivers/pxcap.py` 483 -> 483 | `drivers/serial_discovery.py` 61 | `SERIAL_GLOBS`, `_usb_id_for`, `find_port` |
+| `ac8ffc1` | `teleop/loop.py` 388 -> 286 | `teleop/clutch.py` 126 | `ClutchState`, `Clutch` |
+| `c150886` | `policy/train.py` 849 -> 674 | `policy/train_io.py` 218 | checkpoint constants, `DiskGuardError`, `checkpoint_bytes`, `check_checkpoint_disk`, `atomic_save`, `_step_of`, `prune_step_checkpoints`, `write_step_checkpoint`, `EMA` |
+| `96aa6dd` | `board/perception.py` 1001 -> 809 | `board/detect.py` 216 | `PerceptionError`, `Pose`, `Placement`, `Bowl`, `Rules`, `_hsv_pair`, `_positive`, `_band`, `load_rules`, `_area_px` |
+| `4f308a0` | `tools/hardware_checks/session_preflight.py` 362 -> 307 | `tools/hardware_checks/preflight_report.py` 78 | `PASS`/`FAIL`/`SKIP`, `MOTION_KEYS`, `Row`, `exit_code`, `render` |
+
+`drivers/pxcap.py` keeps its line count: its only change is the one import line, which now names
+`drivers.serial_discovery` instead of reaching across into `drivers.dexh15`.
+
+Ruff's own `--fix` removed the imports the moved code took with it and nothing else: `enum.Enum` and
+`runtime.types.JOINT_DIM` from `teleop/loop.py`, `os` and `shutil` from `policy/train.py`,
+`runtime.config` from `board/perception.py`, `dataclasses.dataclass` from `session_preflight.py`.
+
+### Method: how "no logic changed" was proved
+
+For each origin+new pair, a throwaway script parses a file with `ast`, deletes every
+`Import`/`ImportFrom` node and every docstring `Expr`, then `ast.unparse`s each remaining top-level
+statement and emits the resulting logical lines sorted. `ast.unparse` erases all formatting,
+comments, line breaks and string quoting style, so what is left is the statements themselves. The
+script, verbatim, so the check is reproducible:
+
+```python
+import ast, sys
+
+def strip(node):
+    body = getattr(node, "body", None)
+    if isinstance(body, list):
+        out = []
+        for i, stmt in enumerate(body):
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                continue
+            if (i == 0 and isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                             ast.AsyncFunctionDef))
+                    and isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)):
+                continue
+            strip(stmt)
+            out.append(stmt)
+        node.body = out or [ast.Pass()]
+    for field in ("orelse", "finalbody"):
+        sub = getattr(node, field, None)
+        if isinstance(sub, list):
+            kept = []
+            for stmt in sub:
+                if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                    continue
+                strip(stmt)
+                kept.append(stmt)
+            setattr(node, field, kept)
+    for handler in getattr(node, "handlers", []) or []:
+        strip(handler)
+
+got = []
+for path in sys.argv[1:]:
+    tree = ast.parse(open(path).read())
+    strip(tree)
+    got += [ln.strip() for st in tree.body for ln in ast.unparse(st).splitlines() if ln.strip()]
+print("\n".join(sorted(got)))
+```
+
+The check is:
+
+```
+.venv/bin/python normalize.py <origin at HEAD-before-the-split>            > before.txt
+.venv/bin/python normalize.py <origin after> <new module>                  > after.txt
+diff before.txt after.txt
+```
+
+For all six pairs the diff is exactly **one added line**: the new module's own `__all__`, which is
+the re-export declaration the acceptance criterion allows. Nothing else -- no statement added,
+removed or altered, in either file of the pair. (The origin's `__all__` is unchanged in every case,
+which is why the re-exported names still appear there.) The docstrings that *were* edited are the
+one-line pointers to the new module, and they cannot hide a logic change because the comparison
+strips docstrings before comparing.
+
+Test count, `.venv/bin/python -m pytest --collect-only -q | tail -1`:
+**810 tests collected** before the first split (at `123f951`) and **810 tests collected** after the
+sixth. Each of the six pre-commit runs reported the same suite: 795-796 passed, 14-15 skipped (the
+extra skip is `tests/test_train.py:361`, the DDIM wall-clock ordering assertion that skips itself
+when the 1-minute load average is above 4 -- the other builder's worktree was running).
+
+`git diff --stat 123f951..HEAD`: 18 files, 811 insertions, 646 deletions, and the 165-line gap is
+the six new modules' docstrings, imports and `__all__` blocks plus the eleven doc lines.
+
+### Commands run
+
+```
+.venv/bin/python -m pytest --collect-only -q | tail -1            # 810, before and after
+.venv/bin/python normalize.py ... ; diff before.txt after.txt     # per split, see above
+.venv/bin/ruff check .                                            # clean before every commit
+.venv/bin/python -m pytest tests/test_g1_arm.py tests/test_mock_drivers.py -q          # 68 passed, 3 skipped
+.venv/bin/python -m pytest tests/test_dexh15.py tests/test_pxcap.py tests/test_mock_drivers.py -q  # 112 passed, 5 skipped
+.venv/bin/python -m pytest tests/test_teleop_loop.py tests/test_operator_ui.py -q      # 37 passed
+.venv/bin/python -m pytest tests/test_train.py -q                                      # 23 passed, 1 skipped
+.venv/bin/python -m pytest tests/test_perception.py tests/test_calibration.py -q       # 85 passed
+.venv/bin/python -m pytest tests/test_session_preflight.py -q                          # 29 passed
+.venv/bin/python tools/hardware_checks/session_preflight.py --no-devices               # exit 1, "0/26 ... NO-GO"
+```
+
+(26 motion-relevant rows rather than T-041's 28 because `--no-devices` drops the `arm` and `hand`
+device rows; the 26 config and e-stop rows are unchanged.)
+
+### Docs
+
+One line each: `docs/drivers.md` (twice -- `drivers/dds.py` in the DDS section and
+`drivers/serial_discovery.py` in the hand's discovery paragraph), `docs/teleop.md` (`teleop/clutch.py`),
+`docs/policy.md` (`policy/train_io.py`), `docs/board.md` (`board/detect.py`), `docs/safety.md`
+(`preflight_report.py`). Each says the origin still re-exports the names.
+
+### Judgement calls, stated rather than hidden
+
+- **`board/detect.py` took only the module-level detection code.** `TopCameraPerception._blobs`,
+  `_centroid_px`, `_scale_at` and `_resolve_cells` are methods; moving them would have had to rewrite
+  their call sites (`self._centroid_px(...)` -> `centroid_px(...)`), which is exactly the kind of
+  edit the proof above is designed to forbid. What moved is the rules block the review named plus
+  `_area_px`, the one free function in the blob path. `perception.py` is 809 lines, still the largest
+  module in the repo; taking it below ~600 means moving `TopCameraPerception` itself, which is a
+  behaviour-risk task and not this one.
+- **`perception.py` imports `_area_px`, a private name, across modules.** The alternative is renaming
+  it to `area_px`, which changes two logic lines and breaks the proof. Left private; if Fable wants
+  it public that is a one-line follow-up.
+- **`policy/train.py`'s `InjectedFault` stayed.** It is `--fault-at-step`'s crash, a property of the
+  training loop, not of checkpoint I/O. `CHECKPOINT_DIR` and `LOG_DIR` stayed for the same reason
+  (they are the CLI's defaults).
+- **Both `resolve_port` functions stayed** in `dexh15.py` and `pxcap.py`. They look alike, but each
+  names its own config key and raises its own exception; merging them would be a behaviour change,
+  not a move. Only the node search is shared.
+- **`policy/_shared.py` was not touched** (another builder owns it this cycle, along with
+  `diffusion.py`, `act.py`, `dataset.py`, `runtime/controller.py` and their tests). `train_io.py`
+  needs no helper from it.
+
+### Safety
+R1: nothing in this task sends, or can send, a motion command; no `Guard` was constructed, no writer
+exists in any moved code, and `hardware/session.enable` was never created, edited, copied or read.
+R2: no scripted motion, no literal joint target, no waypoint list; `policy/` and `runtime/` still
+import nothing from `tools/hardware_checks/`, and the new `tools/hardware_checks/preflight_report.py`
+imports nothing from the repo at all. R3: `config/safety.yaml` untouched (not in the diff).
+`requirements.txt`, `pyproject.toml`, `config/`, `agents/DECISIONS.md`, `agents/REVIEW.md` and
+`agents/STATE.md` untouched; nothing under `third_party/` touched. Every commit staged file-by-file
+by name and went through the full gate; no `--no-verify` (D-013).

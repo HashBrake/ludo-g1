@@ -1733,7 +1733,7 @@ result: (opus, 2026-09-12T23:10+07:00, commit 22ef3c4; branch wt/t041)
     because no config file in the touch-list is the right home for it.
 
 ## T-042  Module splits per D-013 (no behaviour change)
-status: in_progress
+status: review
 priority: P2
 phase: 1
 owner: opus
@@ -1750,3 +1750,15 @@ acceptance:
   - full suite passes with the same test count; `git diff --stat` shows moves, and a `grep` proves no logic line changed
     beyond imports (describe the method)
 notes: Pure refactor; do it in one commit per file so a revert is cheap.
+result: six commits, one per origin file, each through the full pre-commit gate (no --no-verify):
+  be208d4 drivers/g1_arm.py 332 -> 297 + drivers/dds.py 60 (ArmUnavailable, dds_binding, default_subscriber)
+  7fd9ce0 drivers/dexh15.py 485 -> 441, drivers/pxcap.py 483 -> 483 + drivers/serial_discovery.py 61
+  ac8ffc1 teleop/loop.py 388 -> 286 + teleop/clutch.py 126 (ClutchState, Clutch)
+  c150886 policy/train.py 849 -> 674 + policy/train_io.py 218 (checkpoints, disk guard, EMA)
+  96aa6dd board/perception.py 1001 -> 809 + board/detect.py 216 (rules block, _area_px)
+  4f308a0 tools/hardware_checks/session_preflight.py 362 -> 307 + preflight_report.py 78 (MOTION_KEYS, Row, render)
+  no test file changed: every origin re-exports what its tests import, private names included.
+  test count identical: `pytest --collect-only -q` reports 810 before (at 123f951) and 810 after.
+  no-logic-change proof: ast-parse each file, drop imports and docstrings, ast.unparse, sort the
+  logical lines, and diff origin-before against (origin-after + new module). All six diffs are one
+  added line, the new module's own __all__. Method and commands in BUILD_LOG.md.
