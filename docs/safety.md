@@ -200,7 +200,8 @@ files, opens each device through the read-only drivers for three seconds, and se
 ```
 
 Each row is PASS, FAIL or SKIP, and the rows marked `*` are the ones the exit code is made of: the
-placeholders in `session_preflight.MOTION_KEYS` that make a motion command wrong or impossible while
+placeholders in `MOTION_KEYS` (in `tools/hardware_checks/preflight_report.py` since T-042, with the
+table renderer and the `Row`; `session_preflight` imports them back) that make a motion command wrong or impossible while
 they are guesses (the envelope box, the joint and waist limits, the velocity and first-step caps, the
 DDS interface, the arm gains, the two actuation and two teleop latencies, the controller-to-pelvis
 transform, the hand's bus and pinch poses, the top camera and the AprilTag geometry), the e-stop the
