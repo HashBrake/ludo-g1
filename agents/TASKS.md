@@ -1812,7 +1812,7 @@ acceptance:
 notes: A tightening (two points must be inside instead of one). The real offset is measured in Phase 1 on the hand (T-022).
 
 ## T-044  Phase 1 session runbook
-status: in_progress
+status: review
 priority: P1
 phase: 1
 owner: opus
@@ -1832,3 +1832,37 @@ acceptance:
   - every command in the runbook exists and runs with --help (a test greps the runbook for `.venv/bin/python ...` lines and
     runs each with --help, exit 0); every H-item and Q-item referenced exists in the agents files (test)
 notes: Docs only, plus the test. This is what Alois reads before the first hardware day.
+result: (opus, 2026-09-12, branch wt/t044, commit COMMITHASH)
+  - docs/runbook_phase1.md (459 lines): day 0 baseline, day 1 read-only (H-002, H-003, H-004a/b,
+    list_devices, the six config keys to fill, seven 600 s stream_stats runs, pytest -m readonly,
+    session_preflight --json), day 2 calibration (H-001 stills, board.calibration on both, the
+    perception comparison in prose because board/perception.py has no CLI), day 3 motion (3.0 Q-004
+    answered and committed into config/safety.yaml session.checklist by a human, 3.1 mock rehearsal,
+    3.2 preflight GO, 3.3 enable_session.py by a human, 3.4 T-021 latency, 3.5 T-024 envelope with
+    T-043 (in progress) noted for the pinch_point refusals, 3.6 T-022 hand bench, 3.7 T-023
+    reachability, 3.8 close the session), then the abort section. All 20 steps carry a `Check:`;
+    3.4-3.7 each state what moves and the BUILD_LOG entry (what moved, the envelope in force with
+    runtime.config.config_hash("safety"), the session, the outcome, a SAFETY INCIDENT: line on
+    contact or out-of-envelope motion, which stops the loop under R4(c)). Abort: seven conditions,
+    the human's three actions (the e-stop named in Q-004's answer, Ctrl-C, delete the session file),
+    what the agent writes before any retry, and what happens after. A "what the agents do with the
+    results" paragraph per day names the config keys that become MEASURED, the docs/sdks.md verdicts
+    (A2/A3/A4), the DECISIONS entries Fable writes and the tasks that close.
+  - docs/README.md: one index row. tests/test_runbook.py (196 lines): the acceptance test.
+  - `.venv/bin/python -m pytest tests/test_runbook.py -q` -> 32 passed, 1 skipped in 8.19 s.
+    `.venv/bin/ruff check .` -> All checks passed! PASS
+  - acceptance 1: the parametrised test collected 22 `.venv/bin/python` lines from the fenced blocks
+    and ran each with --help from the repo root (exit 0, non-empty stdout): 21 ran, 1 skipped.
+    Entry points: list_devices.py, stream_stats.py, brio_still.py, session_preflight.py,
+    enable_session.py, -m pytest, -m board.calibration, -m teleop.loop, -m runtime.controller.
+  - acceptance 2: every H-, Q-, D- and T- id in the runbook is defined as a heading in the agents
+    file that owns it (H-001..H-004; Q-002, Q-004, Q-005, Q-007, Q-010; D-002, D-004, D-007, D-010,
+    D-018; T-008, T-010, T-018..T-024, T-041, T-043, T-044). PASS
+  - deviation (BUILD_LOG has the argument): enable_session.py --help exits 2, not 0 -- it refuses
+    every argument by design so nothing but a human at a terminal can write hardware/session.enable.
+    The parametrised test skips it by name and test_enable_session_rejects_arguments asserts the
+    stricter behaviour (exit 2 plus the usage line). Every other command meets the criterion as
+    written. The runbook contains no `python -c` snippet (a test asserts it), because one cannot be
+    checked with --help; the config hash is named in prose as runtime.config.config_hash("safety").
+  - R1/R2/R3: no motion command is possible from anything added; --help returns inside argparse.
+    config/safety.yaml untouched. Only the five files in the touch list changed.
