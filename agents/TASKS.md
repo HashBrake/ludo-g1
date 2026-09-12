@@ -1733,7 +1733,7 @@ result: (opus, 2026-09-12T23:10+07:00, commit 22ef3c4; branch wt/t041)
     because no config file in the touch-list is the right home for it.
 
 ## T-042  Module splits per D-013 (no behaviour change)
-status: review
+status: accepted
 priority: P2
 phase: 1
 owner: opus
@@ -1762,3 +1762,49 @@ result: six commits, one per origin file, each through the full pre-commit gate 
   no-logic-change proof: ast-parse each file, drop imports and docstrings, ast.unparse, sort the
   logical lines, and diff origin-before against (origin-after + new module). All six diffs are one
   added line, the new module's own __all__. Method and commands in BUILD_LOG.md.
+
+## T-043  Second checked point: the fingertip pinch point in the workspace box (D-010, tightening)
+status: in_progress
+priority: P1
+phase: 1
+owner: opus
+depends_on: T-011, T-033
+hardware: none
+deliverables:
+  - runtime/fk.py: `left_arm_points(q7, waist_yaw) -> dict[str, np.ndarray]` returning the wrist point and the fingertip pinch
+    point = wrist frame transformed by config/robot.yaml `tool.pinch_offset_m` (new UNMEASURED placeholder, e.g.
+    [0.12, 0.0, -0.03] in the wrist frame, with the frame definition documented; a rotation is applied from the wrist body's
+    xquat via mujoco, so the point follows wrist roll/pitch/yaw, which is what D-010 found missing)
+  - runtime/safety.py: the workspace box is checked at BOTH points (config/safety.yaml `workspace_box_m.points:
+    [left_wrist_yaw_link, pinch_point]`, an added key; the existing `point` stays for compatibility and both must be inside);
+    SafetyViolation names which point left the box; nothing else in config/safety.yaml changes
+  - tests: wrist roll/pitch/yaw now move the pinch point (each by > 1 cm for 0.3 rad, print), a pose whose wrist is inside the
+    box but whose pinch point is outside is refused naming pinch_point, teleop/retarget.py still solves against the wrist
+    (unchanged) and the loop's mock session stays at 0 refusals with the placeholder offset (if it does not, the placeholder
+    offset is wrong for the mock circle: adjust `mock.pose_center_m`, not the safety file, and say so)
+acceptance:
+  - tests pass with printed numbers; `git diff config/safety.yaml` shows only the added `points` key and its comment (Fable
+    checks nothing was loosened); docs/safety.md updated
+notes: A tightening (two points must be inside instead of one). The real offset is measured in Phase 1 on the hand (T-022).
+
+## T-044  Phase 1 session runbook
+status: todo
+priority: P1
+phase: 1
+owner: opus
+depends_on: T-041, T-043
+hardware: none
+deliverables:
+  - docs/runbook_phase1.md: the exact sequence for the first sessions, each step a command or a physical action with its
+    check: (1) read-only day: H-002, H-003, H-004 steps, stream_stats for every device for 10 minutes, list_devices, fill the
+    config keys, run session_preflight until only the e-stop and session rows fail; (2) calibration: H-001 still,
+    board.calibration, verify perception on the real still; (3) first motion session: Q-004 answered and written into
+    enable_session.py's checklist text, enable_session.py by a human, preflight GO, T-021's arm_latency step with the human's
+    hand on the e-stop, T-024 envelope test, T-022 hand bench, T-023 reachability; what to write in BUILD_LOG.md for each
+    (what moved, envelope in force with config hashes, observed outcome); abort criteria and what to do after an abort
+  - a "what the agents will do with the results" paragraph per step (which config keys get MEASURED, which DECISIONS entry
+    Fable writes, which task closes)
+acceptance:
+  - every command in the runbook exists and runs with --help (a test greps the runbook for `.venv/bin/python ...` lines and
+    runs each with --help, exit 0); every H-item and Q-item referenced exists in the agents files (test)
+notes: Docs only, plus the test. This is what Alois reads before the first hardware day.

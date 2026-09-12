@@ -287,3 +287,9 @@ perception_status UNMEASURED and REQUIRED_KEYS is untouched. Every 6.5 variant h
 these numbers pin the rules, not a detection rate; the first real still (H-001) is where thresholds get measured. Fable fix
 in this commit: docs/README.md's board.md row now mentions perception. perception.py at 999 lines: T-042 splits the
 synthetic-independent detection rules out (board/detect.py) alongside its other splits.
+
+## T-042  ACCEPTED  (fable, 2026-09-12T09:03+07:00, commits be208d4, 7fd9ce0, ac8ffc1, c150886, 96aa6dd, 4f308a0, 640f0cb)
+Seven commits, one per split, each through the hook. I re-implemented the AST-based no-logic-change check independently
+for teleop/loop.py + teleop/clutch.py against 123f951: no missing logical line, additions are the new module's docstring
+and __all__ only. Test count 810 before and after; ruff clean; the four test files that import the split modules pass
+(139 passed 3 skipped). No test file changed. Judgement calls accepted (method-bound helpers stay in perception.py).
