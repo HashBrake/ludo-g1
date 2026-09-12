@@ -1913,7 +1913,7 @@ acceptance:
     with the e-stop and the approval rows named (output in BUILD_LOG.md)
 notes: No value changes in config/safety.yaml; only the loader and the tool learn a status word. The approval itself is a
   human commit (R3).
-result: (opus, 2026-09-12T11:20+07:00, commit COMMITHASH)
+result: (opus, 2026-09-12T11:20+07:00, commit c8d4674)
   - runtime/config.py: STATUS_VALUES = {UNMEASURED, MEASURED, HUMAN_APPROVED}; unmeasured() unchanged (UNMEASURED only);
     new status_of(name, key, root=None) -> str | None reading the value itself, a `<key>_status` sibling, or an ancestor's.
   - preflight_report.py: MOTION_KEYS is 25 MotionKey(name, key, why, gates, approved_ok) entries over

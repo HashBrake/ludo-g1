@@ -4977,6 +4977,8 @@ pre-commit gate, no `--no-verify` (D-013).
 
 ### Commit and gate
 
-Work commit **COMMITHASH** on `main`, through the full pre-commit gate (ruff + the whole suite,
-no `--no-verify`, D-013): **GATERESULT**. This hash is recorded by the follow-up commit, which is
-the only other change in this task.
+Work commit **c8d4674** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+`--no-verify`, D-013): **892 passed, 15 skipped, 21 warnings in 459.18 s**. The 15 skips are the
+pre-existing absent-hardware and no-session ones plus T-044's documented `enable_session.py` skip;
+nothing this task added is skipped. This hash is recorded by the follow-up commit, which changes
+`agents/BUILD_LOG.md` and `agents/TASKS.md` only.
