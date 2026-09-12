@@ -16,10 +16,12 @@ Every number comes from ``config/robot.yaml`` -- ``network.dds_interface``, ``ne
 ``topics.state``, ``control.state_hz``, ``control.state_timeout_s``, ``control.motor_count`` and the
 joint ``index`` of each commanded joint -- and none of it is a constant here (section 7).
 
-**The factory is initialised once, lazily.** ``ChannelFactoryInitialize`` binds the whole process to
-one domain and one interface, so it happens on the first subscriber built, never at import time, and
-a second G1Arm asking for a different interface is an error rather than a silent no-op. Importing
-this module pulls in no SDK at all; a test asserts that.
+**The factory is initialised once, lazily**, in :mod:`drivers.dds`, which this module re-exports
+:class:`~drivers.dds.ArmUnavailable`, :func:`~drivers.dds.dds_binding` and
+:func:`~drivers.dds.default_subscriber` from (T-042). ``ChannelFactoryInitialize`` binds the whole
+process to one domain and one interface, so it happens on the first subscriber built, never at
+import time, and a second G1Arm asking for a different interface is an error rather than a silent
+no-op. Importing this module pulls in no SDK at all; a test asserts that.
 
 **Timestamps.** The handler stamps with :func:`runtime.clock.now_ns` the moment the message is
 handed to it, which is what makes the state stream alignable with the cameras (docs/clock.md). The
@@ -47,6 +49,7 @@ from typing import Any
 
 import numpy as np
 
+from drivers.dds import ArmUnavailable, dds_binding, default_subscriber
 from runtime import clock, config
 from runtime.clock import Stamped
 from runtime.types import MotionCommand, RobotState
@@ -64,10 +67,6 @@ __all__ = [
 #: Samples :meth:`G1Arm.poll` keeps when nobody polls, and arrivals :meth:`G1Arm.probe` measures
 #: over. Same depth as :class:`runtime.clock.StreamBuffer`; 4096 is 8 s at the G1's nominal 500 Hz.
 BACKLOG = 4096
-
-
-class ArmUnavailable(RuntimeError):
-    """There is no arm state to read: not configured, not arriving, gone silent, or closed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,45 +101,6 @@ class ArmProbe:
     mode_machine: int
     mode_pr: int
     tick: int
-
-
-# ------------------------------------------------------------------------------------------------
-# the DDS factory: one domain and one interface per process, bound lazily
-# ------------------------------------------------------------------------------------------------
-
-_DDS_LOCK = threading.Lock()
-_DDS_BINDING: tuple[int, str] | None = None
-
-
-def dds_binding() -> tuple[int, str] | None:
-    """``(domain_id, interface)`` this process bound the DDS factory to, or None if never."""
-    return _DDS_BINDING
-
-
-def default_subscriber(topic: str, domain_id: int, interface: str) -> Any:
-    """Build the real ``LowState_`` subscriber, initialising the DDS factory on first use.
-
-    The SDK imports happen here, not at module import, so that ``import drivers.g1_arm`` costs
-    nothing and no DDS participant is created by importing anything.
-    """
-    global _DDS_BINDING
-    with _DDS_LOCK:
-        if _DDS_BINDING is None:
-            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-
-            ChannelFactoryInitialize(domain_id, interface)
-            _DDS_BINDING = (domain_id, interface)
-        elif _DDS_BINDING != (domain_id, interface):
-            bound_domain, bound_interface = _DDS_BINDING
-            raise ArmUnavailable(
-                f"this process already bound the DDS factory to domain {bound_domain} interface "
-                f"{bound_interface!r}; it cannot also serve domain {domain_id} interface {interface!r}. "
-                f"Use one interface per process (config/robot.yaml network.dds_interface)."
-            )
-    from unitree_sdk2py.core.channel import ChannelSubscriber
-    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
-
-    return ChannelSubscriber(topic, LowState_)
 
 
 class G1Arm:

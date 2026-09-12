@@ -226,6 +226,10 @@ the first subscriber it builds, never at import time; a second driver asking for
 interface raises rather than silently sharing the first one. `drivers.g1_arm.dds_binding()` reports
 what the process bound to.
 
+The binding itself lives in `drivers/dds.py` (`ArmUnavailable`, `dds_binding`, `default_subscriber`),
+split out of `g1_arm.py` by T-042 because it is process state that the T-021 write path shares; the
+names stay importable from `drivers.g1_arm`.
+
 The link itself is the lab's documented addressing (docs/sdks.md 2.5): laptop `192.168.123.2/24`,
 robot `192.168.123.164`, wired Ethernet on the built-in port `enp0s31f6` or the ASIX AX88179 USB
 dongle (`enx000ec6c10aa5`). The one-time NetworkManager profile (H-002):
