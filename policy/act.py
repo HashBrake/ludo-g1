@@ -70,6 +70,14 @@ stride 1.
 5.2 is unchanged and ACT's 32 is internal. ``s`` is the *nominal* stride from the configured rates: a
 late query makes the ensemble slightly stale in the same way a late query makes a receding horizon
 slightly stale, and neither adapter is told what the controller actually played.
+
+Termination (5.5, T-040)
+------------------------
+The same auxiliary head as ``policy/diffusion.py``, on this model's counterpart of the global
+conditioning vector: the mean over ACT's transformer-encoder output tokens. The label, the BCE loss,
+its weight and the ``DoneDetector`` thresholds all come from the one shared ``done`` block of
+``config/training.yaml``, so the baseline of 5.7 terminates on the same signal as the primary and
+the eval numbers stay a comparison of two architectures.
 """
 
 from __future__ import annotations
@@ -97,10 +105,15 @@ from engine.interface import Command
 # so both models import them from policy/_shared.py rather than one importing them from the other.
 from policy._shared import (
     BUNDLE_FILE,
+    DONE_KEY,
     IMAGE_KEYS,
     WEIGHTS_FILE,
+    DoneDetector,
+    DoneHead,
+    FeatureTap,
     Normalizer,
     benchmark,
+    done_settings,
     observation_frame,
     set_torch_threads,
 )
@@ -147,6 +160,14 @@ class ACTSpec:
     dropout: float = 0.1
     kl_weight: float = 10.0
     action_hz: float = 30.0
+    # --- the termination head of CLAUDE.md 5.5 (T-040), from `config/training.yaml` `done` -------
+    # The same five fields as `policy.diffusion.PolicySpec`, read from the same shared block: the
+    # baseline of 5.7 must terminate on the same signal or the comparison is not one.
+    done_window_s: float = 1.0
+    done_loss_weight: float = 0.1
+    done_hidden_dim: int = 128
+    done_threshold: float = 0.5
+    done_hold_steps: int = 2
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "image_hw", tuple(int(v) for v in self.image_hw))
@@ -156,6 +177,13 @@ class ACTSpec:
             raise ValueError(f"expose {self.expose} > chunk {self.chunk}: cannot hand out what was not predicted")
         if self.ensemble_stride < 1:
             raise ValueError(f"ensemble_stride must be >= 1, got {self.ensemble_stride}")
+        if not 0.0 < self.done_threshold < 1.0:
+            raise ValueError(f"done_threshold is a probability in (0, 1), got {self.done_threshold}")
+        if self.done_hold_steps < 1 or self.done_hidden_dim < 1 or self.done_loss_weight < 0:
+            raise ValueError(
+                f"done_hold_steps and done_hidden_dim must be >= 1 and done_loss_weight >= 0, got "
+                f"{self.done_hold_steps}, {self.done_hidden_dim}, {self.done_loss_weight}"
+            )
 
     @property
     def cond_state_dim(self) -> int:
@@ -187,6 +215,7 @@ class ACTSpec:
             raise config.ConfigError(f"config/training.yaml has no {block!r} block")
         block = training[block]
         rates = training["rates"]
+        done = done_settings(config_root)
         weights = block["pretrained_backbone_weights"]
         if int(block["obs_history"]) != 1:
             raise config.ConfigError(
@@ -219,6 +248,12 @@ class ACTSpec:
             dropout=float(block["dropout"]),
             kl_weight=float(block["kl_weight"]),
             action_hz=float(rates["action_hz"]),
+            # One shared `done` block for both models of 5.7 and for the dataset that labels them.
+            done_window_s=done["window_s"],
+            done_loss_weight=done["loss_weight"],
+            done_hidden_dim=done["hidden_dim"],
+            done_threshold=done["threshold"],
+            done_hold_steps=done["hold_steps"],
         )
         return replace(spec, **overrides) if overrides else spec
 
@@ -337,6 +372,28 @@ class GoalACTPolicy(nn.Module):
             for channel in range(3):
                 self.goal_proj.weight[channel, channel, 0, 0] = 1.0
         self.norm = Normalizer(spec)
+        # The termination head of 5.5 (T-040), on the pooled output of ACT's transformer encoder:
+        # the tokens the decoder attends to, mean-pooled, which is this model's counterpart of the
+        # Diffusion Policy's global conditioning vector.
+        self.done_head = DoneHead(spec.dim_model, spec.done_hidden_dim)
+        #: Catches the encoder output on its way to the decoder, in training and at inference alike,
+        #: so the done head costs no second pass over the backbone (:class:`policy._shared.FeatureTap`).
+        self._tap = FeatureTap()
+        self._tap.watch_output(self.lerobot.model.encoder)
+        #: The two parts of the last :meth:`forward`, for the run record and the smoke tests.
+        self.last_losses: dict[str, float] = {}
+
+    @staticmethod
+    def _pool(encoder_out: Tensor) -> Tensor:
+        """ACT's ``(S, B, D)`` encoder tokens as one ``(B, D)`` observation embedding.
+
+        Mean over the token dimension: the sequence is the latent token, the state token and one
+        token per feature-map pixel per camera, all of them describing the same instant, and ACT has
+        no CLS token in this encoder to prefer over the rest.
+        """
+        if encoder_out.ndim != 3:
+            raise ValueError(f"expected the ACT encoder's (S, B, D) output, got {tuple(encoder_out.shape)}")
+        return encoder_out.mean(dim=0)
 
     def __repr__(self) -> str:
         params = sum(p.numel() for p in self.parameters())
@@ -382,7 +439,13 @@ class GoalACTPolicy(nn.Module):
     # -- training ---------------------------------------------------------------------------------
 
     def forward(self, batch: Mapping[str, Tensor]) -> Tensor:
-        """ACT's loss (masked L1 plus ``kl_weight`` x KL) on one batch of dataset samples."""
+        """ACT's loss (masked L1 plus ``kl_weight`` x KL), plus ``done_loss_weight`` x the done loss.
+
+        The same arrangement as :meth:`policy.diffusion.GoalDiffusionPolicy.forward`, and for the
+        same reason: ``policy/train.py`` is one loop for both models of 5.7 and calls ``model(batch)``
+        for one number, so the auxiliary head of 5.5 is folded in here and the two parts are left in
+        :attr:`last_losses`. A batch without a ``done`` label trains the action head alone.
+        """
         prepared = self._lerobot_batch(batch)
         prepared[ACTION] = self.norm.action(batch["action"])
         mask = batch.get("action_mask")
@@ -391,21 +454,36 @@ class GoalACTPolicy(nn.Module):
             if mask is None
             else mask < 0.5
         )
+        self._tap.clear()
         loss, _ = self.lerobot.forward(prepared)
-        return loss
+        if DONE_KEY not in batch:
+            self._tap.clear()
+            self.last_losses = {"action_loss": float(loss.detach()), "done_loss": None}
+            return loss
+        done_loss = self.done_head.loss(self._pool(self._tap.take("encoder_out")), batch[DONE_KEY])
+        self.last_losses = {"action_loss": float(loss.detach()), "done_loss": float(done_loss.detach())}
+        return loss + self.spec.done_loss_weight * done_loss
 
     # -- inference --------------------------------------------------------------------------------
 
     @torch.no_grad()
-    def predict(self, batch: Mapping[str, Tensor]) -> Tensor:
+    def predict(self, batch: Mapping[str, Tensor], *, return_done: bool = False) -> Tensor | tuple[Tensor, Tensor]:
         """``(B, chunk, action_dim)`` absolute actions, in joint units.
 
         Deterministic: with ``use_vae`` the VAE encoder runs in training only
         (``modeling_act.py:395``), so at inference the latent is zeros and two calls on the same
         observation return the same chunk. That is what ``policy/export.py`` round-trips on.
+
+        ``return_done`` also returns the ``(B,)`` termination probability (5.5, T-040), read off the
+        encoder tokens this call already produced -- one matrix multiply, no second backbone pass.
         """
+        self._tap.clear()
         actions = self.lerobot.predict_action_chunk(self._lerobot_batch(batch))
-        return self.norm.unnormalize_action(actions)
+        out = self.norm.unnormalize_action(actions)
+        if not return_done:
+            self._tap.clear()
+            return out
+        return out, self.done_head.probability(self._pool(self._tap.take("encoder_out")))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -439,6 +517,9 @@ class ACTAdapter:
         self.model.load_state_dict(weights["state_dict"])
         self.model.to(self.device).eval()
         self.ensemble = TemporalEnsemble(spec.chunk, spec.expose, spec.temporal_ensemble_coeff, spec.ensemble_stride)
+        #: The termination signal of 5.5: one probability per :meth:`act`, ``done_hold_steps``
+        #: consecutive ones above ``done_threshold`` and :meth:`done` is True (T-040).
+        self.detector = DoneDetector(spec.done_threshold, spec.done_hold_steps)
         self.command: Command | None = None
         self.calls = 0
         #: Wall-clock cost of the last :meth:`act`, split into preparation and forward pass (ms).
@@ -453,17 +534,23 @@ class ACTAdapter:
     # -- runtime.policy_api.Policy ----------------------------------------------------------------
 
     def reset(self, command: Command) -> None:
-        """Start a primitive: forget every prediction the ensemble is still averaging."""
+        """Start a primitive: forget every prediction the ensemble is averaging, and the done streak."""
         self.command = command
         self.calls = 0
         self.ensemble.reset()
+        self.detector.reset()
 
     def act(self, observation: Observation) -> ActionChunk:
-        """One ACT forward pass: ``expose`` absolute 9-D actions at ``rates.action_hz``."""
+        """One ACT forward pass: ``expose`` absolute 9-D actions at ``rates.action_hz``.
+
+        The same forward pass also feeds the termination head (T-040), so :meth:`done` costs nothing.
+        """
         start = time.perf_counter()
         batch = {key: value.unsqueeze(0) for key, value in self._frame(observation).items()}
         prepared = time.perf_counter()
-        chunk = self.model.predict(batch)[0].to("cpu").numpy().astype(np.float64)
+        predicted, probability = self.model.predict(batch, return_done=True)
+        chunk = predicted[0].to("cpu").numpy().astype(np.float64)
+        self.detector.update(float(probability[0]))
         self.calls += 1
         actions = self.ensemble.update(chunk) if self.spec.temporal_ensemble else chunk[: self.spec.expose]
         done = time.perf_counter()
@@ -472,8 +559,13 @@ class ACTAdapter:
         return ActionChunk(actions=np.asarray(actions, dtype=np.float64), hz=self.spec.action_hz)
 
     def done(self, observation: Observation) -> bool:
-        """Always False: this model has no termination head either (see `DiffusionAdapter.done`)."""
-        return False
+        """The policy's own termination signal (5.5), on the same terms as `DiffusionAdapter.done`.
+
+        True once ``done_hold_steps`` consecutive :meth:`act` calls put the head's probability above
+        ``done_threshold``; the probability is produced inside ``act``, so this reports the state
+        after the previous call. An untrained head returns exactly 0.5 and never fires.
+        """
+        return self.detector.fired
 
     # -- observation -> tensors -------------------------------------------------------------------
 

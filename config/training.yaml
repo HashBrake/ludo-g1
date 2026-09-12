@@ -36,6 +36,30 @@ action:
   space: absolute_joint_targets
   hz: 30
 
+# --- the policy's own termination signal (5.5): the done head (T-040) -----------------------------
+# CLAUDE.md 5.5 ends a primitive on "the policy's own termination signal or a 20 s timeout"; until
+# T-040 only the timeout existed. Both models of 5.7 now carry an auxiliary head on the same pooled
+# observation features their action head is conditioned on, trained against a per-frame label read
+# out of the recorded episode length. One block, not a copy per policy block: the label is a property
+# of the recorded data, and two models trained on two different windows would not be the comparison
+# 5.7 asks for. Design choices, not measurements, like everything else in this file.
+done:
+  # A frame is labelled done when it is within this many seconds of the last frame of its episode.
+  # 1.0 s at rates.dataset_hz is the last 31 frames: the release and the retreat, which is what the
+  # end of a primitive looks like, and long enough that a head queried at rates.policy_hz sees
+  # several positive frames before the episode actually runs out.
+  window_s: 1.0
+  # Weight of the BCE done loss where the wrappers add it to the policy's own loss. 0.1: the head
+  # shares every encoder with the action head, and an auxiliary objective must not steer them.
+  loss_weight: 0.1
+  # Width of the head's one hidden layer. Architecture, so it travels in the exported bundle's spec.
+  hidden_dim: 128
+  # runtime/controller.py ends a primitive when Policy.done() is True. The adapters return True once
+  # `hold_steps` consecutive act() calls have produced a probability above `threshold`; at
+  # rates.policy_hz, 2 calls is 200 ms of agreement, so one confident frame is not an ending.
+  threshold: 0.5
+  hold_steps: 2
+
 # --- the control loop (5.5): runtime/controller.py -------------------------------------------------
 # Design choices, not measurements, like everything else in this file.
 runtime:

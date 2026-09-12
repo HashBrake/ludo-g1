@@ -4477,3 +4477,126 @@ imports nothing from the repo at all. R3: `config/safety.yaml` untouched (not in
 `requirements.txt`, `pyproject.toml`, `config/`, `agents/DECISIONS.md`, `agents/REVIEW.md` and
 `agents/STATE.md` untouched; nothing under `third_party/` touched. Every commit staged file-by-file
 by name and went through the full gate; no `--no-verify` (D-013).
+## T-040  Policy termination signal: an episode-end head trained from recorded episodes  (opus, 2026-09-12T23:55+07:00, commit 55052f2, branch wt/t040)
+
+CLAUDE.md 5.5 ends a primitive on "the policy's own termination signal or a 20 s timeout"; until this
+task only the timeout existed and both adapters' `done()` returned a hard-coded False. Both models of
+5.7 now carry the same auxiliary head, trained on a label read out of the recorded episode length.
+
+### What changed
+- **`config/training.yaml`**: one new top-level `done` block -- `window_s: 1.0`, `loss_weight: 0.1`,
+  `hidden_dim: 128`, `threshold: 0.5`, `hold_steps: 2`. One block and not a copy per policy block,
+  because the label is a property of the recorded data: two models trained on two different windows
+  would not be the comparison 5.7 asks for. `REQUIRED_KEYS` untouched, no `_status` key, nothing
+  UNMEASURED (`runtime.config.unmeasured("training")` stays empty).
+- **`policy/dataset.py`**: every sample carries `done`, a float32 scalar, 1 when the frame's distance
+  to the last frame of its episode is at most `done.window_s` (30 frames at 30 Hz, so the last 31).
+  Read off the episode span, not off the operator's success flag: an episode that failed still ended.
+- **`policy/_shared.py`**: `done_settings` (the one config reader), `DoneHead` (two-layer MLP, one
+  logit, **zero-initialised output layer** so an untrained head is exactly 0.5 and never fires),
+  `FeatureTap` (a standard PyTorch forward hook on the lerobot module *instance* we built, so the
+  pooled features come back without patching anything under `third_party/` and without a second
+  encoder pass) and `DoneDetector` (threshold + consecutive-hold counter).
+- **`policy/diffusion.py` / `policy/act.py`**: five `done_*` fields on each spec (so an exported
+  bundle carries the window it was trained on and the thresholds it stops on); a `DoneHead` on the
+  U-Net's `global_cond` (408-D at the configured scale) and on the mean of ACT's transformer-encoder
+  output tokens (512-D); the BCE loss added to each wrapper's own loss with `done_loss_weight`, so
+  `policy/train.py` is untouched; `predict(..., return_done=True)` returning the probability from the
+  same forward pass; `act()` folding it into the detector; `done()` reporting the streak;
+  `reset()` clearing it. Each wrapper leaves `last_losses = {"action_loss", "done_loss"}`.
+- **`policy/export.py`**: `bundle.json` gains a `done_head` block (the five settings plus the head's
+  parameter count). The weights themselves already travel in the `state_dict`.
+- **docs**: `docs/policy.md` gains the dataset row, a `_shared` bullet, the "termination head"
+  section (feature source per model, the zero-init convention, the one-tick lag, the measured
+  numbers) and the export/ACT-table mentions; `docs/controller.md` gains the paragraph asked for.
+
+### Why the loss lives in the wrappers, and why a hook
+`policy/train.py` calls `loss = model(batch)` for one number and is being refactored by another
+builder in the main tree, so the auxiliary objective belongs to the model. The pooled features are
+computed *inside* a lerobot call whose only return value is a loss (`DiffusionPolicy.forward`) or an
+action chunk (`ACTPolicy.predict_action_chunk`); re-running the vision encoders to get them back
+would cost roughly a second encoder pass per training step for a head that is one matrix multiply, so
+a `register_forward_pre_hook(..., with_kwargs=True)` on the U-Net (catching `global_cond`) and a
+`register_forward_hook` on `ACT.model.encoder` (catching its output) read them in flight. Nothing
+under `third_party/` or in the installed package is modified; the hooks are registered on instances
+this process constructed. The captured tensor is still on the autograd graph, so the done gradient
+reaches the shared encoders -- pinned by
+`tests/test_diffusion.py::test_the_done_loss_trains_the_shared_encoders`.
+
+### Commands and measured numbers
+```
+.venv/bin/python -m pytest tests/test_dataset.py tests/test_controller.py -q   # 57 passed in 93 s
+.venv/bin/python -m pytest tests/test_act.py tests/test_diffusion.py -q -s     # 35 passed in 89 s
+.venv/bin/python -m pytest tests/test_train.py tests/test_eval.py -q           # 49 passed, 1 skipped
+```
+- **Label** (`tests/test_dataset.py::test_done_labels_the_last_window_of_every_episode`), at the
+  configured 1.0 s window and 30 Hz: the 60-frame episode has 31 frames labelled done and the
+  boundary is exact (frame `stop-1-30` is 1, the frame before it is 0); the two 30-frame episodes are
+  shorter than the window and are labelled done throughout. A 0 s window labels the last frame only;
+  a negative one is refused, not clamped.
+- **Smoke train, done loss over the whole session** (30 steps, mock session, a 0.3 s window and
+  weight 1.0 because the mock episodes are 1.0 s and 0.5 s long and the configured window would label
+  every frame done; base rate 20 of 45 frames = 0.444):
+
+  | model | done loss | trained p(done) not-done frame | done frame |
+  |---|---|---|---|
+  | Diffusion Policy | 0.6931 -> **0.6664** (-3.9%) | 0.446 | 0.478 |
+  | ACT | 0.6931 -> **0.6900** (-0.5%) | 0.484 | 0.484 |
+
+  Both fall, and both start at exactly ln 2 (the zero-initialised output layer). 30 steps on two mock
+  episodes shows the head is wired and training and nothing more: both heads are still mostly
+  learning the base rate, and only the diffusion head has begun to separate the classes. Whether the
+  head separates them on real data is a Phase 3 question (R5).
+- **Adapter**: with the head pinned to p = 0.998, `done()` after each `act()` is
+  `[False, True, True, True]` -- it flips exactly on the `hold_steps`-th call; at p = 0.002 it is
+  `[False, False, False, False]`. `reset()` clears the streak. `DoneDetector(0.5, 3)` on
+  `(0.9, 0.9, 0.1, 0.9, 0.9, 0.9)` gives `[F, F, F, F, F, True]`: one low frame restarts the count,
+  and 0.5 itself does not count (strictly above).
+- **Controller** (`tests/test_controller.py::test_a_done_head_adapter_stops_the_primitive_before_the_timeout`),
+  a stub adapter carrying the real `DoneDetector` on `[0.9, 0.2, 0.9, 0.9, 0.1]`:
+  `stopped_by={'policy_done': 1}` after 4 policy calls in **0.43 s** against the 20 s timeout, with
+  `watchdog` and `timeout` both 0 and the outcome reported by perception rather than as
+  `policy_stalled`. `runtime/controller.py` was not touched: it already breaks on `policy.done(obs)`
+  and already reports `policy_done`.
+- **Head size at the configured scale**: 52 481 parameters on a 408-D feature for `diffusion`
+  (0.018% of 293.1 M) and for `diffusion_small` (0.172% of 30.5 M); 65 793 on a 512-D feature for ACT
+  (0.127% of 51.6 M).
+- **Export**: TorchScript tracing still succeeds for both models with the hooks in place (max diff vs
+  eager 0.0, `model.ts` written), and `bundle.json` carries `done_head`.
+
+### Not measured, and follow-ups
+- **No `done_loss` column in `loss.csv`.** Both wrappers expose `last_losses["done_loss"]` per step,
+  but writing it as a column means editing `policy/train.py`, which this task's file boundary
+  excludes (another builder is refactoring it). Follow-up, one line in the loop and one in the CSV
+  header: read `model.last_losses` after `loss = model(batch)`.
+- **No on-robot or full-scale number.** The head has never run on a real episode; every number here
+  is the 30-step mock smoke run (R5). The real question -- does the head fire at the end of a
+  primitive and not before -- is Phase 3 eval, and `eval/` was not touched.
+- **One policy period of lag.** `runtime/controller.py` asks `done(obs)` *before* `act(obs)`, and the
+  probability is produced inside `act`, so the loop reads the previous tick's probability (100 ms at
+  `rates.policy_hz`). Stated in both docstrings and in `docs/controller.md`. The alternative -- a
+  second encoder pass per tick inside `done()` -- costs more than 100 ms on this laptop for the full
+  diffusion model, so it would make the lag worse rather than better.
+
+### Disagreement
+None with the task as written. One note on the acceptance wording: "smoke train shows the done loss
+falling" was first measured on a balanced two-frame probe, which showed the ACT head's loss *rising*
+(0.6931 -> 0.6934) while it was correctly learning the session's 0.444 base rate. The measurement
+reported above is the frame-weighted mean over the whole session -- the distribution the loss is
+actually trained on -- which is the honest yardstick; the balanced probe survives only as the
+per-class probability print.
+
+### Commit and gate
+Work commit **55052f2** on branch `wt/t040`, through the full pre-commit gate (ruff + the whole
+suite, no `--no-verify`): **806 passed, 15 skipped in 513.98 s**. The 15 skips are the pre-existing
+absent-hardware, no-session and load-dependent skips.
+
+### Safety
+R1: nothing here can send a motion command. `policy/` builds no `Guard`, imports no driver, and the
+controller test drives mocks (R1 exempts simulated robots) through `Guard.admit` as before;
+`hardware/session.enable` was never created, edited or read. R2: no scripted motion, no waypoint
+list, no literal joint target -- the termination signal is *learned* from recorded episodes, which is
+what 5.5 asks for, and the detector's threshold and hold are config, not a trajectory.
+`config/safety.yaml` untouched. Nothing under `third_party/` modified: the lerobot policies are
+wrapped and hooked from outside, never patched. Committed through the full pre-commit gate, no
+`--no-verify` (D-013).

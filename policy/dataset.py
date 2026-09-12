@@ -21,6 +21,7 @@ key             shape / dtype             meaning
 ``task_id``     ``(3,)`` float32          one-hot over ``training.observation.task_ids``
 ``action``      ``(chunk, 9)`` float32    absolute joint targets at ``rates.dataset_hz``
 ``action_mask`` ``(chunk,)`` float32      1 for a recorded action, 0 for tail padding
+``done``        ``()`` float32            1 if this frame is within ``done.window_s`` of the end
 =============== ========================= ====================================================
 
 ``S`` is ``n_obs_steps``, **and the step dimension is present only when it is above 1**: at the
@@ -37,6 +38,15 @@ carries frames ``f - S + 1 .. f`` oldest first; before the episode's first frame
 rule ``policy/diffusion.py``'s ``DiffusionAdapter`` applies to its live queue on the first call of a
 primitive (``tests/test_diffusion.py`` pins the two against each other frame for frame), so the model
 sees the same thing at the start of an episode in training as it does on the robot.
+
+**The done label is the last ``done.window_s`` of the episode** (T-040). CLAUDE.md 5.5 ends a
+primitive on "the policy's own termination signal or a 20 s timeout", and that signal has to be
+learned from something: the something is the episode the operator ended. A frame is labelled 1 when
+its distance to the last frame of its episode is at most ``config/training.yaml`` ``done.window_s``
+(1.0 s, the last 31 frames at 30 Hz) and 0 otherwise. It is read off the episode span and not off
+the success flag: an episode the operator marked failed still *ended*, and a policy that can see a
+primitive ending is right either way. Both models of 5.7 train an auxiliary head on it
+(``policy/_shared.py`` ``DoneHead``).
 
 **The goal channels are rendered, not stored.** The recorder keeps 2.4 MB of gaussian per frame out
 of the dataset and stores the two cell pixels once per episode instead (``docs/teleop.md``); this
@@ -248,6 +258,14 @@ class LudoDataset(Dataset):
         if self.n_obs_steps < 1:
             raise ValueError(f"LudoDataset needs n_obs_steps >= 1, got {self.n_obs_steps}")
         self.fps = int(training["rates"]["dataset_hz"])
+        self.done_window_s = float(training["done"]["window_s"])
+        if self.done_window_s < 0:
+            raise config.ConfigError(
+                f"config/training.yaml done.window_s must be >= 0, got {self.done_window_s}"
+            )
+        #: Frames before the last one that still count as "the episode is ending" (T-040). Whole
+        #: frames, because the label is per frame: 1.0 s at 30 Hz is the last frame plus 30 more.
+        self.done_frames = int(math.floor(self.done_window_s * self.fps + 1e-9))
         self.task_ids: tuple[str, ...] = tuple(str(t) for t in training["observation"]["task_ids"])
         self.augment = bool(augment)
         self.augmentation = self._augmentation(training["augmentation"])
@@ -360,6 +378,15 @@ class LudoDataset(Dataset):
         self._goal_cache[episode_position] = rendered
         return rendered
 
+    def _done(self, episode: _Episode, frame: int) -> torch.Tensor:
+        """1 when ``frame`` is within ``done.window_s`` of its episode's last frame, else 0 (T-040).
+
+        ``episode.stop`` is exclusive, so the last frame is ``stop - 1`` and the distance in frames
+        is ``stop - 1 - frame``. Nothing here looks at the success flag: an episode that failed still
+        ended (see the module docstring).
+        """
+        return torch.tensor(float((episode.stop - 1 - frame) <= self.done_frames), dtype=torch.float32)
+
     def _one_hot(self, task_index: int) -> torch.Tensor:
         if not 0 <= task_index < len(self.task_ids):
             raise ValueError(
@@ -395,6 +422,7 @@ class LudoDataset(Dataset):
             "task_id": self._one_hot(int(item["task_id"].reshape(-1)[0])),
             "action": item["action"].to(torch.float32),
             "action_mask": (~item["action_is_pad"]).to(torch.float32),
+            "done": self._done(episode, frame),
         }
 
 

@@ -293,3 +293,11 @@ Seven commits, one per split, each through the hook. I re-implemented the AST-ba
 for teleop/loop.py + teleop/clutch.py against 123f951: no missing logical line, additions are the new module's docstring
 and __all__ only. Test count 810 before and after; ruff clean; the four test files that import the split modules pass
 (139 passed 3 skipped). No test file changed. Judgement calls accepted (method-bound helpers stay in perception.py).
+
+## T-040  ACCEPTED  (fable, 2026-09-12T09:12+07:00, commits 55052f2, 44a4666, merged)
+Verified in the worktree: the done-related tests pass across dataset, both wrappers and the controller (stub adapter stops
+the primitive with stopped_by policy_done in 0.43 s against a 20 s timeout); the file boundary with T-042 was respected
+(no diff in train.py, controller.py, loop.py, drivers/). Zero-initialised output layer so an untrained head never fires is
+the right default. Done loss falls on mock data (diffusion 0.693 -> 0.666, ACT 0.693 -> 0.690); no real-data claim (R5).
+Follow-ups noted: done_loss column in loss.csv (train.py) and the one-tick lag of done(); both small, folded into T-044's
+runbook notes rather than a new task, since neither affects a Phase 1 session.

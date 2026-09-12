@@ -1669,7 +1669,7 @@ result: (opus, 2026-09-12T07:05+07:00, commit 64ef8c0)
     docs/board.md as calibration only (one row, outside the touch list).
 
 ## T-040  Policy termination signal: an episode-end head trained from recorded episodes
-status: in_progress
+status: accepted
 priority: P2
 phase: 3
 owner: opus
@@ -1686,6 +1686,30 @@ deliverables:
 acceptance:
   - tests pass with printed numbers; docs/policy.md and docs/controller.md updated
 notes: CLAUDE.md 5.5 names "the policy's own termination signal or a 20 s timeout"; until this lands only the timeout exists.
+result: (opus, 2026-09-12T23:55+07:00, commit 55052f2, branch wt/t040)
+  - `.venv/bin/python -m pytest tests/test_dataset.py tests/test_controller.py -q` -> 57 passed in 93 s. PASS
+  - `.venv/bin/python -m pytest tests/test_act.py tests/test_diffusion.py -q -s` -> 35 passed in 89 s. PASS
+  - `.venv/bin/python -m pytest tests/test_train.py tests/test_eval.py -q` -> 49 passed, 1 skipped (the pre-existing
+    DDIM-ordering-under-load skip). PASS
+  - label: at the configured `done.window_s` 1.0 s and 30 Hz the 60-frame episode has 31 frames labelled done and the
+    boundary is exact (frame stop-1-30 is 1, the one before it is 0); a 0 s window labels the last frame only; a
+    negative one is refused. PASS
+  - smoke train (30 steps, mock session, 0.3 s window and weight 1.0 because the mock episodes are 1.0 s and 0.5 s;
+    base rate 20/45 = 0.444), done loss over the whole session: diffusion 0.6931 -> 0.6664 (-3.9%), ACT 0.6931 ->
+    0.6900 (-0.5%). Both start at exactly ln 2 (zero-initialised output layer). PASS
+  - adapter: head pinned to p=0.998 -> done() after each act() is [False, True, True, True] (hold_steps 2); at
+    p=0.002 -> [False, False, False, False]; reset() clears the streak. Both models. PASS
+  - controller: a stub adapter carrying the real DoneDetector on [0.9, 0.2, 0.9, 0.9, 0.1] stops the primitive with
+    stopped_by policy_done after 4 policy calls in 0.43 s against the 20 s timeout, watchdog and timeout both 0.
+    runtime/controller.py unchanged. PASS
+  - docs/policy.md (dataset row, _shared bullet, "The termination head" section with the numbers, export and ACT
+    table) and docs/controller.md (one section under "The cycle") updated. PASS
+  - head size at the configured scale: 52 481 params on a 408-D feature for diffusion (0.018% of 293.1 M) and
+    diffusion_small (0.172% of 30.5 M), 65 793 on 512-D for ACT (0.127% of 51.6 M). TorchScript still traces with
+    the hooks in place (max diff vs eager 0.0). PASS
+  - not met / follow-up: no `done_loss` column in loss.csv -- that needs policy/train.py, which this task's file
+    boundary excludes (another builder is refactoring it); both wrappers expose `last_losses["done_loss"]` per step
+    for it. No real-data or on-robot number: the head has never seen a recorded G1 episode (R5).
 
 ## T-041  Session pre-flight: a read-only go/no-go table before any hardware session
 status: accepted
@@ -1788,7 +1812,7 @@ acceptance:
 notes: A tightening (two points must be inside instead of one). The real offset is measured in Phase 1 on the hand (T-022).
 
 ## T-044  Phase 1 session runbook
-status: todo
+status: in_progress
 priority: P1
 phase: 1
 owner: opus

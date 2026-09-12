@@ -24,6 +24,7 @@ from drivers.mock import MockArm, MockCamera, MockHand
 from engine.cells import load_cells
 from engine.interface import Cell, Command, Outcome, Primitive
 from engine.stub import StubEngine
+from policy._shared import DoneDetector
 from runtime import config
 from runtime.controller import Controller, RunSummary, Watchdog, build, main
 from runtime.goal import GoalRenderer
@@ -146,6 +147,35 @@ class DonePolicy(HoldPolicy):
         return self.seen > self.after
 
 
+class DoneHeadPolicy(HoldPolicy):
+    """A stub *adapter*: the real `policy._shared.DoneDetector` driven by a scripted probability.
+
+    What the two learned adapters of 5.7 do -- fold one probability per `act()` into the detector and
+    report its streak from `done()` -- with the head's forward pass replaced by a list of numbers, so
+    that the controller's stop is tested against the code the adapters actually run without loading
+    a 38 M-parameter bundle into this suite. It still commands no motion: `act` is `HoldPolicy`'s
+    (R2), and `runtime/controller.py` is not touched by this test.
+    """
+
+    def __init__(self, probabilities: list[float], threshold: float = 0.5, hold_steps: int = 2) -> None:
+        super().__init__()
+        self.probabilities = list(probabilities)
+        self.detector = DoneDetector(threshold, hold_steps)
+
+    def reset(self, command: Command) -> None:
+        super().reset(command)
+        self.detector.reset()
+
+    def act(self, observation: Observation) -> ActionChunk:
+        index = min(self.calls, len(self.probabilities) - 1)  # the last value repeats
+        chunk = super().act(observation)
+        self.detector.update(self.probabilities[index])
+        return chunk
+
+    def done(self, observation: Observation) -> bool:
+        return self.detector.fired
+
+
 class LungePolicy(HoldPolicy):
     """A policy whose actions the envelope must refuse: 2 rad away from a standstill in one step."""
 
@@ -264,6 +294,30 @@ def test_policy_done_stops_the_primitive_early(tmp_path) -> None:
     assert summary.stopped_by["policy_done"] == 1
     assert summary.policy_calls == 3
     assert summary.elapsed_s < 1.0  # nowhere near the 20 s timeout
+
+
+def test_a_done_head_adapter_stops_the_primitive_before_the_timeout(tmp_path, capsys) -> None:
+    """T-040: the termination signal of 5.5 reaches the loop through `Policy.done()` and nothing else.
+
+    The stub carries the real `DoneDetector` with the configured threshold and hold, fed a
+    probability sequence with one high frame that must *not* end the primitive and two consecutive
+    high frames that must. Nothing in `runtime/controller.py` changed: it already breaks on
+    `policy.done(observation)` and reports `policy_done`.
+    """
+    policy = DoneHeadPolicy([0.9, 0.2, 0.9, 0.9, 0.1])
+    controller, _clk, engine, _arm, _hand = make_controller(tmp_path, policy=policy, script=[move_command()])
+    summary = controller.run(max_commands=1)
+
+    with capsys.disabled():
+        print(f"\n[T-040] probabilities {policy.probabilities} at threshold {policy.detector.threshold} "
+              f"hold {policy.detector.hold_steps}: stopped_by={dict(summary.stopped_by)} after "
+              f"{summary.policy_calls} calls in {summary.elapsed_s:.2f} s")
+    assert summary.stopped_by["policy_done"] == 1
+    assert summary.stopped_by["watchdog"] == 0 and summary.stopped_by["timeout"] == 0
+    # the isolated high frame at call 1 did not end it; calls 3 and 4 did
+    assert summary.policy_calls == 4
+    assert summary.elapsed_s < config.load("training")["runtime"]["primitive_timeout_s"] / 10
+    assert len(engine.reports) == 1 and engine.reports[0].failure_mode != STALLED
 
 
 def test_a_refused_action_is_counted_and_the_loop_continues(tmp_path) -> None:

@@ -20,11 +20,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import yaml
 from lerobot.configs.types import FeatureType, PolicyFeature
 from torch.utils.data import DataLoader
+from torch.utils.data._utils.collate import default_collate
 
 from engine.interface import Cell, Command, Primitive
 from eval.run_eval import make_policy
+from policy._shared import DoneDetector
 from policy.dataset import CAMERAS, LudoDataset
 from policy.diffusion import (
     BUNDLE_FILE,
@@ -46,6 +49,20 @@ TINY = {"image_hw": (48, 64), "down_dims": (64, 128, 256), "spatial_softmax_keyp
 STEPS, BATCH, LR = 30, 2, 1e-3
 #: Latency is measured over 20 calls, as the task asks.
 LATENCY_TRIALS = 20
+#: The done head of T-040, measured on this session rather than on the configured numbers. The mock
+#: episodes are 1.0 s and 0.5 s long, so the configured `done.window_s` of 1.0 s would label *every*
+#: frame of both as done and leave the head nothing to separate; 0.3 s labels the last 10 frames of
+#: each. `done.loss_weight` is raised from 0.1 to 1.0 so that 30 steps at `LR` move the head far
+#: enough to measure. Both are this test's numbers; a real run uses the configured ones.
+DONE_WINDOW_S, DONE_LOSS_WEIGHT = 0.3, 1.0
+
+
+def tune_done(cfg: Path) -> None:
+    """Rewrite the session config's `done` block to the two numbers above (see DONE_WINDOW_S)."""
+    path = cfg / "training.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["done"].update({"window_s": DONE_WINDOW_S, "loss_weight": DONE_LOSS_WEIGHT})
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -63,6 +80,7 @@ def session(tmp_path_factory) -> tuple[Path, Path]:
     rig.run(0.5, Command(Primitive.ROLL, None, None, None))
     rig.rec.stop_episode()
     rig.rec.close()
+    tune_done(rig.cfg)
     return rig.root, rig.cfg
 
 
@@ -81,6 +99,47 @@ def data(session, spec) -> LudoDataset:
 def batch(data) -> dict[str, torch.Tensor]:
     """One fixed batch of two samples: the probe every loss comparison here is made on."""
     return next(iter(DataLoader(data, batch_size=2, shuffle=False)))
+
+
+@pytest.fixture(scope="module")
+def done_batch(data) -> dict[str, torch.Tensor]:
+    """A two-sample probe with one frame of each done class, for a per-class probability."""
+    labels = [float(data[i]["done"]) for i in range(len(data))]
+    assert 0.0 in labels and 1.0 in labels, "the session must contain both classes for this probe"
+    return default_collate([data[labels.index(0.0)], data[labels.index(1.0)]])
+
+
+@pytest.fixture(scope="module")
+def done_batches(data) -> list[dict[str, torch.Tensor]]:
+    """The whole session, in batches: the distribution the done loss is actually trained on.
+
+    A balanced two-frame probe would be the wrong yardstick. The head is trained on the session's own
+    base rate -- a fifth of these frames are labelled done -- so a head that moves towards that rate
+    lowers the training loss while *raising* the loss of a 50/50 probe, which is what the first
+    version of this measurement showed on the ACT baseline.
+    """
+    return list(DataLoader(data, batch_size=8, shuffle=False))
+
+
+def done_loss_over(model, batches: list[dict[str, torch.Tensor]]) -> float:
+    """Mean done loss over `batches`, frame-weighted.
+
+    Taken in training mode, with the RNG seeded per batch: ACT's loss cannot be evaluated in eval
+    mode at all (with `use_vae` its VAE encoder runs only in training, and
+    `ACTPolicy.forward` then adds `None` to the KL term, `modeling_act.py:155`), and a fixed seed
+    per batch gives two models the same dropout and VAE draw, which is what makes before-and-after a
+    comparison rather than two samples -- the same argument as `_probe` above.
+    """
+    model.train()
+    total, frames = 0.0, 0
+    with torch.no_grad():
+        for index, one in enumerate(batches):
+            torch.manual_seed(4321 + index)
+            model(one)
+            size = int(one["done"].numel())
+            total += model.last_losses["done_loss"] * size
+            frames += size
+    return total / frames
 
 
 @pytest.fixture(scope="module")
@@ -219,6 +278,130 @@ def test_smoke_train_reduces_the_loss(run, spec, batch, capsys) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+# the termination head of CLAUDE.md 5.5 (T-040)
+# --------------------------------------------------------------------------------------------------
+
+
+def pin_done_probability(model, logit: float) -> None:
+    """Force the head to one constant probability, so a test measures the detector, not the weights."""
+    with torch.no_grad():
+        model.done_head.net[-1].weight.zero_()
+        model.done_head.net[-1].bias.fill_(float(logit))
+
+
+def test_the_done_head_reads_the_conditioning_vector_the_action_head_uses(spec, batch) -> None:
+    """5.5's signal is an extra head on the pooled observation, not an extra encoder."""
+    model = GoalDiffusionPolicy(spec)
+    width = model.global_cond_dim()
+    assert width == (spec.cond_state_dim + 16 * len(CAMERAS)) * spec.n_obs_steps  # 8 keypoints x 2
+    assert model.done_head.in_dim == width and model.done_head.hidden_dim == spec.done_hidden_dim
+    # the head is small beside the model it rides on
+    head = sum(p.numel() for p in model.done_head.parameters())
+    assert head < 0.02 * sum(p.numel() for p in model.parameters())
+
+    # an untrained head is silent by construction: zero output layer -> logit 0 -> probability 0.5
+    _actions, probability = model.predict(batch, return_done=True)
+    assert tuple(probability.shape) == (batch["action"].shape[0],)
+    assert torch.allclose(probability, torch.full_like(probability, 0.5))
+
+    # the loss is the BCE against the dataset label, and both halves are reported
+    loss = model(batch)
+    assert set(model.last_losses) == {"action_loss", "done_loss"}
+    assert model.last_losses["done_loss"] == pytest.approx(float(np.log(2.0)), abs=1e-5)
+    assert float(loss.detach()) == pytest.approx(
+        model.last_losses["action_loss"] + spec.done_loss_weight * model.last_losses["done_loss"], abs=1e-5
+    )
+    # a batch with no label trains the action head alone rather than inventing one
+    assert float(model({k: v for k, v in batch.items() if k != "done"}).detach()) > 0
+    assert model.last_losses["done_loss"] is None
+
+
+def test_the_done_loss_trains_the_shared_encoders(spec, batch) -> None:
+    """The tap hands back the live graph, so the auxiliary head is not a detached read-out."""
+    model = GoalDiffusionPolicy(spec)
+    with torch.no_grad():  # a zero output layer passes no gradient back on the very first step
+        model.done_head.net[-1].weight.normal_(0.0, 0.1)
+
+    def gradients(sample: dict[str, torch.Tensor]) -> tuple[torch.Tensor, float]:
+        model.zero_grad(set_to_none=False)
+        torch.manual_seed(7)  # the same diffusion noise and timestep draw in both calls
+        model(sample).backward()
+        return (model.goal_proj.weight.grad.clone(),
+                float(model.done_head.net[0].weight.grad.abs().sum()))
+
+    with_done, hidden = gradients(batch)
+    without, _ = gradients({k: v for k, v in batch.items() if k != "done"})
+    assert not torch.allclose(with_done, without)  # the done loss changed the shared projection
+    assert hidden > 0                              # ... and the head itself was trained
+
+
+def test_smoke_train_reduces_the_done_loss(run, spec, done_batch, done_batches, capsys) -> None:
+    """Acceptance: 30 steps move the termination head, measured over the whole session."""
+    checkpoint = torch.load(run["checkpoint"], map_location="cpu", weights_only=True)
+    trained = GoalDiffusionPolicy(spec)
+    trained.load_state_dict(checkpoint["state_dict"])
+
+    torch.manual_seed(run["args"]["seed"])
+    initial = GoalDiffusionPolicy(spec)
+    initial.load_state_dict({k: v for k, v in checkpoint["state_dict"].items() if k.startswith("norm.")},
+                            strict=False)
+
+    before, after = done_loss_over(initial, done_batches), done_loss_over(trained, done_batches)
+    labels = torch.cat([one["done"] for one in done_batches])
+    probability = trained.predict(done_batch, return_done=True)[1]
+    with capsys.disabled():
+        print(f"\n[T-040] done head, {STEPS} steps, window {DONE_WINDOW_S} s, weight {DONE_LOSS_WEIGHT}")
+        print(f"[T-040]   {int(labels.sum())} of {labels.numel()} frames labelled done "
+              f"(base rate {float(labels.mean()):.3f})")
+        print(f"[T-040]   done loss over the session: {before:.4f} -> {after:.4f} "
+              f"({100 * (after - before) / before:+.1f}%)")
+        print(f"[T-040]   trained p(done): not-done frame {float(probability[0]):.3f}, "
+              f"done frame {float(probability[1]):.3f}")
+    assert 0.0 < float(labels.mean()) < 1.0
+    assert before == pytest.approx(float(np.log(2.0)), abs=1e-6)  # the untrained head is exactly 0.5
+    assert after < before, "30 steps did not reduce the done loss"
+
+
+def test_adapter_done_flips_on_a_high_probability_sequence_and_not_on_a_low_one(bundle, capsys) -> None:
+    """`done()` is `done_hold_steps` consecutive probabilities above `done_threshold`, and nothing else."""
+    adapter = DiffusionAdapter(bundle[0], seed=0)
+    hold = adapter.spec.done_hold_steps
+    assert (hold, adapter.spec.done_threshold) == (2, 0.5)  # config/training.yaml done.*
+    obs = observation()
+    seen: dict[str, list[bool]] = {}
+    for name, logit in (("high", 6.0), ("low", -6.0)):
+        pin_done_probability(adapter.model, logit)
+        adapter.reset(move())
+        assert adapter.done(obs) is False  # nothing has been observed yet
+        seen[name] = []
+        for _ in range(hold + 2):
+            adapter.act(obs)
+            seen[name].append(adapter.done(obs))
+        with capsys.disabled():
+            print(f"[T-040] adapter.done() after each act() at p={adapter.detector.probability:.3f}: "
+                  f"{seen[name]}")
+    assert seen["high"] == [False] * (hold - 1) + [True] * 3   # flips exactly on the hold-th call
+    assert seen["low"] == [False] * (hold + 2)
+    # and a new primitive is not a continuation of the last one
+    pin_done_probability(adapter.model, 6.0)
+    adapter.reset(move())
+    assert adapter.done(obs) is False and adapter.detector.streak == 0
+
+
+def test_the_detector_needs_consecutive_calls_above_the_threshold() -> None:
+    """One confident frame does not end a primitive (`policy/_shared.py` DoneDetector)."""
+    detector = DoneDetector(threshold=0.5, hold_steps=3)
+    assert [detector.update(p) for p in (0.9, 0.9, 0.1, 0.9, 0.9, 0.9)] == [False] * 5 + [True]
+    detector.reset()
+    assert detector.streak == 0 and detector.fired is False
+    assert [detector.update(p) for p in (0.5, 0.51, 0.99)] == [False, False, False]  # strictly above
+    with pytest.raises(ValueError, match="probability in"):
+        DoneDetector(threshold=1.0, hold_steps=1)
+    with pytest.raises(ValueError, match="hold_steps"):
+        DoneDetector(threshold=0.5, hold_steps=0)
+
+
+# --------------------------------------------------------------------------------------------------
 # acceptance 3: the export round trip
 # --------------------------------------------------------------------------------------------------
 
@@ -236,6 +419,14 @@ def test_export_writes_a_self_contained_bundle(bundle, capsys) -> None:
     assert (manifest["torchscript"] is None) != (manifest["trace_error"] is None)
     assert manifest["torchscript_used_at_inference"] is False
     assert manifest["weights_source"] == "ema"  # T-035: a bundle carries the run's averaged weights
+    # T-040: the termination head travels in the weights, and the manifest says what it means
+    assert manifest["done_head"] == {
+        "window_s": DONE_WINDOW_S, "loss_weight": DONE_LOSS_WEIGHT, "hidden_dim": 128,
+        "threshold": 0.5, "hold_steps": 2, "params": manifest["done_head"]["params"],
+    }
+    assert manifest["done_head"]["params"] > 0
+    weights = torch.load(directory / WEIGHTS_FILE, map_location="cpu", weights_only=True)["state_dict"]
+    assert [k for k in weights if k.startswith("done_head.")]
     if manifest["torchscript"]:
         assert (directory / manifest["torchscript"]).is_file()
         assert manifest["torchscript_max_diff"] <= 1e-4
@@ -280,7 +471,8 @@ def test_adapter_satisfies_the_policy_protocol(bundle, spec) -> None:
     assert isinstance(chunk, ActionChunk)
     assert chunk.actions.shape == (spec.chunk, spec.action_dim) and chunk.hz == spec.action_hz
     assert len(chunk) == spec.chunk >= spec.execute  # the controller plays `execute` of what it gets
-    assert adapter.done(observation()) is False  # no termination head: the controller's timeout ends it
+    # T-040: the head exists, but this bundle's is 30 steps old and no streak has been built
+    assert adapter.done(observation()) is False
     # the observation queue fills from one frame and is dropped by reset (receding horizon, 5.2)
     assert len(adapter._queue) == spec.n_obs_steps
     adapter.reset(move())

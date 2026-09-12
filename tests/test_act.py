@@ -22,6 +22,7 @@ import torch
 from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
 from torch.utils.data import DataLoader
+from torch.utils.data._utils.collate import default_collate
 
 from engine.interface import Command, Primitive
 from eval.run_eval import make_policy
@@ -33,7 +34,15 @@ from policy.export import BUNDLE_FORMATS, export, open_bundle
 from policy.train import POLICIES, policy_kind, train
 from runtime import config
 from runtime.policy_api import ActionChunk, Observation, Policy
-from tests.test_diffusion import move, observation
+from tests.test_diffusion import (
+    DONE_LOSS_WEIGHT,
+    DONE_WINDOW_S,
+    done_loss_over,
+    move,
+    observation,
+    pin_done_probability,
+    tune_done,
+)
 
 #: Model overrides that keep a real ResNet-18 backbone and a real transformer but fit in a test suite.
 TINY = {"image_hw": (48, 64), "dim_model": 64, "n_heads": 4, "dim_feedforward": 128,
@@ -61,6 +70,7 @@ def session(tmp_path_factory) -> tuple[Path, Path]:
     rig.run(0.5, Command(Primitive.ROLL, None, None, None))
     rig.rec.stop_episode()
     rig.rec.close()
+    tune_done(rig.cfg)  # T-040: the mock episodes are shorter than the configured done window
     return rig.root, rig.cfg
 
 
@@ -79,6 +89,19 @@ def data(session, spec) -> LudoDataset:
 def batch(data) -> dict[str, torch.Tensor]:
     """One fixed batch of two samples: the probe every loss comparison here is made on."""
     return next(iter(DataLoader(data, batch_size=2, shuffle=False)))
+
+
+@pytest.fixture(scope="module")
+def done_batch(data) -> dict[str, torch.Tensor]:
+    """A two-sample probe with one frame of each done class (T-040), as in tests/test_diffusion.py."""
+    labels = [float(data[i]["done"]) for i in range(len(data))]
+    return default_collate([data[labels.index(0.0)], data[labels.index(1.0)]])
+
+
+@pytest.fixture(scope="module")
+def done_batches(data) -> list[dict[str, torch.Tensor]]:
+    """The whole session in batches: the distribution the done loss is trained on (test_diffusion)."""
+    return list(DataLoader(data, batch_size=8, shuffle=False))
 
 
 @pytest.fixture(scope="module")
@@ -318,6 +341,77 @@ def test_policy_act_is_one_flag_and_changes_nothing_else(monkeypatch, tmp_path) 
 
 
 # --------------------------------------------------------------------------------------------------
+# the termination head of CLAUDE.md 5.5 (T-040): the same signal as the primary, on ACT's features
+# --------------------------------------------------------------------------------------------------
+
+
+def test_the_done_head_reads_the_pooled_encoder_output(spec, batch) -> None:
+    """ACT's counterpart of the global conditioning vector is its transformer encoder's tokens."""
+    model = GoalACTPolicy(spec)
+    assert model.done_head.in_dim == spec.dim_model  # one token width, mean-pooled over the sequence
+    assert model.done_head.hidden_dim == spec.done_hidden_dim
+    _actions, probability = model.predict(batch, return_done=True)
+    assert tuple(probability.shape) == (batch["action"].shape[0],)
+    assert torch.allclose(probability, torch.full_like(probability, 0.5))  # zero output layer
+
+    model.train()
+    loss = model(batch)
+    assert model.last_losses["done_loss"] == pytest.approx(float(np.log(2.0)), abs=1e-5)
+    assert float(loss.detach()) == pytest.approx(
+        model.last_losses["action_loss"] + spec.done_loss_weight * model.last_losses["done_loss"], abs=1e-4
+    )
+    assert float(model({k: v for k, v in batch.items() if k != "done"}).detach()) > 0
+    assert model.last_losses["done_loss"] is None
+    with pytest.raises(ValueError, match="encoder"):
+        model._pool(torch.zeros(4, 8))
+
+
+def test_smoke_train_reduces_the_done_loss(run, spec, done_batch, done_batches, capsys) -> None:
+    """Acceptance: the baseline's head trains on the same label as the primary's, and falls too."""
+    checkpoint = torch.load(run["checkpoint"], map_location="cpu", weights_only=True)
+    trained = GoalACTPolicy(spec)
+    trained.load_state_dict(checkpoint["state_dict"])
+
+    torch.manual_seed(run["args"]["seed"])
+    initial = GoalACTPolicy(spec)
+    initial.load_state_dict({k: v for k, v in checkpoint["state_dict"].items() if k.startswith("norm.")},
+                            strict=False)
+
+    before, after = done_loss_over(initial, done_batches), done_loss_over(trained, done_batches)
+    labels = torch.cat([one["done"] for one in done_batches])
+    probability = trained.predict(done_batch, return_done=True)[1]
+    with capsys.disabled():
+        print(f"[T-040] ACT done head, {STEPS} steps, window {DONE_WINDOW_S} s, weight {DONE_LOSS_WEIGHT}")
+        print(f"[T-040]   {int(labels.sum())} of {labels.numel()} frames labelled done "
+              f"(base rate {float(labels.mean()):.3f})")
+        print(f"[T-040]   done loss over the session: {before:.4f} -> {after:.4f} "
+              f"({100 * (after - before) / before:+.1f}%)")
+        print(f"[T-040]   trained p(done): not-done frame {float(probability[0]):.3f}, "
+              f"done frame {float(probability[1]):.3f}")
+    assert before == pytest.approx(float(np.log(2.0)), abs=1e-6)
+    assert after < before, "30 steps did not reduce the done loss"
+
+
+def test_adapter_done_flips_on_a_high_probability_sequence_and_not_on_a_low_one(bundle, capsys) -> None:
+    """The same detector as `DiffusionAdapter`, on the same configured threshold and hold."""
+    adapter = ACTAdapter(bundle[0])
+    hold = adapter.spec.done_hold_steps
+    assert (hold, adapter.spec.done_threshold) == (2, 0.5)
+    obs = observation()
+    for name, logit in (("high", 6.0), ("low", -6.0)):
+        pin_done_probability(adapter.model, logit)
+        adapter.reset(move())
+        flips = []
+        for _ in range(hold + 2):
+            adapter.act(obs)
+            flips.append(adapter.done(obs))
+        with capsys.disabled():
+            print(f"[T-040] ACT adapter.done() after each act() at p="
+                  f"{adapter.detector.probability:.3f}: {flips}")
+        assert flips == ([False] * (hold - 1) + [True] * 3 if name == "high" else [False] * (hold + 2))
+
+
+# --------------------------------------------------------------------------------------------------
 # acceptance 4: the export round trip
 # --------------------------------------------------------------------------------------------------
 
@@ -333,6 +427,10 @@ def test_export_writes_a_self_contained_act_bundle(bundle, capsys) -> None:
     assert (manifest["torchscript"] is None) != (manifest["trace_error"] is None)
     assert manifest["torchscript_used_at_inference"] is False
     assert manifest["weights_source"] == "ema"  # T-035: a bundle carries the run's averaged weights
+    # T-040: the baseline's bundle carries the same termination head, from the same shared config
+    assert manifest["done_head"]["window_s"] == DONE_WINDOW_S
+    assert manifest["done_head"]["loss_weight"] == DONE_LOSS_WEIGHT
+    assert (manifest["done_head"]["threshold"], manifest["done_head"]["hold_steps"]) == (0.5, 2)
     if manifest["torchscript"]:
         assert (directory / manifest["torchscript"]).is_file()
         assert manifest["torchscript_max_diff"] <= 1e-4
@@ -389,7 +487,8 @@ def test_adapter_satisfies_the_policy_protocol(bundle, spec) -> None:
     assert isinstance(chunk, ActionChunk)
     assert chunk.actions.shape == (spec.expose, spec.action_dim) and chunk.hz == spec.action_hz
     assert len(chunk) == spec.expose == 16  # the controller's contract, unchanged (5.2)
-    assert adapter.done(observation()) is False  # no termination head: the controller's timeout ends it
+    # T-040: the head exists, but this bundle's is 30 steps old and no streak has been built
+    assert adapter.done(observation()) is False
     assert adapter.spec.ensemble_stride == 3 and adapter.spec.temporal_ensemble is True
     # the ensemble accumulates across calls within a primitive and is dropped by reset
     adapter.act(observation())
