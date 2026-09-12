@@ -4163,3 +4163,163 @@ created, edited nor read. R2: no scripted motion and no literal joint target any
 imports `tools/`. R3: `config/safety.yaml` untouched. `third_party/` untouched. `config/board.yaml`
 gained only placeholder perception rules; `REQUIRED_KEYS` untouched, so no config contract changed.
 Committed through the full pre-commit gate, no `--no-verify` (D-013 item 1).
+---
+
+## T-041  Session pre-flight: a read-only go/no-go table before any hardware session  (opus, 2026-09-12T23:10+07:00)
+
+Branch `wt/t041` in the worktree `/home/alois/Desktop/ludo-g1-wt-t041`, created with
+`tools/worktree_setup.sh` (suite green at creation: 659 passed, 15 skipped, 352.98 s).
+
+### What was built
+- **`tools/hardware_checks/session_preflight.py`** (362 lines; 22 docstring header, 55 documented
+  data tuples, ~200 code, the rest blanks/comments). One table, one row per check, each PASS/FAIL/SKIP,
+  `--json` for the same rows as a list, `--budget` for the per-device sampling window (default 3 s),
+  `--no-devices` for a config-only run. Read-only throughout: it asks `SessionGate.status()`, reads
+  the six config files, opens each device through `drivers.make(..., backend="real")` -- the five
+  read-only drivers, none of which has a writer -- and sends nothing. It never reads, writes or asks
+  for `hardware/session.enable` beyond the gate's own status call.
+- The **motion-relevant** rule, documented in the module docstring and in `docs/safety.md`
+  ("Before a session"): the exit code is made only of the rows that can make a motion command wrong
+  or impossible -- the 25 `MOTION_KEYS` placeholders, the e-stop the checklist must name (Q-004,
+  D-004), and the `arm` and `hand` devices, which are the two a motion command can reach (R1). The
+  session gate itself, the four sensor devices, the board calibration, the dataset disk and the git
+  tree are printed and marked unstarred: a human about to open a session wants to see them, but none
+  of them can make an arm move wrongly. Exit 0 only when every starred row is PASS (a SKIP is not a
+  pass), 1 otherwise, 2 usage error.
+- **`MOTION_KEYS`** is data, not code: 25 `(config file, dotted key, why it matters)` rows covering
+  Fable's list (`safety.workspace_box_m.min/max`, `safety.first_command_max_step_rad`,
+  `robot.network.dds_interface`, the four `robot.latency.*` of the actuation and teleop paths,
+  `robot.teleop.pico_to_pelvis`, `hand.device.port`, `hand.pinch.open_pose/closed_pose`,
+  `cameras.top.device`, the four `board.apriltags.*`) plus the rest of the envelope
+  (`workspace_box_m.margin_m`, `joint_limits_rad`, `waist_yaw_clamp_rad`,
+  `joint_velocity_limit_rad_s`, `watchdog_timeout_s`) and the three `robot.control.*` gains a
+  commanded target is executed with. A row is PASS when `runtime.config.unmeasured` no longer reports
+  the key (an ancestor placeholder such as `layout_status` counts as covering its children), FAIL
+  while it does, FAIL naming the key when it is absent, FAIL with the loader's own error when the
+  file will not load. A Phase 1 measurement lands by editing the yaml, never this tuple.
+- **e-stop row**: reads `config/safety.yaml` `session.checklist` when it exists, otherwise
+  `enable_session.CHECKLIST`. It takes the item that mentions an e-stop and requires it to name a
+  device or action (remote, damp chord, power, breaker, switch, button, app, mains, ...). Today's
+  checklist item is the bare `"e-stop within reach"`, so the row FAILs and says Q-004 is unanswered.
+- **device rows**: `drivers.make(name, backend="real")`, then the budget's worth of samples through
+  `stream_stats.drain` (queued streams: arm, real glove) or `stream_stats.stream` (polled: cameras,
+  hand, controller), then the driver's own `probe()`. Construction failing with the driver's
+  `*Unavailable` is SKIP carrying that message verbatim -- those messages already name the config key
+  or the `HARDWARE_NEEDED.md` entry that would supply the device -- an open device that delivers
+  fewer than 2 samples, stops mid-measurement, or whose probe reports `connected=False` is FAIL.
+  The polled path discards one warmup sample: the Orbbec Ego's first frame takes ~2.5 s, and without
+  that discard the first run of this tool reported "30.9 Hz, 18 samples in 0.5 s" for a 3 s budget.
+- **`tests/test_session_preflight.py`** (415 lines, 29 tests): fake gate (open / closed / raising),
+  fake polled and queued devices (healthy / silent / dying / `connected=False`), a fake
+  `drivers.make`, and temporary config roots built by rewriting every placeholder in the six real
+  yaml files to a measured value. Both the PASS and the FAIL path of every row, the exit-code rule on
+  hand-built rows, the `*` marking and the GO/NO-GO line, and the CLI (table, `--json`, `--budget 0`
+  -> 2). One `readonly`-marked test runs the CLI with devices at a 0.2 s budget and only asserts that
+  each device row exists and carries a legal status, so it is green with nothing plugged in.
+- **`docs/safety.md`**: new "Before a session" section (the two commands, what the `*` means, the
+  exit codes, and that this is the first step of the Phase 1 session procedure, before
+  `enable_session.py`).
+
+### Commands run and measured results
+- `.venv/bin/python -m ruff check .` -> "All checks passed!", exit 0.
+- `.venv/bin/python -m pytest tests/test_session_preflight.py -q` -> **29 passed in 4.87 s**, exit 0
+  (the `readonly` test really opened the Orbbec Ego; no session exists and none was asked for). The
+  same file under a git-hook-like environment,
+  `env GIT_DIR=$PWD/.git GIT_INDEX_FILE=$PWD/.git/index .venv/bin/python -m pytest
+  tests/test_session_preflight.py -q` -> 29 passed.
+- `.venv/bin/python tools/hardware_checks/session_preflight.py` -> **exit 1**, 8.6 s wall,
+  **0/28 motion-relevant checks pass**, verdict line "NO-GO for a motion session." Table as printed
+  on this laptop today (device messages abbreviated here with `...`, they are printed in full):
+
+```
+  check                                     status  detail
+  session gate                              SKIP    closed: cannot read session file .../hardware/session.enable: No such file or directory
+* e-stop named                              FAIL    'e-stop within reach' names no device; Q-004 is unanswered (D-004)
+* config safety.workspace_box_m.min         FAIL    UNMEASURED: the box corner that keeps the wrist over the table
+* config safety.workspace_box_m.max         FAIL    UNMEASURED: the box corner that keeps the wrist off the operator
+* config safety.workspace_box_m.margin_m    FAIL    UNMEASURED: slack removed from the box for the hand and the horse
+* config safety.joint_limits_rad            FAIL    UNMEASURED: per-joint stops the command may never ride
+* config safety.waist_yaw_clamp_rad         FAIL    UNMEASURED: how far the hip-mounted torso may swing the arm
+* config safety.joint_velocity_limit_rad_s  FAIL    UNMEASURED: how fast a commanded joint may move
+* config safety.first_command_max_step_rad  FAIL    UNMEASURED: the D-018 lurch cap on the first command of a stream
+* config safety.watchdog_timeout_s          FAIL    UNMEASURED: when the driver hands the arm back to the robot
+* config robot.network.dds_interface        FAIL    UNMEASURED: which interface carries the commands (H-002)
+* config robot.control.kp                   FAIL    UNMEASURED: the stiffness every commanded target is executed with
+* config robot.control.kd                   FAIL    UNMEASURED: the damping every commanded target is executed with
+* config robot.control.weight_ramp_s        FAIL    UNMEASURED: how slowly arm_sdk takes the arm over
+* config robot.latency.arm_ms               FAIL    UNMEASURED: arm actuation latency, Phase 1's first measurement
+* config robot.latency.hand_ms              FAIL    UNMEASURED: hand actuation latency, Phase 1's first measurement
+* config robot.latency.glove_ms             FAIL    UNMEASURED: glove input latency on the teleop path
+* config robot.latency.pico_ms              FAIL    UNMEASURED: controller input latency on the teleop path
+* config robot.teleop.pico_to_pelvis        FAIL    UNMEASURED: controller frame to robot frame; wrong means wrong targets
+* config hand.device.port                   FAIL    UNMEASURED: which bus the DexH15 answers on (H-003)
+* config hand.pinch.open_pose               FAIL    UNMEASURED: the joint pose the pinch scalar 0 expands to
+* config hand.pinch.closed_pose             FAIL    UNMEASURED: the joint pose the pinch scalar 1 expands to
+* config cameras.top.device                 FAIL    UNMEASURED: the frame the goal cells are grounded in (H-001, H-003)
+* config board.apriltags.family             FAIL    UNMEASURED: the tag family the homography is detected with
+* config board.apriltags.size_mm            FAIL    UNMEASURED: tag size; wrong means a scaled board frame
+* config board.apriltags.ids                FAIL    UNMEASURED: which tag is which corner
+* config board.apriltags.centres_mm         FAIL    UNMEASURED: where the tags sit on the printed board
+* device arm                                SKIP    absent: config/robot.yaml network.dds_interface is UNMEASURED ... (H-002)
+* device hand                               SKIP    absent: config/hand.yaml device.port is UNMEASURED and no /dev/ttyUSB*, /dev/ttyACM* node has usb id 067b:23a3 ... (H-003)
+  device glove                              SKIP    absent: config/hand.yaml glove.port is UNMEASURED ... (H-004)
+  device pose                               SKIP    absent: the PicoBridge receiver could not start on 0.0.0.0:63901 ... (H-004)
+  device top                                SKIP    absent: top: config/cameras.yaml top.device is UNMEASURED ...
+  device oblique                            PASS    30.0 Hz, 91 samples in 3.0 s; card ORBBEC: Ego left
+  device palm                               SKIP    absent: palm: config/cameras.yaml palm.device is UNMEASURED ...
+  board calibration                         FAIL    .../config/board_calib.yaml does not exist; H-001 then `python -m board.calibration`
+  dataset disk                              FAIL    12.0 GB free at .../data (target 500 GB, Q-002)
+  git                                       FAIL    HEAD 7088c27, 2 uncommitted path(s): ?? tests/test_session_preflight.py ...
+
+* 0/28 motion-relevant checks pass: ...
+NO-GO for a motion session.
+```
+
+The one PASS device row is the Orbbec Ego left node, the only device plugged into this laptop:
+**30.0 Hz over 91 samples in 3.0 s**. The `git` row FAILed because the run happened before this
+commit; it PASSes on a clean tree (`tests/test_session_preflight.py::test_git_row_reads_head_and_the_tree`
+proves both branches on a throwaway repo).
+
+### Nothing measured that was not run
+No claim here comes from reading code: every number above is the output of the command printed next
+to it, on this laptop, today. No rate is claimed for a device that is not plugged in -- those rows
+say SKIP and carry the driver's reason.
+
+### A defect the pre-commit run found, and its fix
+The first commit attempt failed the hook: `test_git_row_reads_head_and_the_tree` passed on its own
+and failed inside `git commit`. Cause, and it was a real bug in the tool rather than in the test:
+a git hook exports `GIT_DIR` and `GIT_INDEX_FILE`, and `git_row` ran `git -C <repo> status` without
+scrubbing them, so it reported the *hook's* repository instead of the one it was given -- a preflight
+run started from any git context would have printed the wrong tree and the wrong HEAD. `git_row` now
+builds the child environment as `os.environ` minus every `GIT_*` variable, and
+`test_git_row_ignores_an_inherited_git_dir` pins it with two throwaway repos (a clean one read while
+`GIT_DIR`, `GIT_INDEX_FILE` and `GIT_WORK_TREE` point at a dirty one).
+
+### Disagreement / not meeting a stated guideline
+- **`session_preflight.py` is 362 lines, not under 300.** Of those, 22 are the module docstring, 55
+  are the two documented data tuples (`MOTION_KEYS` at one line per key, `_DEVICE_WORDS`), and about
+  200 are code. D-013 item 2 says the remedy for a module over its stated size is to move types to a
+  sibling module rather than to cut docstrings, and this task's touch-list has no sibling module in
+  it, so I kept the documentation and the per-key reasons. If Fable prefers the split, `Row`,
+  `render` and `main` move to `tools/hardware_checks/preflight_report.py` (about 60 lines) and
+  `MOTION_KEYS` could move with them; that is a one-commit follow-up and changes no behaviour.
+- **The 500 GB disk target is a module constant** (`DATASET_TARGET_GB`), not a config key. Section 7
+  wants numbers in yaml, but the task's touch-list allows a new key only in `config/robot.yaml` or
+  `config/hand.yaml`, and a dataset-disk target belongs in neither. It is documented next to the
+  number with its source (CLAUDE.md 3.4, Q-002) and is a keyword argument of `disk_row`.
+
+### Commit and gate
+Work commit **22ef3c4** on branch `wt/t041`, through the full pre-commit gate (ruff + the whole
+suite, no `--no-verify`): **689 passed, 14 skipped in 579.82 s**. The 14 skips are the pre-existing
+absent-hardware and no-session skips of `tests/test_cameras.py`, `test_dexh15.py`, `test_g1_arm.py`,
+`test_pico.py`, `test_pxcap.py` and `test_scaffold.py`.
+
+### Safety
+R1: no motion command exists in this code path -- the tool builds no `Guard`, imports no writer, and
+the five real drivers it opens have no write call at all. `hardware/session.enable` is never created,
+edited, copied or restored; the only contact with it is `SessionGate.status()`, which reads.
+R2: no scripted motion and no literal joint target; `policy/` and `runtime/` import nothing from
+`tools/hardware_checks/`, and this tool imports only `runtime.config`, `runtime.safety.REPO_ROOT` and
+its sibling `stream_stats`. R3: `config/safety.yaml` read, never written -- its hash is unchanged.
+Nothing under `third_party/` touched. Committed through the full pre-commit gate, no `--no-verify`
+(D-013).

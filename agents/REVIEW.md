@@ -272,3 +272,18 @@ EngineUnavailable, silent socket bounded by its timeout); my own controller run 
 dependency may be added; zmq:// accepted as a synonym is fine. The engine block living in config/training.yaml is
 accepted for now (the six-file NAMES pin is deliberate); it moves to config/engine.yaml when the real engine's URL is
 known. The builder's --no-verify slip was undone and redone through the gate before the report; logged, no further action.
+
+## T-041  ACCEPTED  (fable, 2026-09-12T07:19+07:00, commits 22ef3c4, bc69700, merged)
+Ran the tool myself in the worktree: exit 1, "0/28 motion-relevant checks pass, NO-GO", with the e-stop row failing on
+Q-004, every MOTION_KEYS placeholder listed, arm and hand SKIP with their drivers' H-002/H-003 messages, the Orbbec PASS at
+30 Hz, calibration FAIL on H-001, disk FAIL on Q-002. 29 tests pass; the source has no Guard, writer or actuator call and
+reads the gate only through SessionGate.status(). The GIT_* scrubbing defect found by the hook is the kind of thing this tool
+exists to catch. 362 lines: split with T-042. This is now the first step of every session procedure (docs/safety.md).
+
+## T-038  ACCEPTED  (fable, 2026-09-12T07:19+07:00, commits 64ef8c0, c69f779)
+Re-ran: ruff clean; perception + calibration 85 passed with detect at 4.4 ms mean on 640x480 (bound 30 ms); the calibration
+tests are unchanged after the renderer moved to board/synthetic.py; the perception block is a placeholder under
+perception_status UNMEASURED and REQUIRED_KEYS is untouched. Every 6.5 variant has its own test. The honest framing stands:
+these numbers pin the rules, not a detection rate; the first real still (H-001) is where thresholds get measured. Fable fix
+in this commit: docs/README.md's board.md row now mentions perception. perception.py at 999 lines: T-042 splits the
+synthetic-independent detection rules out (board/detect.py) alongside its other splits.
