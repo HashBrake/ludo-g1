@@ -4730,3 +4730,92 @@ Work commit **f594beb** on `main`, through the full pre-commit gate (ruff + the 
 `--no-verify`): **837 passed, 15 skipped in 654.41 s**. The 15 skips are the pre-existing
 absent-hardware, no-session and load-dependent skips (the load-dependent one, `test_train.py:361`,
 skipped at a 1-minute load of 8.1: another builder was running its own suite at the same time).
+---
+
+## T-044  Phase 1 session runbook  (opus, 2026-09-12, branch wt/t044)
+
+### What was written
+`docs/runbook_phase1.md` (new, 459 lines): the order the first three hardware days run in, as steps
+with a command or a physical action and the check that proves each one worked.
+
+- **Day 0** (no hardware): the suite and a baseline `session_preflight.py` table to compare against.
+- **Day 1** (read-only, no session): H-002 (LAN up, `ping`), H-003 + H-004a (Brio, DexH15, glove
+  plugged in, `dialout` check), H-004b (TCP 63901 freed, PicoBridge up), `list_devices.py` and
+  `--json`, a table of the six config keys to fill from that JSON, seven 600 s `stream_stats.py
+  --backend real` runs (arm, hand, palm, top, oblique, glove, pose), `pytest -m readonly`, and
+  `session_preflight.py --json` until only the e-stop, the day-3 placeholders, the calibration and
+  the disk rows fail.
+- **Day 2** (read-only): the two H-001 stills through `brio_still.py`, `board.calibration` on the
+  empty still, `board.calibration --no-write` on the horses still as a stability check, and the
+  perception comparison, which is prose because `board/perception.py` has no CLI.
+- **Day 3** (motion): 3.0 Q-004 answered and the named action committed by a human into
+  `config/safety.yaml` `session.checklist` (what `estop_row` actually greps for: an e-stop word *and*
+  a device word); 3.1 a mock rehearsal of `teleop.loop` and `runtime.controller` on the day; 3.2
+  pre-flight must exit 0; 3.3 a human runs `enable_session.py`; 3.4 T-021 arm latency; 3.5 T-024
+  envelope, noting that T-043 (in progress) adds the fingertip pinch point so a refusal may name
+  `pinch_point`; 3.6 T-022 hand bench; 3.7 T-023 reachability; 3.8 delete the session file.
+  Each of 3.4 to 3.7 states what moves and the BUILD_LOG entry to write: what moved, the envelope in
+  force with `runtime.config.config_hash("safety")` and the values behind it, the session, the
+  observed outcome, and a `SAFETY INCIDENT:` line on contact or out-of-envelope motion (R4(c)).
+- **Abort criteria**: seven conditions, the human's three actions in order (the e-stop named in
+  Q-004's answer, then Ctrl-C, then delete `hardware/session.enable`), the entry the agent writes
+  before any retry, and what happens after — a safety incident stops the loop under R4(c), a plain
+  abort does not but ends the session, three aborts become a `BLOCKERS.md` entry in the 4.7 format.
+- A "what the agents do with the results" paragraph per day: which config keys become MEASURED
+  (`teleop.pico.input_hz`, `control.state_hz`, the four `apriltags.*`, `latency.arm_ms`,
+  `latency.hand_ms`, the control gains, the pinch poses, `tool.pinch_offset_m`, per-cell `reachable`),
+  which verdicts go into `docs/sdks.md` (A2, A3, A4), which `DECISIONS.md` entries Fable writes
+  (the assumption verdicts, the perception thresholds, the proposed envelope, the Phase 1 audit,
+  a board-layout proposal if a used cell is unreachable) and which tasks close (T-008, T-010, T-018,
+  T-019, T-020 open acceptance lines; T-021, T-022, T-023, T-024).
+
+`docs/README.md`: one index row. `tests/test_runbook.py` (new, 196 lines): the acceptance test.
+
+### How it was verified
+```
+.venv/bin/python -m pytest tests/test_runbook.py -q     -> 32 passed, 1 skipped in 7.89 s
+.venv/bin/ruff check tests/test_runbook.py              -> All checks passed!
+```
+The parametrised test collected **22** `.venv/bin/python` command lines from the fenced blocks and
+ran each one with `--help` from the repo root, requiring exit 0 and non-empty stdout: 21 ran, 1
+skipped (`enable_session.py`, below). Distinct entry points exercised: `list_devices.py`,
+`stream_stats.py`, `brio_still.py`, `session_preflight.py`, `enable_session.py`, `-m pytest`,
+`-m board.calibration`, `-m teleop.loop`, `-m runtime.controller`. The other tests: the runbook is
+indexed in `docs/README.md`; the three day sections and the abort section exist; all 20 numbered steps carry a `Check:` line (24 in total); every `H-nnn`, `Q-nnn`, `D-nnn` and `T-nnn` the runbook names is defined as a
+heading in the agents file that owns it (H-001..H-004; Q-002, Q-004, Q-005, Q-007, Q-010; D-002,
+D-004, D-007, D-010, D-018; T-008, T-010, T-018..T-024, T-041, T-043, T-044); every day-1 and day-2
+command is on a read-only entry-point allowlist; and no fenced command uses `python -c` (a `-c`
+snippet cannot be checked with `--help`, so the runbook contains none — the config hash is named as
+`runtime.config.config_hash("safety")` in prose instead).
+
+### Deviation from the acceptance wording
+`tools/hardware_checks/enable_session.py --help` exits **2**, not 0: the tool refuses every argument
+by design (`main()` prints "takes no arguments" and returns 2) so that no flag, script, hook or agent
+can drive the only writer of `hardware/session.enable`. Removing it from the runbook was not an
+option — a human must run exactly that command in step 3.3 — and changing the tool to accept `--help`
+would weaken R1's "interactive on purpose" property for the sake of a test. So the parametrised test
+skips it by name and `test_enable_session_rejects_arguments` asserts the stricter behaviour instead
+(exit 2 and the usage line). Every other command in the runbook meets the criterion as written.
+
+### Disagreement
+None with the task as written. One note: the runbook's day 3 assumes the placeholders that gate
+motion but that day 3 itself measures (`latency.arm_ms`, the envelope box, the control gains) are
+filled with conservative human-proposed values *before* 3.2, because `session_preflight.py` scores a
+placeholder as FAIL and refuses GO. That is the tool behaving as T-041 specified; it means Fable owes
+a `DECISIONS.md` entry with proposed pre-measurement values before the first motion day, and no task
+currently carries that. Flagged here rather than added to `TASKS.md`, which is Fable's file.
+
+### Safety
+R1: nothing in this task can send a motion command. The test runs tools only with `--help`, which
+returns inside argparse before any `main()` body; no `Guard` is built, no driver opened, no session
+file read, created, edited or restored. R2: no scripted motion; the runbook describes tools under
+`tools/hardware_checks/` and never imports them from `policy/` or `runtime/`. R3: `config/safety.yaml`
+untouched — the runbook says twice that a human commits the checklist item and the measured envelope,
+and that an agent only proposes. Nothing under `third_party/` touched. Only the five files the task
+lists were changed. Committed through the full pre-commit gate, no `--no-verify` (D-013).
+
+### Commit and gate
+Work commit **676ce6e** on branch `wt/t044`, through the full pre-commit gate (ruff + the whole
+suite, no `--no-verify`): **838 passed, 16 skipped in 466.10 s**. The 16 skips are the pre-existing
+absent-hardware, no-session and load-dependent ones plus this task's documented
+`enable_session.py` skip. This hash is recorded by the follow-up commit.

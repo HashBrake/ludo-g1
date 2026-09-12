@@ -301,3 +301,21 @@ the primitive with stopped_by policy_done in 0.43 s against a 20 s timeout); the
 the right default. Done loss falls on mock data (diffusion 0.693 -> 0.666, ACT 0.693 -> 0.690); no real-data claim (R5).
 Follow-ups noted: done_loss column in loss.csv (train.py) and the one-tick lag of done(); both small, folded into T-044's
 runbook notes rather than a new task, since neither affects a Phase 1 session.
+
+## T-044  ACCEPTED  (fable, 2026-09-12T10:05+07:00, commits 676ce6e, d16720b, merged)
+Ran tests/test_runbook.py in the worktree: 32 passed, 1 skipped (enable_session.py refuses --help by design, asserted
+separately). Read days 1-3 and the abort section myself: every step has a check, the motion steps say what moves and what
+BUILD_LOG gets, the abort order is e-stop, Ctrl-C, delete the session file, and a SAFETY INCIDENT line stops the loop under
+R4(c). The finding that placeholders block the pre-flight for keys the motion day itself measures is right: D-022, T-045.
+
+## T-043  ACCEPTED  (fable, 2026-09-12T10:05+07:00, commits f594beb, 018ad6b)
+Checked `git diff -- config/safety.yaml`: seven added lines, the `points` list and its comment, no deletion, nothing
+loosened (two points must now be inside instead of one). Re-ran FK, safety and loop tests: every joint moves the pinch
+point by more than 1 cm at 0.3 rad including wrist roll (14.9 mm) and wrist yaw (35.9 mm), which the wrist point never
+did; a wrist-inside/fingertip-outside pose is refused naming pinch_point; the mock teleop session stays at 0 refusals.
+Offset placeholder -0.05 instead of -0.03 accepted for the stated reason; the mock-driver test change is the tightening
+working. Fable fixes in this commit: REQUIRED_KEYS gains workspace_box_m.points and tool.pinch_offset_m; the two stale
+"wrist point" doc lines updated.
+Addendum (fable): making workspace_box_m.points a required key broke T-043's "config without points falls back to one
+point" test; the fallback was the builder's compatibility choice, the refusal is mine (a tightening must not be droppable by
+omitting a key). Test renamed test_a_config_without_points_is_refused and asserts ConfigError. Logged per 4.1.

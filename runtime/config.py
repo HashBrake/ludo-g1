@@ -70,6 +70,7 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "latency.arm_ms",
         "latency.hand_ms",
         "latency.method",
+        "tool.pinch_offset_m",
     ),
     "cameras": (
         "defaults.driver",
@@ -104,6 +105,7 @@ REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "command_rate_limit_hz",
         "command_gap_reset_s",
         "first_command_max_step_rad",
+        "workspace_box_m.points",
         "watchdog_timeout_s",
         "hand.pinch_scalar_range",
         "hand.pinch_rate_limit_per_s",

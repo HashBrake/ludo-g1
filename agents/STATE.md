@@ -1,12 +1,12 @@
 # STATE.md (Fable rewrites this every cycle)
 
-updated: 2026-09-12T09:12+07:00
+updated: 2026-09-12T10:05+07:00
 phase: 0 closed (D-014). Phase 1 read-only drivers are being built against fakes (T-018 done, T-019 next) so only their live checks wait for H-002/H-003. Phase 2/3 non-hardware work continues on mocks.
 milestone: first real motion (T-021) needs Q-004 answered, a human-enabled session, T-018 live, and T-033 (done). Phase 3 gate: the real Greennode training run (cloud/greennode.sh train, docs/cloud.md) waits for Q-001 credentials and a real dataset; --device cuda has never executed.
-last_accepted_commit: merge of wt/t040 (38 tasks accepted; ~820 tests green)
+last_accepted_commit: merge of wt/t044 (40 tasks accepted; ~840 tests green)
 loop: running
 
-next three tasks: T-043 fingertip checked point (starting), T-044 Phase 1 runbook (starting, parallel); then the loop stops under R4(b) until hardware items are done
+next three tasks: T-045 HUMAN_APPROVED status + per-step pre-flight gating (in progress); then the loop stops under R4(b): every remaining task needs a human hardware action (H-001..H-004, Q-004)
 
 what Alois should look at (ten-second version):
 - QUESTIONS.md: Q-001 Greennode credentials (blocks real training), Q-002 disk (12 GB free; a full diffusion checkpoint with EMA and Adam state is ~4.7 GB), Q-004 physical e-stop (blocks first motion), Q-011 Orin NX (now optional: ACT 91 ms and diffusion_small 80 ms fit the 100 ms budget on this laptop, D-021).

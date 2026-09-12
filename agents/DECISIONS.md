@@ -173,3 +173,13 @@ is no longer the only landing; Q-011 stays open as an option, not a blocker. Whi
 question (R5): both are trained on the same data and compared on held-out cell pairs before anything is chosen. The full
 diffusion configuration remains the primary in the sense of 5.7 for training on Greennode; if its on-robot eval is not
 better than diffusion_small's by a margin that pays for a 5x slower loop, diffusion_small is deployed.
+
+## D-022  Envelope values for the first motion session are human-approved placeholders, not measurements  (2026-09-12T10:05+07:00)
+The pre-flight (T-041) treats every UNMEASURED motion key as FAIL, but the workspace box, joint limits, waist clamp,
+velocity limit and first-command step cap are what day 3 (T-024) measures; the actuation latencies are what T-021
+measures; they cannot be MEASURED before the session they gate. R3 says the envelope may only be set by a human commit.
+Decision: a third status value `HUMAN_APPROVED` for config keys: a human reads the value, agrees it is conservative for a
+first session, and commits the status change (the value itself stays as the placeholder Fable proposed). The pre-flight
+passes an envelope key at HUMAN_APPROVED for the first motion session and still fails it at UNMEASURED; latency and
+pico_to_pelvis keys do not gate T-021 (they gate T-023 and Phase 2 recording instead). Alois: the values to approve are in
+config/safety.yaml (all envelope keys) and config/robot.yaml control.kp/kd/weight_ramp_s; say HUMAN: with any change.

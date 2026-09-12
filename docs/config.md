@@ -108,7 +108,7 @@ limits, the waist clamp, the velocity and rate limits, and the hand's pinch rang
 human commit (R3).** Fable may propose a change in `agents/DECISIONS.md`; no agent applies one.
 
 - `workspace_box_m` is an axis-aligned box in the G1 pelvis frame (+x forward, +y left, +z up),
-  applied to the wrist point. The placeholder covers the table region in front of and to the left of
+  applied to the wrist point and the fingertip pinch point (workspace_box_m.points, T-043). The placeholder covers the table region in front of and to the left of
   the robot; the z span is a guess because the table height relative to the pelvis is unknown.
 - `joint_limits_rad` is the MJCF range of each joint tightened by 5 degrees on each side, so a
   command can never ride a mechanical stop. `tests/test_config.py` asserts exactly this relation

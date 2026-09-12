@@ -590,13 +590,14 @@ def test_envelope_refuses_a_points_list_that_is_not_a_non_empty_list(tmp_path: P
         envelope(root=_config_root(tmp_path, replace))
 
 
-def test_a_config_without_points_falls_back_to_the_single_point(tmp_path: Path) -> None:
-    """``points`` was added by T-043; a config that predates it still builds, checking one point."""
+def test_a_config_without_points_is_refused(tmp_path: Path) -> None:
+    """``points`` was added by T-043 as a tightening; Fable made it required at review so a config
+    that omits it is refused by the loader rather than silently checking one point (R3)."""
     def drop(safety: dict) -> None:
         del safety["workspace_box_m"]["points"]
 
-    env = envelope(fk_center, root=_config_root(tmp_path, drop))
-    assert env.box_points == (env.box_point,)
+    with pytest.raises(config.ConfigError, match="workspace_box_m.points"):
+        envelope(fk_center, root=_config_root(tmp_path, drop))
 
 
 def test_an_envelope_without_fk_fails_closed() -> None:

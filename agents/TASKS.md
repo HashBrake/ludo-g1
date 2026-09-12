@@ -1788,7 +1788,7 @@ result: six commits, one per origin file, each through the full pre-commit gate 
   added line, the new module's own __all__. Method and commands in BUILD_LOG.md.
 
 ## T-043  Second checked point: the fingertip pinch point in the workspace box (D-010, tightening)
-status: review
+status: accepted
 priority: P1
 phase: 1
 owner: opus
@@ -1835,7 +1835,7 @@ result:
     fingertip leaves the box before the wrist on its ramp) or the full-suite pre-commit gate could not pass.
 
 ## T-044  Phase 1 session runbook
-status: in_progress
+status: accepted
 priority: P1
 phase: 1
 owner: opus
@@ -1855,3 +1855,61 @@ acceptance:
   - every command in the runbook exists and runs with --help (a test greps the runbook for `.venv/bin/python ...` lines and
     runs each with --help, exit 0); every H-item and Q-item referenced exists in the agents files (test)
 notes: Docs only, plus the test. This is what Alois reads before the first hardware day.
+result: (opus, 2026-09-12, branch wt/t044, commit 676ce6e)
+  - docs/runbook_phase1.md (459 lines): day 0 baseline, day 1 read-only (H-002, H-003, H-004a/b,
+    list_devices, the six config keys to fill, seven 600 s stream_stats runs, pytest -m readonly,
+    session_preflight --json), day 2 calibration (H-001 stills, board.calibration on both, the
+    perception comparison in prose because board/perception.py has no CLI), day 3 motion (3.0 Q-004
+    answered and committed into config/safety.yaml session.checklist by a human, 3.1 mock rehearsal,
+    3.2 preflight GO, 3.3 enable_session.py by a human, 3.4 T-021 latency, 3.5 T-024 envelope with
+    T-043 (in progress) noted for the pinch_point refusals, 3.6 T-022 hand bench, 3.7 T-023
+    reachability, 3.8 close the session), then the abort section. All 20 steps carry a `Check:`;
+    3.4-3.7 each state what moves and the BUILD_LOG entry (what moved, the envelope in force with
+    runtime.config.config_hash("safety"), the session, the outcome, a SAFETY INCIDENT: line on
+    contact or out-of-envelope motion, which stops the loop under R4(c)). Abort: seven conditions,
+    the human's three actions (the e-stop named in Q-004's answer, Ctrl-C, delete the session file),
+    what the agent writes before any retry, and what happens after. A "what the agents do with the
+    results" paragraph per day names the config keys that become MEASURED, the docs/sdks.md verdicts
+    (A2/A3/A4), the DECISIONS entries Fable writes and the tasks that close.
+  - docs/README.md: one index row. tests/test_runbook.py (196 lines): the acceptance test.
+  - `.venv/bin/python -m pytest tests/test_runbook.py -q` -> 32 passed, 1 skipped in 8.19 s.
+    `.venv/bin/ruff check .` -> All checks passed! PASS
+  - acceptance 1: the parametrised test collected 22 `.venv/bin/python` lines from the fenced blocks
+    and ran each with --help from the repo root (exit 0, non-empty stdout): 21 ran, 1 skipped.
+    Entry points: list_devices.py, stream_stats.py, brio_still.py, session_preflight.py,
+    enable_session.py, -m pytest, -m board.calibration, -m teleop.loop, -m runtime.controller.
+  - acceptance 2: every H-, Q-, D- and T- id in the runbook is defined as a heading in the agents
+    file that owns it (H-001..H-004; Q-002, Q-004, Q-005, Q-007, Q-010; D-002, D-004, D-007, D-010,
+    D-018; T-008, T-010, T-018..T-024, T-041, T-043, T-044). PASS
+  - deviation (BUILD_LOG has the argument): enable_session.py --help exits 2, not 0 -- it refuses
+    every argument by design so nothing but a human at a terminal can write hardware/session.enable.
+    The parametrised test skips it by name and test_enable_session_rejects_arguments asserts the
+    stricter behaviour (exit 2 plus the usage line). Every other command meets the criterion as
+    written. The runbook contains no `python -c` snippet (a test asserts it), because one cannot be
+    checked with --help; the config hash is named in prose as runtime.config.config_hash("safety").
+  - R1/R2/R3: no motion command is possible from anything added; --help returns inside argparse.
+    config/safety.yaml untouched. Only the five files in the touch list changed.
+
+## T-045  HUMAN_APPROVED status and per-step gating in the pre-flight (D-022)
+status: in_progress
+priority: P1
+phase: 1
+owner: opus
+depends_on: T-041, T-043
+hardware: none
+deliverables:
+  - runtime/config.py: `_check_status_keys` accepts HUMAN_APPROVED beside UNMEASURED and MEASURED; `unmeasured()` still lists
+    UNMEASURED only; a new `status_of(name, key)` helper
+  - tools/hardware_checks/preflight_report.py: MOTION_KEYS entries gain a `gates` field naming the runbook step they gate
+    (t021_latency, t024_envelope, t022_hand, t023_reach, phase2_recording); session_preflight.py gains `--for STEP`
+    (default: the strictest, every key) and treats HUMAN_APPROVED as PASS only for envelope keys and only for the steps D-022
+    names; the table shows the status word in a column
+  - tests: HUMAN_APPROVED accepted by the loader; the pre-flight with `--for t021_latency` on a config copy whose envelope keys
+    are HUMAN_APPROVED and whose latencies are UNMEASURED reports GO for that step and NO-GO for `--for phase2_recording`
+  - docs/config.md (the third status), docs/safety.md and docs/runbook_phase1.md (step 3.0 gains "approve the envelope
+    values" with the exact keys and the command to show them)
+acceptance:
+  - tests pass; running `session_preflight.py --for t021_latency` on this laptop still says NO-GO (nothing is approved yet)
+    with the e-stop and the approval rows named (output in BUILD_LOG.md)
+notes: No value changes in config/safety.yaml; only the loader and the tool learn a status word. The approval itself is a
+  human commit (R3).
