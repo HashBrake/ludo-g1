@@ -55,6 +55,20 @@ engine.report(outcome)                 # the engine decides on a RECOVER and a r
 one JSON line -> data/logs/controller_<session>.trials.jsonl
 ```
 
+### The policy's own termination signal (5.5, T-040)
+
+`policy.done(obs)` is no longer always False: both models of 5.7 carry an episode-end head trained on
+the recorded episodes (`docs/policy.md`), and their adapters return True once `done.hold_steps` (2)
+consecutive `act()` calls have put its probability above `done.threshold` (0.5). Two consequences for
+this loop, neither of which changed a line of `runtime/controller.py`. First, a primitive can now end
+with `stopped_by="policy_done"` instead of running to the 20 s timeout or the watchdog, and it is
+then perception — not the watchdog — that verifies what happened, so an early stop is still judged by
+the board and reported to the engine like any other ending. Second, the probability is computed
+*inside* `act()`, while the loop asks `done(obs)` *before* `act(obs)`: the signal the loop reads is
+one policy period (100 ms) old, which is what it costs not to run the vision encoders twice per tick.
+`reset(command)` clears the streak, so a new primitive never inherits the last one's. On mocks
+`HoldPolicy.done()` is still False by construction and every mock run still ends at the watchdog.
+
 The controller never retries and never issues a RECOVER of its own. That is the engine's state
 machine (`docs/engine.md`), which keeps R2 intact: retries are orchestration, not motion.
 

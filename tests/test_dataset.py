@@ -93,6 +93,7 @@ def test_sample_shapes_and_dtypes(session) -> None:
     assert tuple(sample["task_id"].shape) == (3,)
     assert tuple(sample["action"].shape) == (16, 9)
     assert tuple(sample["action_mask"].shape) == (16,)
+    assert tuple(sample["done"].shape) == ()  # the episode-end label of T-040, one per frame
     for key, value in sample.items():
         assert value.dtype == torch.float32, key
     for name in CAMERAS:
@@ -233,6 +234,66 @@ def test_the_episode_tail_is_padded_with_the_last_action_and_masked(session) -> 
     early = next(i for i, (pos, frame) in enumerate(data._index) if pos == 0 and frame == episode.start)
     assert data[early]["action_mask"].tolist() == [1.0] * 16
     assert frames == 60
+
+
+# --------------------------------------------------------------------------------------------------
+# the done label (T-040): "within done.window_s of the end of the episode", and nothing else
+# --------------------------------------------------------------------------------------------------
+
+
+def test_done_labels_the_last_window_of_every_episode(session, capsys) -> None:
+    """CLAUDE.md 5.5's termination signal has to be learned from the episode the operator ended."""
+    data = load(session)
+    fps, window = data.fps, data.done_window_s
+    assert (fps, window) == (30, 1.0)  # config/training.yaml rates.dataset_hz and done.window_s
+    assert data.done_frames == 30      # the last frame plus the 30 before it
+
+    for position, episode in enumerate(data.episodes):
+        frames = episode.stop - episode.start
+        labels = [
+            float(data[index]["done"])
+            for index, (pos, _frame) in enumerate(data._index)
+            if pos == position
+        ]
+        assert len(labels) == frames
+        want = min(data.done_frames + 1, frames)
+        assert labels == [0.0] * (frames - want) + [1.0] * want, f"episode {episode.index}"
+        with capsys.disabled():
+            print(f"[T-040] episode {episode.index}: {frames} frames, {want} labelled done "
+                  f"({window} s at {fps} Hz)")
+    # The 2 s episode is the one with both classes; the two 1 s episodes are shorter than the window.
+    longest = data.episodes[0]
+    assert longest.stop - longest.start == 60
+    boundary = next(i for i, (pos, frame) in enumerate(data._index)
+                    if pos == 0 and frame == longest.stop - 1 - data.done_frames)
+    assert float(data[boundary]["done"]) == 1.0                 # exactly done_window_s from the end
+    assert float(data[boundary - 1]["done"]) == 0.0             # one frame earlier is not
+
+
+def test_the_done_window_comes_from_the_config(session, tmp_path_factory) -> None:
+    """A 0 s window labels the last frame only; a negative one is refused, not clamped."""
+    root, cfg = session
+    zero = tmp_path_factory.mktemp("done0") / "config"
+    zero.mkdir()
+    for name in config.NAMES:
+        data = config.load(name, root=cfg)
+        if name == "training":
+            data["done"]["window_s"] = 0.0
+        (zero / f"{name}.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    narrow = LudoDataset([root], config_root=zero)
+    assert narrow.done_frames == 0
+    labels = [float(narrow[i]["done"]) for i, (pos, _f) in enumerate(narrow._index) if pos == 0]
+    assert sum(labels) == 1.0 and labels[-1] == 1.0
+
+    bad = tmp_path_factory.mktemp("donebad") / "config"
+    bad.mkdir()
+    for name in config.NAMES:
+        data = config.load(name, root=cfg)
+        if name == "training":
+            data["done"]["window_s"] = -1.0
+        (bad / f"{name}.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    with pytest.raises(config.ConfigError, match="done.window_s"):
+        LudoDataset([root], config_root=bad)
 
 
 def test_episodes_from_two_sessions_are_never_chunked_across(session, tmp_path_factory) -> None:

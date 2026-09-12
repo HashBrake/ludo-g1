@@ -32,6 +32,7 @@ with a chunk of the actions that followed it:
 | `task_id` | `(3,)` | float32 | one-hot over `config/training.yaml` `observation.task_ids` |
 | `action` | `(chunk, 9)` | float32 | absolute joint targets at `rates.dataset_hz` |
 | `action_mask` | `(chunk,)` | float32 | 1 where the action was recorded, 0 where the tail was padded |
+| `done` | `()` | float32 | 1 when the frame is within `done.window_s` of the end of its episode (T-040) |
 
 `chunk` defaults to `diffusion.chunk` (16); the ACT baseline passes `chunk=32` (`act.chunk`). `S` is
 `n_obs_steps` and **the step dimension exists only above 1** (see below). The 15 raw DexH15 joints
@@ -81,6 +82,15 @@ clamping does both, and a chunk never reaches into the next episode or the next 
 alternative — dropping the last `chunk - 1` frames of every episode — would throw away precisely the
 end of every primitive (the release, the retreat), which is the part the policy has least of and
 needs most. A loss that ignores masked entries gets the same result either way.
+
+### The done label (T-040)
+
+`done` is 1 when the frame's distance to the last frame of its episode is at most
+`config/training.yaml` `done.window_s` — 1.0 s, so the last 31 frames at 30 Hz — and 0 otherwise. It
+is read off the episode span, not off the operator's success flag: an episode that failed still
+*ended*, and a policy that can see a primitive ending is right either way. One shared `done` block
+feeds the label here and the head in both wrappers, because the label is a property of the recorded
+data and two models trained on two different windows would not be the comparison 5.7 asks for.
 
 ### Augmentation (5.7), and what it may never do
 
@@ -166,6 +176,10 @@ private names from `policy/diffusion.py`):
   first — and every later call returns what is in force without resizing a pool that is already
   running (a DataLoader worker sets its own count of 1, and must keep it). The table it is set from
   is at the end of this page.
+- **termination** (T-040) — `DoneHead` (the auxiliary episode-end head of 5.5), `FeatureTap` (how the
+  pooled features get out of a lerobot module we wrap and never patch), `DoneDetector` (threshold and
+  hold, behind both adapters' `done()`) and `done_settings` (the one shared `done` config block). See
+  the section below.
 
 `dataset_stats` counts **each camera's own pixels** since T-034; before that every camera was divided
 by `top`'s pixel count, which scaled the `palm` mean and std by (640·480)/(320·240) = 4 and would have
@@ -227,15 +241,68 @@ episode (the task one-hot) and a single frame handed in by a caller with no hist
 Still open from T-029: EMA (`diffusion.ema_decay`) and the warmup scheduler of `diffusion.scheduler`
 are not applied by `policy/train.py` (T-035).
 
+### The termination head (CLAUDE.md 5.5, T-040)
+
+CLAUDE.md 5.5 ends a primitive on "the policy's own termination signal or a 20 s timeout". Until
+T-040 only the timeout existed and both adapters' `done()` returned a hard-coded False. Both models
+now carry the same auxiliary head, and it is the same head deliberately: the signal is a property of
+the recorded data, so the primary and the baseline must terminate on it identically or the eval
+comparison of 5.7 is confounded.
+
+| | Diffusion Policy | ACT |
+|---|---|---|
+| features the head reads | the U-Net's `global_cond` — state + one camera feature block per camera, flattened over the observation steps | the mean over the transformer encoder's output tokens (`dim_model` wide) |
+| how they are obtained in training | a `FeatureTap` forward pre-hook on the U-Net catches `global_cond` on its way in | a `FeatureTap` forward hook on `model.encoder` catches its output |
+| how they are obtained at inference | `predict` already computes `global_cond` before sampling | the same hook, during `predict_action_chunk` |
+| cost | one matrix multiply per call | one matrix multiply per call |
+
+At the configured scale the head is 52 481 parameters on a 408-D feature for either diffusion block
+(0.018% of the 293.1 M primary, 0.172% of the 30.5 M `diffusion_small`) and 65 793 on a 512-D feature
+for the 51.6 M ACT baseline (0.127%).
+
+The head is a two-layer MLP (`done.hidden_dim` = 128) ending in a **zero-initialised** output layer,
+the same convention as the goal projection: an untrained head returns a logit of exactly 0, so its
+probability is 0.5, so the detector — which needs *strictly above* `done.threshold` — never fires for
+a model that has not learned the signal.
+
+The loss is `BCEWithLogits` against the dataset's `done` label, added inside each wrapper's
+`forward` with weight `done.loss_weight` (0.1). That is where it has to be: `policy/train.py` is one
+loop for both models and calls `model(batch)` for one number, so the auxiliary objective belongs to
+the model and not to the trainer. Each wrapper leaves the two parts in `last_losses`
+(`{"action_loss", "done_loss"}`), which is what the tests measure and what a `done_loss` column in
+`loss.csv` would read (a follow-up in `policy/train.py`, which T-040 did not touch). The tap hands
+back a tensor that is still on the autograd graph, so the done gradient reaches the shared encoders
+— `tests/test_diffusion.py::test_the_done_loss_trains_the_shared_encoders` pins exactly that.
+
+At inference `DoneDetector` turns the probability into a stop: `done()` is True once `done.hold_steps`
+(2) consecutive `act()` calls have exceeded `done.threshold` (0.5), which at `rates.policy_hz` is
+200 ms of agreement, so a single confident frame does not end a primitive. `reset(command)` clears
+the streak. **The probability is computed inside `act()`**, and `runtime/controller.py` asks
+`done(obs)` *before* `act(obs)`, so the signal the loop reads is one policy period (100 ms) old.
+That is the price of not running the vision encoders twice per tick, and it is stated rather than
+hidden.
+
+Measured on the 30-step mock smoke run (a 0.3 s window and weight 1.0, because the mock episodes are
+1.0 s and 0.5 s long and the configured 1.0 s window would label every frame of both as done):
+
+| | done loss over the session | trained p(done), not-done frame | done frame |
+|---|---|---|---|
+| Diffusion Policy | 0.6931 → 0.6664 (−3.9%) | 0.446 | 0.478 |
+| ACT | 0.6931 → 0.6900 (−0.5%) | 0.484 | 0.484 |
+
+30 steps on two mock episodes is enough to show the head is wired and training, and nothing more: the
+base rate of that session is 0.444, and both heads are still mostly learning it. Whether the head
+*separates* the classes is a Phase 3 question on real data (R5).
+
 ### `DiffusionAdapter` (the `runtime.policy_api.Policy` side)
 
 `reset(command)` drops the observation queue and restarts the noise sequence; `act(observation)`
 converts the `Observation` dataclass (uint8 HWC frames, the `(2, h, w)` goal channels, the 9-D state,
 the task one-hot) into the batch, runs one DDIM sample and returns an `ActionChunk` of 16 at
-`rates.action_hz`; `done()` is **always False** — this model has no termination head, so the
-controller's 20 s `runtime.primitive_timeout_s` ends every primitive and the engine verifies the
-state change (5.5). `seed=` pins the initial noise, which is what makes an exported bundle
-reproducible.
+`rates.action_hz`; `done()` reports the termination
+head's streak (the section above); the 20 s `runtime.primitive_timeout_s` is the other end of 5.5 and
+the engine verifies the state change either way. `seed=` pins the initial noise, which is what makes
+an exported bundle reproducible.
 
 ## `policy/act.py`
 
@@ -266,6 +333,7 @@ measurement would make the comparison say something other than "these two archit
 | normalisation | statistics as buffers, STATE/ACTION min/max to [-1, 1] | the same buffers and the same min/max (upstream ACT maps them to mean/std, but lerobot's processor pipeline does not run for either model, and two baselines that normalise differently do not compare) |
 | pretrained backbone | `None` upstream | upstream default is `ResNet18_Weights.IMAGENET1K_V1`, which downloads at construction; `act.pretrained_backbone_weights: null` matches the Diffusion Policy so the comparison is not also a comparison of initialisations |
 | inference determinism | DDIM noise; `seed=` pins it | deterministic: the VAE encoder runs in training only, so the latent is zeros at inference |
+| the done head of 5.5 | on the U-Net's `global_cond` | on the mean of the transformer encoder's output tokens — the same head, the same label, the same thresholds (T-040) |
 
 ### Temporal ensembling lives in `ACTAdapter`, and why
 
@@ -427,7 +495,8 @@ fixed-probe loss `tests/test_diffusion.py` uses (same batch, same seeded draw, t
 
 A checkpoint becomes an inference bundle: `bundle.json` (format tag, the policy name, the spec, the
 weights sha256, which weights they are, the source checkpoint and its sha256, the training run's
-hashes, what tracing did) and `weights.pt` (the `state_dict`, statistics included). **The bundle
+hashes, what tracing did, and the five `done_head` settings of T-040) and `weights.pt` (the
+`state_dict`, statistics and the termination head included). **The bundle
 carries the training run's EMA weights by default**; `--raw` exports the last optimiser step's
 parameters instead, and `bundle.json` records which through `weights_source`, so a success rate
 belongs to one of the two and never to "the run". A checkpoint written before T-035 has no

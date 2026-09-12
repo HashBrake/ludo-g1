@@ -6,6 +6,10 @@
 .venv/bin/python -m eval.run_eval --policy bundle data/checkpoints/<run>/bundle --backend mock
 ```
 
+**The bundle carries the termination head** (T-040): the ``done_head`` parameters are in the
+``state_dict`` like any other, and ``bundle.json`` repeats the five ``done`` settings the spec was
+built with, so a reader can see what window the head was trained on and what ``done()`` will stop on.
+
 **The bundle carries the EMA weights by default** (T-035): ``policy/train.py`` keeps an exponential
 moving average of the parameters beside the live ones and stores it as ``ema_state_dict``, and that
 is what an evaluated policy should be. ``--raw`` exports the last step's parameters instead, and
@@ -212,6 +216,18 @@ def export(checkpoint: Path | str, out_dir: Path | str | None = None, *, trace: 
         # Which set of weights this bundle carries (T-035): the EMA of the training run, or the raw
         # parameters of its last step. A success rate belongs to one of them, not to "the run".
         "weights_source": source,
+        # The termination head of 5.5 (T-040) travels in `state_dict` like every other parameter;
+        # this is the same five numbers read out of the spec, so that a reader of bundle.json can see
+        # what window the head was trained on and what the adapter will stop on without rebuilding
+        # the model. `params` is the head's own parameter count, which is what "small" means here.
+        "done_head": {
+            "window_s": spec.done_window_s,
+            "loss_weight": spec.done_loss_weight,
+            "hidden_dim": spec.done_hidden_dim,
+            "threshold": spec.done_threshold,
+            "hold_steps": spec.done_hold_steps,
+            "params": sum(p.numel() for p in model.done_head.parameters()),
+        },
         "trace_error": trace_error,
         "checkpoint": str(file),
         "checkpoint_sha256": _sha256(file),

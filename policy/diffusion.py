@@ -57,6 +57,18 @@ the observation keys, oldest first, padded at the start of an episode with its f
 the dataset yielded one frame and this module repeated it, which trained the model on a still image
 and ran it on motion; :func:`policy._shared.with_steps` still repeats what is genuinely constant over
 an episode (the task one-hot) and nothing else.
+
+Termination (5.5, T-040)
+------------------------
+CLAUDE.md 5.5 ends a primitive on "the policy's own termination signal or a 20 s timeout". The signal
+is a :class:`policy._shared.DoneHead` on the U-Net's own global conditioning vector -- the pooled
+observation the action head is already conditioned on -- trained with a BCE loss against the
+per-frame label ``policy/dataset.py`` reads off the episode length, weighted by
+``config/training.yaml`` ``done.loss_weight`` inside :meth:`GoalDiffusionPolicy.forward` so that
+``policy/train.py`` needs no change. At inference the probability comes out of the *same* forward
+pass as the actions (a :class:`policy._shared.FeatureTap` in training, the conditioning vector in
+hand in :meth:`GoalDiffusionPolicy.predict`), and :meth:`DiffusionAdapter.done` reports the streak
+:class:`policy._shared.DoneDetector` counts.
 """
 
 from __future__ import annotations
@@ -81,12 +93,17 @@ from torch import Tensor, nn
 from engine.interface import Command
 from policy._shared import (
     BUNDLE_FILE,
+    DONE_KEY,
     EPS,
     IMAGE_KEYS,
     WEIGHTS_FILE,
+    DoneDetector,
+    DoneHead,
+    FeatureTap,
     Normalizer,
     benchmark,
     dataset_stats,
+    done_settings,
     observation_frame,
     set_torch_threads,
     synthetic_observation,
@@ -141,6 +158,17 @@ class PolicySpec:
     spatial_softmax_keypoints: int = 32
     separate_encoder_per_camera: bool = True
     action_hz: float = 30.0
+    # --- the termination head of CLAUDE.md 5.5 (T-040), from `config/training.yaml` `done` -------
+    #: Seconds before the end of an episode that ``policy/dataset.py`` labels as done. The head is
+    #: not built from it -- it is recorded so that a bundle says what its head was trained to mean.
+    done_window_s: float = 1.0
+    #: Weight of the BCE done loss where :meth:`GoalDiffusionPolicy.forward` adds it to its own.
+    done_loss_weight: float = 0.1
+    #: Width of the head's hidden layer: architecture, so a bundle rebuilds the model bit for bit.
+    done_hidden_dim: int = 128
+    #: What :meth:`DiffusionAdapter.done` stops on (:class:`policy._shared.DoneDetector`).
+    done_threshold: float = 0.5
+    done_hold_steps: int = 2
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "image_hw", tuple(int(v) for v in self.image_hw))
@@ -150,6 +178,13 @@ class PolicySpec:
         if self.execute > self.chunk:
             raise ValueError(
                 f"execute {self.execute} > chunk {self.chunk}: the controller cannot play what was not predicted"
+            )
+        if not 0.0 < self.done_threshold < 1.0:
+            raise ValueError(f"done_threshold is a probability in (0, 1), got {self.done_threshold}")
+        if self.done_hold_steps < 1 or self.done_hidden_dim < 1 or self.done_loss_weight < 0:
+            raise ValueError(
+                f"done_hold_steps and done_hidden_dim must be >= 1 and done_loss_weight >= 0, got "
+                f"{self.done_hold_steps}, {self.done_hidden_dim}, {self.done_loss_weight}"
             )
 
     @property
@@ -173,6 +208,7 @@ class PolicySpec:
         if block not in training:
             raise config.ConfigError(f"config/training.yaml has no {block!r} block")
         block = training[block]
+        done = done_settings(config_root)
         spec = cls(
             image_hw=tuple(block["encoder_image_hw"]),
             state_dim=int(training["observation"]["state_dim"]),
@@ -188,6 +224,12 @@ class PolicySpec:
             spatial_softmax_keypoints=int(block["spatial_softmax_keypoints"]),
             separate_encoder_per_camera=bool(block["encoder_per_camera"]),
             action_hz=float(training["rates"]["action_hz"]),
+            # One shared `done` block for both models of 5.7 and for the dataset that labels them.
+            done_window_s=done["window_s"],
+            done_loss_weight=done["loss_weight"],
+            done_hidden_dim=done["hidden_dim"],
+            done_threshold=done["threshold"],
+            done_hold_steps=done["hold_steps"],
         )
         return replace(spec, **overrides) if overrides else spec
 
@@ -245,6 +287,27 @@ class GoalDiffusionPolicy(nn.Module):
             for channel in range(3):
                 self.goal_proj.weight[channel, channel, 0, 0] = 1.0
         self.norm = Normalizer(spec)
+        # The termination head of 5.5 (T-040), on the U-Net's own conditioning vector: the pooled
+        # observation the action head is conditioned on, and nothing else.
+        self.done_head = DoneHead(self.global_cond_dim(), spec.done_hidden_dim)
+        #: Catches ``global_cond`` on its way into the U-Net during training, so the done loss costs
+        #: no second pass over the vision encoders (see :class:`policy._shared.FeatureTap`).
+        self._tap = FeatureTap()
+        self._tap.watch_keyword(self.lerobot.diffusion.unet, "global_cond")
+        #: The two parts of the last :meth:`forward`, for the run record and the smoke tests.
+        self.last_losses: dict[str, float] = {}
+
+    def global_cond_dim(self) -> int:
+        """Width of ``DiffusionModel._prepare_global_conditioning``'s output, the head's input.
+
+        lerobot's own arithmetic (``modeling_diffusion.py:170-183``): the state vector plus one
+        camera feature block per camera, all of it flattened over the observation steps. It is not
+        stored on the model, so it is recomputed here from the encoder that produced it, and
+        :class:`policy._shared.DoneHead` refuses a features tensor of any other width.
+        """
+        encoder = self.lerobot.diffusion.rgb_encoder
+        feature_dim = (encoder[0] if isinstance(encoder, nn.ModuleList) else encoder).feature_dim
+        return (self.spec.cond_state_dim + feature_dim * len(IMAGE_KEYS)) * self.spec.n_obs_steps
 
     def __repr__(self) -> str:
         params = sum(p.numel() for p in self.parameters())
@@ -287,7 +350,13 @@ class GoalDiffusionPolicy(nn.Module):
     # -- training ---------------------------------------------------------------------------------
 
     def forward(self, batch: Mapping[str, Tensor]) -> Tensor:
-        """The diffusion loss on one batch of :class:`policy.dataset.LudoDataset` samples."""
+        """The diffusion loss on one batch, plus ``done_loss_weight`` x the termination loss (5.5).
+
+        One number, because ``policy/train.py`` is one loop for both models of 5.7 and calls
+        ``model(batch)``; the two parts are left in :attr:`last_losses` for the run record and for
+        the tests that have to see the done loss fall on its own. A batch without a ``done`` label --
+        a hand-built shape probe -- trains the action head alone and records ``None``.
+        """
         prepared = self._lerobot_batch(batch)
         prepared[ACTION] = self.norm.action(batch["action"])
         mask = batch.get("action_mask")
@@ -296,26 +365,43 @@ class GoalDiffusionPolicy(nn.Module):
             if mask is None
             else mask < 0.5
         )
+        self._tap.clear()
         loss, _ = self.lerobot.forward(prepared)
-        return loss
+        if DONE_KEY not in batch:
+            self._tap.clear()
+            self.last_losses = {"action_loss": float(loss.detach()), "done_loss": None}
+            return loss
+        # The tap holds the very tensor the U-Net was conditioned on one call ago, still attached to
+        # the graph, so the gradient of the done loss reaches the shared encoders (T-040).
+        done_loss = self.done_head.loss(self._tap.take("global_cond"), batch[DONE_KEY])
+        self.last_losses = {"action_loss": float(loss.detach()), "done_loss": float(done_loss.detach())}
+        return loss + self.spec.done_loss_weight * done_loss
 
     # -- inference --------------------------------------------------------------------------------
 
     @torch.no_grad()
-    def predict(self, batch: Mapping[str, Tensor], *, noise: Tensor | None = None) -> Tensor:
+    def predict(
+        self, batch: Mapping[str, Tensor], *, noise: Tensor | None = None, return_done: bool = False
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """``(B, chunk, action_dim)`` absolute actions, in joint units.
 
         The whole horizon is returned, starting at the current frame: ``policy/dataset.py`` aligns
         the action chunk at delta 0, unlike lerobot's own ``generate_actions``, which slices from
         ``n_obs_steps - 1`` for a dataset aligned at delta ``1 - n_obs_steps`` (see the module
         docstring).
+
+        ``return_done`` also returns the ``(B,)`` termination probability (5.5, T-040). It costs one
+        matrix multiply and no second encoder pass: the conditioning vector the head reads is the one
+        this call already built for the U-Net.
         """
         prepared = self._lerobot_batch(batch)
         prepared[OBS_IMAGES] = torch.stack([prepared[key] for key in IMAGE_KEYS.values()], dim=-4)
         model = self.lerobot.diffusion
         global_cond = model._prepare_global_conditioning(prepared)
         sample = model.conditional_sample(prepared[OBS_STATE].shape[0], global_cond=global_cond, noise=noise)
-        return self.norm.unnormalize_action(sample)
+        self._tap.clear()  # the sampling loop tripped it `inference_steps` times; keep no graph alive
+        actions = self.norm.unnormalize_action(sample)
+        return (actions, self.done_head.probability(global_cond)) if return_done else actions
 
 
 # --------------------------------------------------------------------------------------------------
@@ -360,6 +446,9 @@ class DiffusionAdapter:
         self.seed = seed
         self._generator = None if seed is None else torch.Generator(device=self.device).manual_seed(int(seed))
         self._queue: deque[dict[str, Tensor]] = deque(maxlen=spec.n_obs_steps)
+        #: The termination signal of 5.5: one probability per :meth:`act`, ``done_hold_steps``
+        #: consecutive ones above ``done_threshold`` and :meth:`done` is True (T-040).
+        self.detector = DoneDetector(spec.done_threshold, spec.done_hold_steps)
         self.command: Command | None = None
         self.calls = 0
         #: Wall-clock cost of the last :meth:`act`, split into preparation and diffusion (ms).
@@ -374,15 +463,19 @@ class DiffusionAdapter:
     # -- runtime.policy_api.Policy ----------------------------------------------------------------
 
     def reset(self, command: Command) -> None:
-        """Start a primitive: drop the observation queue and restart the noise sequence."""
+        """Start a primitive: drop the observation queue, the done streak and the noise sequence."""
         self.command = command
         self.calls = 0
         self._queue.clear()
+        self.detector.reset()
         if self.seed is not None:
             self._generator = torch.Generator(device=self.device).manual_seed(int(self.seed))
 
     def act(self, observation: Observation) -> ActionChunk:
-        """One diffusion sample: ``chunk`` absolute 9-D actions at ``rates.action_hz``."""
+        """One diffusion sample: ``chunk`` absolute 9-D actions at ``rates.action_hz``.
+
+        The same forward pass also feeds the termination head (T-040), so :meth:`done` costs nothing.
+        """
         start = time.perf_counter()
         batch = self._batch(observation)
         prepared = time.perf_counter()
@@ -391,7 +484,8 @@ class DiffusionAdapter:
             noise = torch.randn(
                 (1, self.spec.chunk, self.spec.action_dim), generator=self._generator, device=self.device
             )
-        actions = self.model.predict(batch, noise=noise)
+        actions, probability = self.model.predict(batch, noise=noise, return_done=True)
+        self.detector.update(float(probability[0]))
         self.calls += 1
         done = time.perf_counter()
         self.last_timing = {"prepare_ms": (prepared - start) * 1e3, "sample_ms": (done - prepared) * 1e3,
@@ -399,14 +493,19 @@ class DiffusionAdapter:
         return ActionChunk(actions=actions[0].to("cpu").numpy().astype(np.float64), hz=self.spec.action_hz)
 
     def done(self, observation: Observation) -> bool:
-        """Always False: this model has no termination head.
+        """The policy's own termination signal (CLAUDE.md 5.5): what the done head has been saying.
 
-        CLAUDE.md 5.5 gives the policy its own termination signal; nothing in the data labels one yet,
-        so the controller's ``runtime.primitive_timeout_s`` (20 s) ends every primitive and the engine
-        verifies the state change. A termination head is a separate task, not a default of False
-        dressed up as one.
+        True once ``done_hold_steps`` consecutive :meth:`act` calls have put the head's probability
+        above ``done_threshold``. The probability is produced *inside* ``act``, so what this reports
+        is the state after the previous call -- ``runtime/controller.py`` asks ``done(obs)`` before
+        ``act(obs)``, and one policy period of lag is what it costs not to run the vision encoders a
+        second time. ``observation`` is therefore unused, and the signature is the protocol's.
+
+        An untrained head is silent by construction: its output layer starts at zero, so the
+        probability is exactly 0.5 and the detector needs strictly more (``policy/_shared.py``). The
+        20 s ``runtime.primitive_timeout_s`` remains the other end of 5.5.
         """
-        return False
+        return self.detector.fired
 
     # -- observation -> tensors -------------------------------------------------------------------
 

@@ -5,7 +5,7 @@ private names (T-030 review); they live here instead, so that neither model is a
 other. Nothing in this module knows which architecture it is serving: every function takes the
 spec's fields (``goal_channels``, ``cond_state_dim``, ``action_dim``, ``image_hw``) and no spec type.
 
-Three groups, in order:
+Four groups, in order:
 
 * **feeding** -- :func:`image_tensor`, :func:`observation_frame`, :func:`with_steps`: one
   :class:`runtime.policy_api.Observation` or one batch turned into the tensors a wrapped lerobot
@@ -17,6 +17,9 @@ Three groups, in order:
 * **measurement** -- :func:`benchmark`, :func:`synthetic_observation` and
   :func:`set_torch_threads`: the identical latency measurement for both models, which is what makes
   D-019's comparison a comparison, and the one place the torch thread pool of D-020 is sized.
+* **termination** (T-040) -- :class:`DoneHead`, :class:`FeatureTap`, :class:`DoneDetector` and
+  :func:`done_settings`: the auxiliary episode-end head of CLAUDE.md 5.5, identical in both models
+  so that the termination signal is a property of the data and not of the architecture.
 
 Nothing here moves the robot (R1, R2).
 """
@@ -39,12 +42,17 @@ from runtime.types import ACTION_DIM
 
 __all__ = [
     "BUNDLE_FILE",
+    "DONE_KEY",
     "EPS",
     "IMAGE_KEYS",
     "WEIGHTS_FILE",
+    "DoneDetector",
+    "DoneHead",
+    "FeatureTap",
     "Normalizer",
     "benchmark",
     "dataset_stats",
+    "done_settings",
     "image_tensor",
     "observation_frame",
     "set_torch_threads",
@@ -60,6 +68,9 @@ EPS = 1e-8
 #: What an inference bundle holds (see :func:`policy.export.export`).
 BUNDLE_FILE = "bundle.json"
 WEIGHTS_FILE = "weights.pt"
+#: The per-frame episode-end label ``policy/dataset.py`` puts in every sample (T-040), and the key
+#: both wrappers look for in a batch before they add the done loss to their own.
+DONE_KEY = "done"
 #: The thread count :func:`set_torch_threads` put in force in this process, or None before the first
 #: call. Process state, because the torch thread pool is process state.
 _THREADS: int | None = None
@@ -298,3 +309,184 @@ def set_torch_threads(config_root: Path | str | None = None, *, threads: int | N
     torch.set_num_threads(count)
     _THREADS = count
     return count
+
+
+# --------------------------------------------------------------------------------------------------
+# termination (CLAUDE.md 5.5: "the policy's own termination signal or a 20 s timeout"), T-040
+# --------------------------------------------------------------------------------------------------
+
+
+def done_settings(config_root: Path | str | None = None) -> dict[str, float]:
+    """``config/training.yaml`` ``done``, validated: the one block both models and the dataset read.
+
+    One block rather than a copy in each policy block, for the same reason ``rates`` and
+    ``observation`` are shared: the label is a property of the *recorded episode*, not of an
+    architecture, and two models trained on two different windows would not be the comparison of 5.7.
+    The values are copied verbatim into each model's spec (and from there into its bundle), so an
+    exported policy carries the window it was trained on and the thresholds it stops on.
+    """
+    block = config.load("training", root=config_root)["done"]
+    out = {
+        "window_s": float(block["window_s"]),
+        "loss_weight": float(block["loss_weight"]),
+        "hidden_dim": int(block["hidden_dim"]),
+        "threshold": float(block["threshold"]),
+        "hold_steps": int(block["hold_steps"]),
+    }
+    if out["window_s"] < 0:
+        raise config.ConfigError(f"config/training.yaml done.window_s must be >= 0, got {out['window_s']}")
+    if out["loss_weight"] < 0:
+        raise config.ConfigError(f"config/training.yaml done.loss_weight must be >= 0, got {out['loss_weight']}")
+    if out["hidden_dim"] < 1:
+        raise config.ConfigError(f"config/training.yaml done.hidden_dim must be >= 1, got {out['hidden_dim']}")
+    if not 0.0 < out["threshold"] < 1.0:
+        raise config.ConfigError(
+            f"config/training.yaml done.threshold is a probability in (0, 1), got {out['threshold']}"
+        )
+    if out["hold_steps"] < 1:
+        raise config.ConfigError(f"config/training.yaml done.hold_steps must be >= 1, got {out['hold_steps']}")
+    return out
+
+
+class DoneHead(nn.Module):
+    """One logit -- "this primitive is ending" -- from the pooled observation features (5.5).
+
+    A two-layer MLP on exactly the features the action head is conditioned on: the Diffusion
+    Policy's global conditioning vector, ACT's pooled transformer-encoder output. Nothing else is
+    added to either model, so the termination signal costs one matrix multiply per call and shares
+    every encoder with the actions.
+
+    **The output layer starts at zero**, the same convention as the goal projection of both wrappers:
+    an untrained head returns a logit of exactly 0, so its probability is 0.5, so
+    :class:`DoneDetector` (which needs *above* its threshold) never fires for a model that has not
+    learned the signal. A default of "not done" is what the 20 s timeout of 5.5 already covers.
+    """
+
+    def __init__(self, in_dim: int, hidden_dim: int) -> None:
+        super().__init__()
+        if in_dim < 1 or hidden_dim < 1:
+            raise ValueError(f"DoneHead needs positive dimensions, got in_dim={in_dim} hidden_dim={hidden_dim}")
+        self.in_dim, self.hidden_dim = int(in_dim), int(hidden_dim)
+        self.net = nn.Sequential(nn.Linear(self.in_dim, self.hidden_dim), nn.ReLU(), nn.Linear(self.hidden_dim, 1))
+        with torch.no_grad():
+            self.net[-1].weight.zero_()
+            self.net[-1].bias.zero_()
+
+    def __repr__(self) -> str:
+        return f"DoneHead(in_dim={self.in_dim}, hidden_dim={self.hidden_dim})"
+
+    def forward(self, features: Tensor) -> Tensor:
+        """``(B, in_dim)`` pooled features to ``(B,)`` logits."""
+        if features.ndim != 2 or features.shape[1] != self.in_dim:
+            raise ValueError(f"DoneHead expects (B, {self.in_dim}) features, got {tuple(features.shape)}")
+        return self.net(features).squeeze(-1)
+
+    def loss(self, features: Tensor, labels: Tensor) -> Tensor:
+        """BCE-with-logits against the per-frame label of ``policy/dataset.py`` (``done``)."""
+        target = labels.to(features.dtype).reshape(-1)
+        logits = self(features)
+        if target.shape != logits.shape:
+            raise ValueError(f"done labels {tuple(target.shape)} do not match the batch {tuple(logits.shape)}")
+        return nn.functional.binary_cross_entropy_with_logits(logits, target)
+
+    def probability(self, features: Tensor) -> Tensor:
+        return torch.sigmoid(self(features))
+
+
+class FeatureTap:
+    """Read a tensor out of a lerobot module we wrap but never patch (R2, section 7).
+
+    Both models compute the pooled features the done head wants *inside* a lerobot call whose only
+    return value is a loss or an action chunk: the Diffusion Policy passes ``global_cond`` into its
+    U-Net, ACT's transformer encoder produces the token sequence its decoder attends to. Rather than
+    running the vision encoders a second time to get them back -- which would make training and
+    inference measurably slower for a head that is a single matrix multiply -- a standard PyTorch
+    forward hook on the module *instance we built* catches the tensor as it goes past. Nothing under
+    ``third_party/`` or in the installed package is modified, and the hook is registered on an
+    instance this process owns.
+
+    The captured tensor is part of the live autograd graph in training, so a gradient from the done
+    loss reaches the shared encoders exactly as one from the action loss does.
+    """
+
+    def __init__(self) -> None:
+        self.value: Tensor | None = None
+
+    def __repr__(self) -> str:
+        return f"FeatureTap(captured={None if self.value is None else tuple(self.value.shape)})"
+
+    def clear(self) -> None:
+        """Drop the reference, so a captured graph does not outlive the step that made it."""
+        self.value = None
+
+    def take(self, what: str) -> Tensor:
+        """The captured tensor, cleared as it is handed over. Raises if nothing was captured."""
+        if self.value is None:
+            raise RuntimeError(
+                f"{what} was not captured: the wrapped lerobot module did not run, or its call signature "
+                "changed (policy/_shared.py FeatureTap)"
+            )
+        value, self.value = self.value, None
+        return value
+
+    def watch_keyword(self, module: nn.Module, name: str):
+        """Capture the keyword argument ``name`` of every call to ``module``."""
+
+        def hook(_module, _args, kwargs):
+            value = kwargs.get(name)
+            if value is not None:
+                self.value = value
+
+        return module.register_forward_pre_hook(hook, with_kwargs=True)
+
+    def watch_output(self, module: nn.Module):
+        """Capture the output of every call to ``module``."""
+
+        def hook(_module, _args, output):
+            self.value = output
+
+        return module.register_forward_hook(hook)
+
+
+class DoneDetector:
+    """``hold_steps`` consecutive probabilities above ``threshold`` and the primitive is over.
+
+    The state behind both adapters' ``done()``. One probability is folded in per ``act()`` call --
+    the same forward pass that produced the actions, never a second one -- and ``done()`` reports
+    what the counter says. So the signal the controller reads at tick *n* is the probability computed
+    at tick *n - 1*: ``runtime/controller.py`` asks ``done(obs)`` before ``act(obs)``, and one policy
+    period (100 ms at ``rates.policy_hz``) is the cost of not running the encoders twice.
+
+    Requiring agreement over ``hold_steps`` calls is why a threshold crossing on one frame -- a
+    glimpse of a released horse through a moving hand -- does not end a primitive.
+    """
+
+    def __init__(self, threshold: float, hold_steps: int) -> None:
+        if not 0.0 < float(threshold) < 1.0:
+            raise ValueError(f"DoneDetector threshold is a probability in (0, 1), got {threshold}")
+        if int(hold_steps) < 1:
+            raise ValueError(f"DoneDetector needs hold_steps >= 1, got {hold_steps}")
+        self.threshold = float(threshold)
+        self.hold_steps = int(hold_steps)
+        self.reset()
+
+    def __repr__(self) -> str:
+        return (f"DoneDetector(threshold={self.threshold:g}, hold_steps={self.hold_steps}, "
+                f"streak={self.streak}, p={self.probability:.3f})")
+
+    def reset(self) -> None:
+        """A new primitive is not a continuation of the last one (``Policy.reset``)."""
+        self.streak = 0
+        self.probability = 0.0
+        self.calls = 0
+
+    def update(self, probability: float) -> bool:
+        """Fold in one call's probability and return whether the primitive is now done."""
+        self.probability = float(probability)
+        self.streak = self.streak + 1 if self.probability > self.threshold else 0
+        self.calls += 1
+        return self.fired
+
+    @property
+    def fired(self) -> bool:
+        return self.streak >= self.hold_steps
