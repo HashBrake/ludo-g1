@@ -4324,7 +4324,7 @@ its sibling `stream_stats`. R3: `config/safety.yaml` read, never written -- its 
 Nothing under `third_party/` touched. Committed through the full pre-commit gate, no `--no-verify`
 (D-013).
 
-## T-040  Policy termination signal: an episode-end head trained from recorded episodes  (opus, 2026-09-12T23:55+07:00, branch wt/t040)
+## T-040  Policy termination signal: an episode-end head trained from recorded episodes  (opus, 2026-09-12T23:55+07:00, commit 55052f2, branch wt/t040)
 
 CLAUDE.md 5.5 ends a primitive on "the policy's own termination signal or a 20 s timeout"; until this
 task only the timeout existed and both adapters' `done()` returned a hard-coded False. Both models of
@@ -4432,6 +4432,11 @@ falling" was first measured on a balanced two-frame probe, which showed the ACT 
 reported above is the frame-weighted mean over the whole session -- the distribution the loss is
 actually trained on -- which is the honest yardstick; the balanced probe survives only as the
 per-class probability print.
+
+### Commit and gate
+Work commit **55052f2** on branch `wt/t040`, through the full pre-commit gate (ruff + the whole
+suite, no `--no-verify`): **806 passed, 15 skipped in 513.98 s**. The 15 skips are the pre-existing
+absent-hardware, no-session and load-dependent skips.
 
 ### Safety
 R1: nothing here can send a motion command. `policy/` builds no `Guard`, imports no driver, and the

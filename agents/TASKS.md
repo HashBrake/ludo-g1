@@ -1686,7 +1686,7 @@ deliverables:
 acceptance:
   - tests pass with printed numbers; docs/policy.md and docs/controller.md updated
 notes: CLAUDE.md 5.5 names "the policy's own termination signal or a 20 s timeout"; until this lands only the timeout exists.
-result: (opus, 2026-09-12T23:55+07:00, commit COMMIT_HASH, branch wt/t040)
+result: (opus, 2026-09-12T23:55+07:00, commit 55052f2, branch wt/t040)
   - `.venv/bin/python -m pytest tests/test_dataset.py tests/test_controller.py -q` -> 57 passed in 93 s. PASS
   - `.venv/bin/python -m pytest tests/test_act.py tests/test_diffusion.py -q -s` -> 35 passed in 89 s. PASS
   - `.venv/bin/python -m pytest tests/test_train.py tests/test_eval.py -q` -> 49 passed, 1 skipped (the pre-existing
