@@ -112,7 +112,9 @@ keys, which then overrides the `tag_inset_mm` derivation), flip the statuses to 
 
 `board/perception.py` answers the question `runtime/controller.py` asks after every primitive — *did
 that actually happen?* — and the one the watchdog asks during it — *is anything happening at all?*
-Both go through the `Perception` Protocol, which has exactly two methods and no state:
+Both go through the `Perception` Protocol, which has exactly two methods and no state. The blob
+measurement and the classification rules it applies (`Rules`, `load_rules`, `Pose`, `Placement`,
+`Bowl`) live in `board/detect.py` since T-042; `perception.py` imports them back.
 
 ```python
 from board import calibration, perception
