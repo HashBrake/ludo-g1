@@ -297,6 +297,10 @@ a receding horizon.
 
 ## `policy/train.py`
 
+The checkpoint I/O it uses — `atomic_save`, `write_step_checkpoint`, `prune_step_checkpoints`, the
+disk guard and the `EMA` — lives in `policy/train_io.py` since T-042; `train.py` imports every name
+back, so `policy.train.EMA` and the rest still resolve.
+
 ```bash
 .venv/bin/python -m policy.train --sessions data/raw/<session> --steps 200000        # Greennode
 .venv/bin/python -m policy.train --sessions data/raw/<session> --policy act          # the baseline
