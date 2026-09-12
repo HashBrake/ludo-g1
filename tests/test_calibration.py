@@ -9,6 +9,9 @@ of the 88 cells the policy will be asked to point at, not only at the tag corner
 
 The rendering deliberately goes through the real ``config/board.yaml`` (tag ids, family, size, the
 derived centres, and the cell table), so a change to any of those runs through this test.
+
+The renderer itself lives in ``board/synthetic.py`` (moved there by T-038) so that the perception
+tests can put horses on the very same board image and run the two modules in composition.
 """
 
 from __future__ import annotations
@@ -17,95 +20,18 @@ import cv2
 import numpy as np
 import pytest
 
-from board import calibration
+from board import calibration, synthetic
 from engine.cells import load_cells
 from runtime import config
 from tools.hardware_checks import brio_still
 
-PX_PER_MM = 2.0
-MARGIN_PX = 100
-
-
-def _apply(h: np.ndarray, pts) -> np.ndarray:
-    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
-    out = np.concatenate([pts, np.ones((len(pts), 1))], axis=1) @ np.asarray(h, dtype=np.float64).T
-    return out[:, :2] / out[:, 2:3]
-
-
-def _render_board(geometry: calibration.TagGeometry) -> tuple[np.ndarray, np.ndarray]:
-    """A white board image with the four tags drawn on it, plus the true board-mm -> px homography.
-
-    The base mapping is a pure scale and flip: board +x to the right, board +y *up* the image, at
-    ``PX_PER_MM`` pixels per millimetre with a white margin around the board outline.
-
-    Two pixel conventions meet here and the half pixel between them is not noise. Numpy indexing
-    puts the first row of the marker block at row index ``y``; OpenCV's continuous image coordinates
-    put the *centre* of that pixel at ``y``, so the marker's physical top-left edge -- what the
-    detector localises -- is at ``y - 0.5``. ``h_place`` is the integral mapping used to blit the
-    marker blocks; the returned ground truth is that mapping shifted by half a pixel on both axes.
-    """
-    width_mm, height_mm = (float(v) for v in config.load("board")["size_mm"])
-    width = int(round(width_mm * PX_PER_MM)) + 2 * MARGIN_PX
-    height = int(round(height_mm * PX_PER_MM)) + 2 * MARGIN_PX
-    h_place = np.array(
-        [
-            [PX_PER_MM, 0.0, MARGIN_PX + width_mm / 2.0 * PX_PER_MM],
-            [0.0, -PX_PER_MM, MARGIN_PX + height_mm / 2.0 * PX_PER_MM],
-            [0.0, 0.0, 1.0],
-        ]
-    )
-
-    image = np.full((height, width), 255, dtype=np.uint8)
-    side_px = int(round(geometry.size_mm * PX_PER_MM))
-    dictionary = cv2.aruco.getPredefinedDictionary(geometry.dictionary)
-    for key in calibration.CORNER_KEYS:
-        marker = cv2.aruco.generateImageMarker(dictionary, geometry.ids[key], side_px)
-        # Corner 0 of the aruco order is the marker's top-left, i.e. board (cx - s/2, cy + s/2).
-        top_left = _apply(h_place, geometry.corners_mm(key)[0])[0]
-        x, y = np.round(top_left).astype(int)
-        assert np.allclose(top_left, [x, y]), f"{key} does not land on a whole pixel: {top_left}"
-        image[y : y + side_px, x : x + side_px] = marker
-    half_pixel = np.array([[1.0, 0.0, -0.5], [0.0, 1.0, -0.5], [0.0, 0.0, 1.0]])
-    return image, half_pixel @ h_place
-
-
-def _warp(image: np.ndarray, h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Warp ``image`` by ``h``, shifted so the result is fully in frame. Returns image and shifted h."""
-    height, width = image.shape[:2]
-    frame = _apply(h, [[0, 0], [width, 0], [width, height], [0, height]])
-    shift = np.array([[1.0, 0.0, -frame[:, 0].min()], [0.0, 1.0, -frame[:, 1].min()], [0.0, 0.0, 1.0]])
-    h_shifted = shift @ h
-    size = (
-        int(np.ceil(frame[:, 0].max() - frame[:, 0].min())),
-        int(np.ceil(frame[:, 1].max() - frame[:, 1].min())),
-    )
-    warped = cv2.warpPerspective(image, h_shifted, size, flags=cv2.INTER_LINEAR, borderValue=255)
-    return warped, h_shifted
-
-
-def _scene(view: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Render the board, apply the view homography, and return the image and the true board -> px map."""
-    geometry = calibration.load_tag_geometry()
-    base, h_true = _render_board(geometry)
-    warped, h_view = _warp(base, view)
-    return warped, h_view @ h_true
-
-
-def _identity_view() -> np.ndarray:
-    return np.array([[1.0, 0.0, 37.0], [0.0, 1.0, -19.0], [0.0, 0.0, 1.0]])
-
-
-def _rotated_tilted_view(image_shape: tuple[int, int] = (1400, 1400)) -> np.ndarray:
-    """15 degrees in plane about the image centre, plus a mild projective tilt (about 7% across)."""
-    cx, cy = image_shape[1] / 2.0, image_shape[0] / 2.0
-    to_centre = np.array([[1.0, 0.0, -cx], [0.0, 1.0, -cy], [0.0, 0.0, 1.0]])
-    from_centre = np.array([[1.0, 0.0, cx], [0.0, 1.0, cy], [0.0, 0.0, 1.0]])
-    theta = np.deg2rad(15.0)
-    rot = np.array(
-        [[np.cos(theta), -np.sin(theta), 0.0], [np.sin(theta), np.cos(theta), 0.0], [0.0, 0.0, 1.0]]
-    )
-    tilt = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0e-4, -0.6e-4, 1.0]])
-    return from_centre @ rot @ tilt @ to_centre
+PX_PER_MM = synthetic.PX_PER_MM
+_apply = synthetic.apply_h
+_render_board = synthetic.render_board
+_warp = synthetic.warp
+_scene = synthetic.scene
+_identity_view = synthetic.identity_view
+_rotated_tilted_view = synthetic.rotated_tilted_view
 
 
 def _cell_errors(calib: calibration.Calibration, h_true: np.ndarray) -> np.ndarray:

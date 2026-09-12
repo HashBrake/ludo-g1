@@ -1621,7 +1621,7 @@ result: (opus, 2026-09-12T07:10+07:00, commit 775ea5e)
     task's touch list for the training.yaml branch; it sits exactly where the existing `runtime:`/`recorder:` blocks do.
 
 ## T-038  Board perception from the top camera on synthetic images (placeholder until the engine team delivers)
-status: in_progress
+status: review
 priority: P1
 phase: 2
 owner: opus
@@ -1640,6 +1640,31 @@ deliverables:
 acceptance:
   - tests pass with the printed timing; docs/board.md updated; the real-still check waits for H-001 and says so
 notes: Placeholder rules only; the engine team's perception replaces this module behind the same Protocol.
+result: (opus, 2026-09-12T07:05+07:00, commit COMMIT_HASH)
+  - board/perception.py +TopCameraPerception (999 lines total; MockPerception/FailureMode/state_delta unchanged);
+    board/synthetic.py new (381 lines: the T-008 tag renderer moved out of tests/test_calibration.py verbatim, plus Piece /
+    render_pieces / render_die / render_top_scene / calibration_from_homography); tests/test_perception.py new (64 tests);
+    tests/test_calibration.py imports the moved renderer and is otherwise unchanged (21 tests, all still pass);
+    config/board.yaml +`perception:` block, entirely Form-2 placeholder under `perception_status: UNMEASURED`
+    (REQUIRED_KEYS untouched); docs/board.md retitled and given a perception section.
+  - `.venv/bin/python -m pytest tests/test_perception.py -q` -> 64 passed, printed timing:
+    `TopCameraPerception.detect on 640x480, 16 horses + die, 30 frames: mean 4.47 ms, max 4.60 ms, p50 4.46 ms`
+    (bound 30 ms, 6.7x margin). Same scene at 1280x960: 11.6 ms, measured ad hoc.
+  - Occupancy exact on 20/20 random boards (10 horses, random cells/colours/yaw, 640x480) and on a 21st case under 15 deg
+    rotation + projective tilt (12 horses) -- the thresholds are area *ratios* at the local pixel scale and distances in
+    board millimetres, never pixels, which is what makes one set of numbers hold across scale and tilt.
+  - Each 6.5 variant has a test: side -> fallen by aspect (1.43-1.46 vs 1.35); back -> fallen by area (0.34-0.37 vs a
+    standing band starting at 0.55) while still square; off the magnet -> between_cells and occupying no cell; missing ->
+    absent; two blobs on one cell -> nearer keeps it. Each 6.5 failure mode has a verify() test: MOVE happened (incl.
+    capture) / did not happen (grasp_failed) / fell at src or dst (horse_fell) / between cells or wrong cell (missed_cell)
+    / another colour or our own second horse moved (wrong_horse); ROLL success / die_out_of_bowl / die_grasp_failed;
+    RECOVER success / horse_fell / missed_cell / timeout_no_progress / the die case.
+  - Not met / stated rather than hidden: no real still exists (H-001), so every threshold is a guess against synthetic
+    colour and the numbers pin the rules, not a detection rate (docs/board.md says so and names the real-still check);
+    a white die on the white board is reported "not seen" rather than guessed; two horses of one colour are
+    indistinguishable, so a same-colour wrong horse is caught only by the cell it left; board/perception.py is 999 lines
+    and D-013 item 2 would split it, but the touch list named only one new module; docs/README.md still describes
+    docs/board.md as calibration only (one row, outside the touch list).
 
 ## T-040  Policy termination signal: an episode-end head trained from recorded episodes
 status: todo

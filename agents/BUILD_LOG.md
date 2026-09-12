@@ -4040,3 +4040,123 @@ The hash/suite-number follow-up above was first written as `git commit --amend -
 D-013 item 1 forbids outright. It was undone (`git reset --soft 775ea5e`) and re-made as this ordinary
 commit through the full pre-commit gate, leaving the work commit `775ea5e` -- the tree the 703-test
 suite actually passed on -- untouched and correctly named in agents/TASKS.md.
+
+## T-038  Board perception from the top camera, on synthetic scenes  (opus, 2026-09-12T06:59+07:00)
+
+### What was built
+- **`board/perception.py`**, `TopCameraPerception` (the file is now 999 lines; `MockPerception`,
+  `FailureMode` and `state_delta` are unchanged and still exactly where they were). Per frame: one
+  HSV `cv2.inRange` mask per player colour (a list of bands per colour -- red wraps the hue origin
+  and needs two), an opening, external contours, and per blob a footprint area and a
+  `cv2.minAreaRect`. `standing` iff the area is inside the band **and** the rectangle is near square;
+  anything else above the noise floor is `fallen`. The centroid goes through the calibration into the
+  board frame and takes the nearest cell centre within `cell_snap_radius_mm`, else `between_cells`.
+  Die: the one white blob of about die size inside the bowl's search region, `in_bowl` by radius.
+  Types added: `Pose`, `Placement`, `Bowl`, `Rules`, `HorseDetection`, `DieDetection`, `BoardView`,
+  `PerceptionError`, `load_rules`, `view_delta`.
+- **`verify(command, before, after)`** produces the `Outcome` and the 6.5 failure mode from the two
+  views; **`progress()`** counts the same command's expected changes (a MOVE reads 0.5 once the
+  horse has left its source, 1.0 once it stands on the target). The full decision table is in
+  `docs/board.md`; `policy_stalled` is deliberately not in it (it is the watchdog's verdict, made by
+  `runtime/controller.py`, never perception's).
+- **`board/synthetic.py`** (381 lines): the T-008 tag renderer moved out of `tests/test_calibration.py`
+  verbatim (`render_board`, `warp`, `scene`, the two views, `apply_h`), plus `Piece`,
+  `render_pieces`, `render_die`, `render_top_scene` and `calibration_from_homography`.
+  `tests/test_calibration.py` now imports those under its old private names and is otherwise
+  untouched; its 21 tests pass unchanged.
+- **`config/board.yaml`**: a new `perception:` block, the whole of it Form-2 placeholder under one
+  `perception_status: UNMEASURED` -- HSV bands per colour, the die's band, the blob thresholds
+  (ratios, never pixels), `cell_snap_radius_mm`, `die_moved_min_mm`, and a placeholder bowl.
+  `REQUIRED_KEYS` untouched. `die.bowl_centre_mm`/`bowl_diameter_mm` are left as the literal
+  `UNMEASURED` they were, and the bowl follows a precedence rule instead: a *measured* `die.bowl_*`
+  wins and `perception.bowl` stands in only while it is absent, with `Bowl.measured` saying which
+  one the caller got. So nothing in `docs/engine.md` or `engine/stub.py` (both of which read
+  "`die.bowl_centre_mm` is UNMEASURED, so a ROLL addresses no cell") becomes false.
+- **`docs/board.md`**: retitled "Board: calibration and perception", the calibration text unchanged
+  under its own heading, and a new perception section -- the API, the detection-rule table with the
+  config key for each number, the before/after -> failure-mode table, "what it cannot do", and the
+  placeholder status.
+
+### Commands run and measured results
+- `.venv/bin/python -m pytest tests/test_perception.py -q` -> **64 passed in ~50 s**, including the
+  printed timing line:
+  `TopCameraPerception.detect on 640x480, 16 horses + die, 30 frames: mean 4.47 ms, max 4.63 ms,
+  p50 4.47 ms` -- against the 30 ms acceptance bound, i.e. 6.7x margin. (Same scene at 1280x960:
+  11.6 ms, also under the bound, measured ad hoc and not asserted.)
+- Occupancy: `test_occupancy_is_recovered_exactly_on_twenty_random_boards` is 20 parametrised cases,
+  10 horses each at random cells in random colours at random yaw in +-20 deg, 640x480 -> **20/20
+  exact**, every horse `standing` and `at_cell`, no loose horses, die seen in the bowl. A 21st case
+  (`test_occupancy_survives_a_rotated_and_tilted_view`, 12 horses, 15 deg + projective tilt) is also
+  exact, which is what the local-scale rule below is for.
+- 6.5 variants, one test each: on its side -> `fallen` (aspect 1.43-1.46 at 640x480, threshold 1.35);
+  on its back -> `fallen` by area (ratio 0.34-0.37, standing band starts at 0.55) while still square;
+  off the magnet by 20 mm -> `between_cells`, occupying no cell; just inside the radius -> still on
+  its cell; missing -> simply absent; two blobs on one cell -> the nearer keeps it, the other is
+  loose.
+- `verify()` verdicts, one test each: MOVE happened (incl. a capture) -> success; MOVE did not happen
+  -> `grasp_failed` with an empty delta; fell at dst and fell at src -> `horse_fell`; left between
+  cells and left on the wrong cell -> `missed_cell`; another colour moved instead and our own colour
+  arrived while our horse stayed -> `wrong_horse`; ROLL success / die outside the bowl
+  (`die_out_of_bowl`) / die that never moved (`die_grasp_failed`); RECOVER stood up / still lying
+  (`horse_fell`) / off the magnet (`missed_cell`) / nothing at all (`timeout_no_progress`); RECOVER
+  with no cell judges the die.
+- `.venv/bin/python -m pytest tests/test_calibration.py tests/test_controller.py tests/test_config.py
+  tests/test_eval.py tests/test_scaffold.py tests/test_engine_stub.py -q` -> 192 passed, 1 skipped
+  (the pre-existing no-session skip).
+- `.venv/bin/ruff check .` clean.
+
+### Design calls, for review
+- **Areas are ratios, distances are millimetres; nothing is a pixel threshold.** A blob's area is
+  compared against the piece's expected footprint area *at the local pixel scale* -- the square root
+  of the homography's area Jacobian at that board point -- and a placement is judged in the board
+  frame. That is what lets one set of thresholds hold at 640x480 and at 1280x960, and at both ends of
+  a tilted frame where the near edge of the board is bigger in pixels than the far edge. It is also
+  why the rotated-and-tilted occupancy case passes with the same numbers.
+- **`_area_px` corrects `cv2.contourArea` by half the perimeter plus one.** `contourArea` measures
+  the polygon through the boundary *pixel centres*: 121 instead of 144 for a 12 px square, a 16%
+  undercount that matters when the whole classification is an area band. The correction makes it the
+  pixel count it should have been. It deliberately counts the hole the dark arrow punches in the top
+  face: what is being measured is the footprint, not the paint.
+- **"Nothing changed" is asked of `_material_change`, not of the delta.** `view_delta` records every
+  difference down to 0.01 mm because that is the evidence that goes into the outcome, but a verdict
+  of `grasp_failed`/`timeout_no_progress` must not be defeated by a centroid wobbling half a pixel
+  between two frames on the real camera. So the "did anything happen" test is: a cell that changed
+  hands or pose, a loose horse that appeared, vanished or moved more than half the snap radius, or a
+  die that changed state or moved more than `die_moved_min_mm`. Two tests pin it (0.4 mm of jitter is
+  still `grasp_failed`; 12 mm is not).
+- **`verify`/`progress` take views, not frames.** That is the `Perception` signature the controller
+  already calls, and the watchdog samples `progress` 10-20 times per primitive, so whoever owns the
+  camera decides how often a frame is really looked at. A dict that did not come out of
+  `BoardView.to_dict()` -- the engine's own `board_state()`, say -- raises rather than being
+  misread (tested). Wiring a camera into `runtime/controller.py`, which reads the engine today, was
+  not in this task.
+- **A same-colour wrong horse is caught only by the cell it left.** Two horses of one colour are
+  indistinguishable to this detector, so "our colour arrived at dst **and** is still on src" is what
+  reports `wrong_horse`. Stated in the class docstring and in docs/board.md rather than hidden.
+
+### Limits and gaps (R5)
+- **Nothing here has seen a photograph.** Every threshold is a guess against flat synthetic colour
+  with hard edges, no shadow, no specularity and no motion blur. The numbers above pin the *rules*
+  and are not a detection rate. The real-still check is H-001 (`brio_still.py` -> `board_start.png`),
+  named in `docs/board.md`, and it is the first thing to run before blaming a policy for a failure
+  this module reported.
+- **A white die on the white board is invisible** to a white-blob rule; it is reported as *not seen*
+  (which still comes out as `die_out_of_bowl`, so the human is still asked for the die back), never
+  guessed at. There is a test for exactly that, because the synthetic scene makes it easy to pretend
+  otherwise.
+- **`board/perception.py` is 999 lines.** D-013 item 2 would have it split -- the natural cut is
+  `Rules`/`load_rules` and the detection dataclasses into a sibling -- but the task's touch list
+  names one new module (`board/synthetic.py`, for the renderer) and I did not invent a second.
+- **`docs/README.md` still describes `docs/board.md` as calibration only.** That file was outside the
+  touch list; one row is all it needs.
+- The detector works in the *calibration's* frame and refuses any other size. The `top` observation
+  of 5.3 is a crop plus a resize of that frame, so feeding the policy's 640x480 crop to `detect()`
+  will need a cropped calibration; that is a later task and is not pretended to work today.
+
+### Safety
+R1: nothing in this task can produce a motion command -- `board/` builds no `Guard`, imports no
+driver and opens no device; every frame is synthetic, in memory. `hardware/session.enable` neither
+created, edited nor read. R2: no scripted motion and no literal joint target anywhere; nothing here
+imports `tools/`. R3: `config/safety.yaml` untouched. `third_party/` untouched. `config/board.yaml`
+gained only placeholder perception rules; `REQUIRED_KEYS` untouched, so no config contract changed.
+Committed through the full pre-commit gate, no `--no-verify` (D-013 item 1).

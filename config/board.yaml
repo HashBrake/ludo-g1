@@ -39,6 +39,49 @@ die:
   bowl_centre_mm: UNMEASURED   # in the board frame; the bowl sits off the board itself
   bowl_diameter_mm: UNMEASURED
 
+# --- perception (board/perception.py, T-038: placeholder rules, not measurements) ------------------
+# How the top camera turns pixels into board state. EVERY value here is a guess made against
+# synthetic images (board/synthetic.py): no Brio still of the real board exists yet (H-001), the
+# horses have never been photographed, and their printed colours are not fixed. `perception_status:
+# UNMEASURED` marks the whole block, and the engine team's own perception replaces this module
+# behind the same Protocol anyway (CLAUDE.md 5.1).
+#
+# Re-measure with the first real still: sample the four horse colours and the die in HSV, and set
+# the bands wide enough to cover the table's lighting from one end of a game to the other.
+perception_status: UNMEASURED
+perception:
+  # Per-colour HSV bands, OpenCV convention (H 0..179, S 0..255, V 0..255), as a LIST of
+  # [[h,s,v], [h,s,v]] low/high pairs: red wraps the hue origin and therefore needs two.
+  hsv_ranges:
+    R: [[[0, 110, 70], [10, 255, 255]], [[170, 110, 70], [179, 255, 255]]]
+    G: [[[40, 90, 50], [85, 255, 255]]]
+    Y: [[[20, 110, 110], [34, 255, 255]]]
+    B: [[[95, 110, 50], [135, 255, 255]]]
+  # The die is the only white object near the bowl: low saturation, high value.
+  die_hsv_range: [[0, 0, 170], [179, 70, 255]]
+  # Blob rules. Areas are ratios against the expected footprint area at the local pixel scale
+  # (horse.footprint_mm^2, or die.size_mm^2, times the calibration's px/mm where the blob is), so
+  # they hold at any camera distance and anywhere in a tilted frame.
+  min_area_ratio: 0.15          # below this a blob is noise, not a piece
+  standing_area_ratio: [0.55, 1.45]
+  standing_max_aspect: 1.35     # min-area-rect long side / short side; a square horse is 1.0
+  die_area_ratio: [0.35, 2.5]
+  morph_open_px: 3              # opening kernel; 0 disables
+  # A horse whose centroid is further than this from the nearest cell centre is "between cells" --
+  # it missed the magnet (CLAUDE.md 6.5). Must stay below half the cell pitch (20 mm) or two cells
+  # would claim the same horse.
+  cell_snap_radius_mm: 14.0
+  # A ROLL that leaves the die within this of where it started did not actually pick it up.
+  die_moved_min_mm: 12.0
+  # Where the bowl is, used ONLY while die.bowl_centre_mm / die.bowl_diameter_mm are the literal
+  # UNMEASURED: a measured bowl up there wins over this placeholder. `search_radius_mm` is how far
+  # outside the bowl a die is still looked for, i.e. how far it may bounce and still be reported as
+  # die_out_of_bowl rather than as gone.
+  bowl:
+    centre_mm: [0.0, -400.0]
+    diameter_mm: 120.0
+    search_radius_mm: 150.0
+
 # --- AprilTags -----------------------------------------------------------------------------------
 # Four tags, one per corner of the board, defining the board frame and the Brio homography. Nothing
 # here was measured: the board was not photographed during T-002.
