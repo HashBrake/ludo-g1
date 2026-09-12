@@ -4104,6 +4104,9 @@ suite actually passed on -- untouched and correctly named in agents/TASKS.md.
   tests/test_eval.py tests/test_scaffold.py tests/test_engine_stub.py -q` -> 192 passed, 1 skipped
   (the pre-existing no-session skip).
 - `.venv/bin/ruff check .` clean.
+- Full pre-commit suite on the commit (ruff + `pytest -q`, no `--no-verify`): **767 passed, 14 skipped
+  in 411.55 s** (703 before this task, plus its 64 tests); every skip is a hardware-absent or
+  no-session skip that predates it. Commit `64ef8c0`, 8 files changed, 2062 insertions.
 
 ### Design calls, for review
 - **Areas are ratios, distances are millimetres; nothing is a pixel threshold.** A blob's area is

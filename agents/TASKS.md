@@ -1640,7 +1640,7 @@ deliverables:
 acceptance:
   - tests pass with the printed timing; docs/board.md updated; the real-still check waits for H-001 and says so
 notes: Placeholder rules only; the engine team's perception replaces this module behind the same Protocol.
-result: (opus, 2026-09-12T07:05+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-12T07:05+07:00, commit 64ef8c0)
   - board/perception.py +TopCameraPerception (999 lines total; MockPerception/FailureMode/state_delta unchanged);
     board/synthetic.py new (381 lines: the T-008 tag renderer moved out of tests/test_calibration.py verbatim, plus Piece /
     render_pieces / render_die / render_top_scene / calibration_from_homography); tests/test_perception.py new (64 tests);
@@ -1659,6 +1659,8 @@ result: (opus, 2026-09-12T07:05+07:00, commit COMMIT_HASH)
     capture) / did not happen (grasp_failed) / fell at src or dst (horse_fell) / between cells or wrong cell (missed_cell)
     / another colour or our own second horse moved (wrong_horse); ROLL success / die_out_of_bowl / die_grasp_failed;
     RECOVER success / horse_fell / missed_cell / timeout_no_progress / the die case.
+  - Full pre-commit suite on the commit (ruff + `pytest -q`, no `--no-verify`): 767 passed, 14 skipped in 411.55 s;
+    every skip is a hardware-absent or no-session skip that predates this task (703 -> 767 is this task's 64 new tests).
   - Not met / stated rather than hidden: no real still exists (H-001), so every threshold is a guess against synthetic
     colour and the numbers pin the rules, not a detection rate (docs/board.md says so and names the real-still check);
     a white die on the white board is reported "not seen" rather than guessed; two horses of one colour are
