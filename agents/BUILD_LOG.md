@@ -4724,3 +4724,9 @@ file, not a trajectory. R3: `config/safety.yaml` gained exactly one key, which m
 strictly stricter -- two points must now be inside where one had to be before -- and every existing
 number in that file is untouched (diff above: 7 insertions, 0 deletions). Nothing under
 `third_party/` was modified. Committed through the full pre-commit gate, no `--no-verify` (D-013).
+
+### Commit and gate
+Work commit **f594beb** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+`--no-verify`): **837 passed, 15 skipped in 654.41 s**. The 15 skips are the pre-existing
+absent-hardware, no-session and load-dependent skips (the load-dependent one, `test_train.py:361`,
+skipped at a 1-minute load of 8.1: another builder was running its own suite at the same time).

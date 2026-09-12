@@ -1811,7 +1811,8 @@ acceptance:
     checks nothing was loosened); docs/safety.md updated
 notes: A tightening (two points must be inside instead of one). The real offset is measured in Phase 1 on the hand (T-022).
 result:
-  - commit: (recorded below after the gated commit); agents/BUILD_LOG.md 2026-09-12T09:42+07:00 has the full entry
+  - commit: f594beb, through the full pre-commit gate (ruff + whole suite): 837 passed, 15 skipped in 654.41 s.
+    agents/BUILD_LOG.md 2026-09-12T09:42+07:00 has the full entry.
   - runtime/fk.py `left_arm_points` returns {left_wrist_yaw_link, pinch_point}; pinch_point = xpos + xmat @
     config/robot.yaml tool.pinch_offset_m (rotated, so it follows wrist roll/pitch/yaw). `left_arm_fk` unchanged, so
     teleop/retarget.py and tests/test_retarget.py are untouched and still solve against the wrist.
