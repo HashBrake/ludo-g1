@@ -173,6 +173,57 @@ def test_status_key_must_carry_a_known_status(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
+# the third status word: HUMAN_APPROVED (D-022, T-045)
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_three_status_words_and_no_fourth():
+    assert config.STATUS_VALUES == {"UNMEASURED", "MEASURED", "HUMAN_APPROVED"}
+
+
+def test_human_approved_loads_and_is_not_reported_as_unmeasured(tmp_path):
+    """A human read the placeholder and committed the approval: still a placeholder, not a gap."""
+    data = _minimal("training")
+    data["action"]["hz_status"] = config.HUMAN_APPROVED
+    data["act"]["chunk_status"] = "UNMEASURED"
+    _write(tmp_path, "training", data)
+    assert config.load("training", root=tmp_path)["action"]["hz_status"] == "HUMAN_APPROVED"
+    found = config.unmeasured("training", root=tmp_path)
+    assert "action.hz" not in found and "act.chunk" in found
+
+
+def test_status_of_reads_every_form_and_the_absence_of_one(tmp_path):
+    data = _minimal("training")
+    data["dataset"]["root"] = "UNMEASURED"  # form 1: the value itself
+    data["action"]["hz_status"] = config.HUMAN_APPROVED  # form 2: the sibling
+    data["act"]["chunk_status"] = config.MEASURED
+    data["observation_status"] = "UNMEASURED"  # a whole subtree
+    _write(tmp_path, "training", data)
+    def status(key: str):
+        return config.status_of("training", key, root=tmp_path)
+
+    assert status("dataset.root") == "UNMEASURED"
+    assert status("action.hz") == "HUMAN_APPROVED"
+    assert status("act.chunk") == "MEASURED"
+    assert status("observation.state_dim") == "UNMEASURED"  # inherited from the ancestor
+    assert status("rates.policy_hz") is None  # tagged by nothing: not a claim that it is measured
+
+
+def test_status_of_refuses_a_key_that_does_not_exist(tmp_path):
+    with pytest.raises(ConfigError, match=r"no key 'control\.nope'"):
+        config.status_of("robot", "control.nope")
+
+
+def test_status_of_on_the_real_files_matches_unmeasured():
+    """Every key `unmeasured` reports must read UNMEASURED through `status_of`, and vice versa."""
+    for name in config.NAMES:
+        for key in config.unmeasured(name):
+            if "[" in key:  # a list element carries no status key of its own
+                continue
+            assert config.status_of(name, key) == "UNMEASURED", f"{name}.{key}"
+
+
+# --------------------------------------------------------------------------------------------
 # acceptance 4: a missing required key raises a clear error naming file and key
 # --------------------------------------------------------------------------------------------
 

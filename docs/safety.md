@@ -224,8 +224,10 @@ running `enable_session.py`. It is read-only: it asks the gate for its status, r
 files, opens each device through the read-only drivers for three seconds, and sends nothing.
 
 ```
-.venv/bin/python tools/hardware_checks/session_preflight.py          # the table
-.venv/bin/python tools/hardware_checks/session_preflight.py --json   # the same rows as a list
+.venv/bin/python tools/hardware_checks/session_preflight.py                       # the table
+.venv/bin/python tools/hardware_checks/session_preflight.py --json                # the same rows as a list
+.venv/bin/python tools/hardware_checks/session_preflight.py --for t021_latency    # one step's verdict
+.venv/bin/python tools/hardware_checks/session_preflight.py --show-envelope       # what a human approves
 ```
 
 Each row is PASS, FAIL or SKIP, and the rows marked `*` are the ones the exit code is made of: the
@@ -244,6 +246,29 @@ a device that is absent is not a device that answered), 2 a usage error.
 The tool is the first step of the Phase 1 session procedure: run it, clear every `*` FAIL, then a
 human runs `enable_session.py`. It never writes `hardware/session.enable` and never asks for it; a
 closed gate is the expected answer here.
+
+### Per-step verdicts and the approved envelope (D-022, T-045)
+
+The default verdict is the strictest one: every key in `MOTION_KEYS`. But the first motion run
+cannot require the numbers it exists to measure — `latency.arm_ms` is measured by the run that
+`latency.arm_ms` would otherwise block. So each key also records **which step it gates**, and
+`--for STEP` narrows the verdict to those, with `STEP` one of `t021_latency`, `t024_envelope`,
+`t022_hand`, `t023_reach`, `phase2_recording` (`all`, the default, is every key). Every key is still
+printed; only the `*` and the exit code move, and a key that does not gate the step says so in its
+detail. The gating, in words: the envelope and the arm gains gate **every** step, because they are
+in force for any command; the DDS interface gates every step that commands an arm joint; the hand
+port and the pinch poses gate the steps that close the hand; and the top camera, the AprilTag
+geometry, the four latencies and `teleop.pico_to_pelvis` gate `t023_reach` and `phase2_recording`,
+which are the runs that ground a target in the board frame through the whole teleop chain.
+
+The `status` column shows the config status word behind each config row. `HUMAN_APPROVED` (D-022,
+`docs/config.md`) passes **only** for the envelope and the arm gains, whose values the session
+itself measures and which R3 leaves to a human; on any other key it is a FAIL that says so, because
+the DDS interface, the hand port, the top camera and the tag geometry are measured read-only on days
+1 and 2 and there is nothing to approve. `UNMEASURED` never passes, on any key, for any step.
+`--show-envelope` prints exactly what a human approves — each value as it stands in the file, the
+status word it carries now, and the line to write beside it — and writes nothing: the approval is a
+human commit (R3, CLAUDE.md 4.8) and no agent makes it.
 
 ## Before a motion run
 

@@ -4819,3 +4819,164 @@ Work commit **676ce6e** on branch `wt/t044`, through the full pre-commit gate (r
 suite, no `--no-verify`): **838 passed, 16 skipped in 466.10 s**. The 16 skips are the pre-existing
 absent-hardware, no-session and load-dependent ones plus this task's documented
 `enable_session.py` skip. This hash is recorded by the follow-up commit.
+
+## T-045  HUMAN_APPROVED status and per-step gating in the pre-flight  (opus, 2026-09-12T11:20+07:00)
+
+### What changed
+
+**`runtime/config.py`.** `STATUS_VALUES` gains `HUMAN_APPROVED` beside `UNMEASURED` and `MEASURED`,
+so `_check_status_keys` accepts it and every other word is still a `ConfigError` at load time. Two
+new module constants (`MEASURED`, `HUMAN_APPROVED`) so no caller spells a status word by hand.
+`unmeasured()` is unchanged and still lists `UNMEASURED` only: an approved key is a placeholder a
+human has read, not a gap in the config. New `status_of(name, key, root=None) -> str | None`, which
+returns the word annotating a key from the three places one can sit — the leaf's own value (form 1,
+`dds_interface: UNMEASURED`), a sibling `<key>_status` (form 2), or the same sibling on an ancestor,
+which annotates a whole subtree — and `None` when nothing tags the key, which is explicitly not a
+claim that it was measured. A key that does not exist raises rather than reading as "no status".
+
+**`tools/hardware_checks/preflight_report.py`.** `MOTION_KEYS` is now a tuple of `MotionKey`
+dataclasses instead of 3-tuples: `name, key, why, gates, approved_ok`. `gates` names the Phase 1
+motion runs a placeholder blocks, out of `STEPS = (t021_latency, t024_envelope, t022_hand,
+t023_reach, phase2_recording)`; `ALL_STEPS = "all"` is the default and is gated by every key.
+`approved_ok` marks the 11 keys D-022 lets a human pass at `HUMAN_APPROVED`. The gating, as
+committed:
+
+| Keys | Gate | HUMAN_APPROVED |
+|---|---|---|
+| the 8 envelope keys of `config/safety.yaml` + `robot.control.kp/kd/weight_ramp_s` | every step | accepted (D-022) |
+| `robot.network.dds_interface` | every step that commands an arm joint (not the hand bench) | refused |
+| `hand.device.port`, `hand.pinch.open_pose/closed_pose` | `t022_hand`, `t023_reach`, `phase2_recording` | refused |
+| `cameras.top.device`, the four `board.apriltags.*`, the four `robot.latency.*`, `robot.teleop.pico_to_pelvis` | `t023_reach`, `phase2_recording` | refused |
+
+`Row` gains `key_status` (the config status word, or `-`), `render` gains the `status` column and a
+`step` argument that only changes the wording of the verdict line; the default wording is byte for
+byte what it was, because the runbook and `docs/safety.md` quote it.
+
+**`tools/hardware_checks/session_preflight.py`.** `config_rows(root, step)` judges each key: FAIL at
+`UNMEASURED` always; PASS at `HUMAN_APPROVED` when `approved_ok`, with `approved placeholder
+(D-022)` in the detail; FAIL at `HUMAN_APPROVED` otherwise, saying that this key is measured before
+a session, not approved; PASS otherwise. A key that does not gate the step is still printed with its
+real status and its detail says which steps it does gate — only the `*` and the exit code move.
+`collect(..., step=...)`, `--for STEP` (argparse `choices`, so an unknown step is exit 2) and
+`--show-envelope`, which prints the 11 approvable keys with their current value, their current
+status word and the exact `<leaf>_status: HUMAN_APPROVED` line, then exits 0. It writes nothing:
+the approval is a human commit (R3).
+
+**Docs.** `docs/config.md` documents the third status and `status_of`; `docs/safety.md` gains a
+"Per-step verdicts and the approved envelope" subsection under "Before a session"; runbook step 3.0
+is now "(a) the e-stop / (b) the envelope", listing the eleven status lines by name and the command
+that prints the values, and step 3.2 now requires GO for `--for t021_latency` (the full table cannot
+say GO before the day that measures the latencies) with the two FAILs that are never waived.
+
+### Commands and measured numbers
+
+```
+.venv/bin/python -m ruff check .                                  -> clean
+.venv/bin/python -m pytest tests/test_config.py -q                -> 75 passed  (70 before: +5)
+.venv/bin/python -m pytest tests/test_session_preflight.py -q     -> 42 passed  (29 before: +13)
+.venv/bin/python -m pytest tests/test_runbook.py -q               -> 36 passed, 1 skipped  (32+1 before: +4)
+```
+
+What the 22 new tests cover. `test_config.py`: the three status words and no fourth; HUMAN_APPROVED
+loads and is not reported by `unmeasured()`; `status_of` over all four cases (the value itself, the
+sibling, an ancestor's sibling, nothing at all); a key that does not exist; and a cross-check that
+every key `unmeasured()` reports on the six real files reads UNMEASURED through `status_of`.
+`test_session_preflight.py`: `gates`/`approved_ok` well-formed on every entry; the approvable set is
+exactly the eleven of D-022; `t021_latency` is not gated by what it measures; `--for` moves the star
+and not the row; the acceptance case both ways; UNMEASURED still fails an envelope key;
+HUMAN_APPROVED refused on `dds_interface`; the status column; `collect(step=...)`; the render
+wording; `approval_report`; and three CLI runs (`--for` NO-GO, an unknown step exit 2,
+`--show-envelope` exit 0 leaving `config/safety.yaml` byte-identical). `test_runbook.py`: the two
+new fenced commands are picked up by the existing parametrised `--help` test, plus a drift guard
+that step 3.0 names every `approved_ok` key and one that every Phase 1 motion step has a `--for` of
+its own.
+
+The acceptance case, on a config copy built by `approved_root()` (every day-1/day-2 key MEASURED,
+the 11 envelope and gain keys HUMAN_APPROVED, the latencies, the transform and the pinch poses
+UNMEASURED):
+
+* `--for t021_latency` -> exit_code 0, `joint_limits_rad` PASS with status HUMAN_APPROVED;
+* `--for phase2_recording` -> exit_code 1, failing on exactly the seven keys day 3 measures;
+* `--for all` -> exit_code 1.
+
+### Acceptance run on this laptop (nothing approved yet)
+
+```
+.venv/bin/python tools/hardware_checks/session_preflight.py --for t021_latency --budget 1   -> exit 1
+```
+
+The 15 starred rows and the verdict (detail column trimmed to 118 columns here; the unstarred rows --
+the 13 config keys day 3 measures, the sensor devices, the calibration, the disk and the git tree -- are
+printed too and each says which steps it gates):
+
+```
+  check                                     result  status      detail
+  ----------------------------------------  ------  ----------  ----------------------------------------
+  session gate                              SKIP    -           closed: cannot read session file /home/alois/Desktop/l
+* e-stop named                              FAIL    -           'e-stop within reach' names no device; Q-004 is unansw
+* config safety.workspace_box_m.min         FAIL    UNMEASURED  UNMEASURED: the box corner that keeps the wrist over t
+* config safety.workspace_box_m.max         FAIL    UNMEASURED  UNMEASURED: the box corner that keeps the wrist off th
+* config safety.workspace_box_m.margin_m    FAIL    UNMEASURED  UNMEASURED: slack removed from the box for the hand
+* config safety.joint_limits_rad            FAIL    UNMEASURED  UNMEASURED: per-joint stops the command may never ride
+* config safety.waist_yaw_clamp_rad         FAIL    UNMEASURED  UNMEASURED: how far the hip-mounted torso may swing th
+* config safety.joint_velocity_limit_rad_s  FAIL    UNMEASURED  UNMEASURED: how fast a commanded joint may move
+* config safety.first_command_max_step_rad  FAIL    UNMEASURED  UNMEASURED: the D-018 lurch cap on a stream's first co
+* config safety.watchdog_timeout_s          FAIL    UNMEASURED  UNMEASURED: when the driver hands the arm back to the
+* config robot.control.kp                   FAIL    UNMEASURED  UNMEASURED: the stiffness every commanded target is ex
+* config robot.control.kd                   FAIL    UNMEASURED  UNMEASURED: the damping every commanded target is exec
+* config robot.control.weight_ramp_s        FAIL    UNMEASURED  UNMEASURED: how slowly arm_sdk takes the arm over
+* config robot.network.dds_interface        FAIL    UNMEASURED  UNMEASURED: which interface carries the commands (H-00
+  ...
+* 0/15 checks that gate t021_latency pass: e-stop named, config safety.workspace_box_m.min, config
+  safety.workspace_box_m.max, config safety.workspace_box_m.margin_m, config safety.joint_limits_rad,
+  config safety.waist_yaw_clamp_rad, config safety.joint_velocity_limit_rad_s, config
+  safety.first_command_max_step_rad, config safety.watchdog_timeout_s, config robot.control.kp, config
+  robot.control.kd, config robot.control.weight_ramp_s, config robot.network.dds_interface, device arm,
+  device hand
+NO-GO for t021_latency.
+```
+
+(the verdict line is one line in the terminal; wrapped here). So the acceptance holds: nothing is
+approved yet, and the run names the e-stop row, the eleven envelope and gain rows a human has to
+approve, the DDS interface day 1 measures, and the two actuators that are not plugged in. The full
+table without `--for` says `NO-GO for a motion session.` on 0/28 as it did before this task.
+
+### Disagreement
+
+None with the task as written. Two judgement calls worth naming, both mine and both reversible in
+data, not code:
+
+1. `robot.network.dds_interface` does not gate `t022_hand`. The hand bench drives the DexH15 over
+   its own Modbus bus with the arm idle (T-022 notes), so the DDS interface cannot make that run
+   wrong. Every other step commands an arm joint and is gated by it. The conservative alternative
+   (gate every step) costs nothing today, because the interface is read off the machine on day 1
+   either way; I chose the precise reading D-022 asks for and am recording it here so a reviewer can
+   flip one tuple if they disagree.
+2. `robot.latency.*` and `teleop.pico_to_pelvis` gate `t023_reach` and `phase2_recording` only, as
+   D-022 says — including for `t024_envelope`, which is also teleoperated. The envelope test is
+   about refusals at a boundary, and a mis-aligned timestamp cannot loosen the Guard; a wrong
+   `pico_to_pelvis` moves where the operator has to stand, not where the box is. It is the same
+   tuple to flip if Fable reads D-022 the other way.
+
+`session_preflight.py` is 404 lines (307 after T-042's split). The new `approval_report` reads
+config, so it cannot move into `preflight_report.py`, which is documented as opening and reading
+nothing; noting the size rather than inventing a third module for one function (D-013 note 2).
+
+### Safety
+
+R1: nothing here can send a motion command; the tool opens devices only through the read-only
+drivers and the new code path (`--show-envelope`) opens nothing at all. `hardware/session.enable`
+was not created, read for content, edited or restored, and a test asserts it still does not exist
+after `--show-envelope`. R2: no scripted motion; nothing under `policy/` or `runtime/` imports
+`tools/`. R3: **`config/safety.yaml` is byte-identical** — `git diff --stat` lists neither
+`config/safety.yaml` nor any other file under `config/`; the loader and the tool learned a word, no
+value and no status changed, and the approval that D-022 describes is a human commit that has not
+happened. R5: the only claims above come from commands printed next to them. Nothing under
+`third_party/` touched. Only the files T-045 lists were changed. Committed through the full
+pre-commit gate, no `--no-verify` (D-013).
+
+### Commit and gate
+
+Work commit **COMMITHASH** on `main`, through the full pre-commit gate (ruff + the whole suite,
+no `--no-verify`, D-013): **GATERESULT**. This hash is recorded by the follow-up commit, which is
+the only other change in this task.

@@ -233,9 +233,9 @@ them on the real still. The Brio focus and exposure from 2.1 go into `config/cam
 Nothing here starts until 3.0, 3.1 and 3.2 have all passed. This is the first time in the project a
 joint is commanded.
 
-### 3.0 Answer Q-004 and put the answer in the checklist (a human commit)
+### 3.0 Answer Q-004 and approve the envelope values (two human commits)
 
-Q-004 is "which physical action is the e-stop for a rig-mounted G1 with legs locked". D-004 already
+**(a) The e-stop.** Q-004 is "which physical action is the e-stop for a rig-mounted G1 with legs locked". D-004 already
 decided that the e-stop is a physical path Alois chooses and never a software call from this repo,
 and that `runtime/safety.py` is a limiter, not an e-stop. Answer Q-004 with a `HUMAN:` line in
 `agents/QUESTIONS.md` (CLAUDE.md 4.8), then put the named action into the session checklist by
@@ -251,6 +251,33 @@ between "e-stop within reach" and an answer.
 
 Check: the `e-stop named` row is PASS and quotes the checklist item.
 
+**(b) The envelope.** Every number the arm is limited by is still a placeholder, and it cannot be
+anything else: the workspace box, the joint limits, the waist clamp, the velocity and first-step
+caps, the watchdog and the arm gains are what **this session** measures (steps 3.5 and 3.4). D-022
+settles it: a human reads each value, agrees it is conservative for a first session, and commits the
+status change from `UNMEASURED` to `HUMAN_APPROVED`, leaving the value alone. The pre-flight then
+passes those keys for this session and still fails them at `UNMEASURED`. This command prints the
+values to read and the exact line to write beside each one:
+
+```
+.venv/bin/python tools/hardware_checks/session_preflight.py --show-envelope
+```
+
+The eleven status lines to change, and nowhere else:
+
+- `config/safety.yaml`: `workspace_box_m.min_status`, `workspace_box_m.max_status`,
+  `workspace_box_m.margin_m_status`, `joint_limits_rad_status`, `waist_yaw_clamp_rad_status`,
+  `joint_velocity_limit_rad_s_status`, `first_command_max_step_rad_status`, `watchdog_timeout_s_status`
+- `config/robot.yaml`: `control.kp_status`, `control.kd_status`, `control.weight_ramp_s_status`
+
+Each becomes `<key>_status: HUMAN_APPROVED` with the approver and the date in a comment. Both files
+are human-only (R3); **no agent makes this edit**, and an agent that thinks a value is wrong writes
+to `agents/DECISIONS.md` instead. Approving is not measuring (R5): after 3.5 measures the real box,
+the value and the status change together to `MEASURED`.
+
+Check: `--show-envelope` shows `[HUMAN_APPROVED]` against all eleven keys, and `git status` shows
+the two config files committed by a human, not by an agent.
+
 ### 3.1 Rehearse the loop on mocks, on the day, before the robot is enabled
 
 ```
@@ -261,17 +288,28 @@ Check: the `e-stop named` row is PASS and quotes the checklist item.
 Check: both exit 0 with zero Guard refusals. This costs 70 seconds and catches a config edit from
 days 1 and 2 that broke the envelope or the clutch (D-018) before the arm is live.
 
-### 3.2 Pre-flight must say GO
+### 3.2 Pre-flight must say GO for the step you are about to run
 
 ```
 .venv/bin/python tools/hardware_checks/session_preflight.py
+.venv/bin/python tools/hardware_checks/session_preflight.py --for t021_latency
 ```
 
-Check: exit 0 and `GO`. Exit 1 means at least one motion-relevant row is not PASS, and the run does
-not happen. The remaining placeholders are the ones day 3 itself measures (`latency.arm_ms`,
-`latency.hand_ms`, the pinch poses, the envelope box), so **before** the first run they are filled
-with the conservative values Fable proposes from the rig measurements, not left as `UNMEASURED`; a
-placeholder that gates motion is a FAIL by design.
+The first command is the whole picture and will say `NO-GO for a motion session.` all day: it judges
+every key, including `latency.arm_ms` and the pinch poses, which are what 3.4 and 3.6 are here to
+measure. Read it anyway — every device row must be PASS with a plausible rate, and the board
+calibration row must be PASS from day 2.
+
+The verdict that decides whether 3.4 happens is the second command (D-022, T-045): `--for STEP`
+counts only the keys that gate that step, and each later motion step has its own:
+`--for t024_envelope` before 3.5, `--for t022_hand` before 3.6, and `--for t023_reach` before 3.7.
+Run the one for the step, immediately before the step.
+
+Check: exit 0 and `GO: every check that gates t021_latency passes.` Exit 1 means at least one starred
+row is not PASS, and the run does not happen. Two FAILs that look like they should be waived never
+are: `UNMEASURED` on any key (3.0(b) is how an envelope value becomes acceptable, not a waiver), and
+`HUMAN_APPROVED` on a key days 1 and 2 measured read-only, which means someone approved a value that
+should have been read off the machine.
 
 ### 3.3 A human opens the session (R1, CLAUDE.md 4.6)
 

@@ -13,6 +13,11 @@ Placeholder convention (documented for humans in ``docs/config.md``):
 The second form exists so that a placeholder can still be a usable number: ``fps: 30`` next to
 ``fps_status: UNMEASURED`` loads as ``30`` and is still reported by :func:`unmeasured`.
 
+A status may also read ``MEASURED`` (a real measurement landed) or ``HUMAN_APPROVED`` (D-022: a
+human read the placeholder, agreed it is conservative, and committed the status change). Only
+``UNMEASURED`` is reported by :func:`unmeasured`; :func:`status_of` returns whichever word a key
+carries, which is how the pre-flight tells an approved envelope value from an unread one.
+
 No I/O beyond reading the yaml files happens here, and nothing in this module knows about devices.
 """
 
@@ -26,6 +31,8 @@ import yaml
 
 __all__ = [
     "CONFIG_DIR",
+    "HUMAN_APPROVED",
+    "MEASURED",
     "NAMES",
     "REQUIRED_KEYS",
     "STATUS_SUFFIX",
@@ -34,16 +41,24 @@ __all__ = [
     "ConfigError",
     "config_hash",
     "load",
+    "status_of",
     "unmeasured",
 ]
 
 CONFIG_DIR: Path = Path(__file__).resolve().parent.parent / "config"
 
 UNMEASURED = "UNMEASURED"
+MEASURED = "MEASURED"
+#: A value a human read, agreed was conservative, and committed the status change for (D-022). It is
+#: not a measurement: the number is still the placeholder, and the key is still on the Phase 1 list.
+#: It exists for the envelope, whose values are what the session they gate is going to measure, and
+#: which R3 says only a human may set. ``unmeasured()`` does not report it; the pre-flight passes an
+#: envelope key at HUMAN_APPROVED and fails the same key at UNMEASURED.
+HUMAN_APPROVED = "HUMAN_APPROVED"
 STATUS_SUFFIX = "_status"
 #: The only values a ``<key>_status`` sibling may take. MEASURED means a human or a Phase 1 script
 #: put a real number there; anything else is a typo that would silently hide a placeholder.
-STATUS_VALUES = frozenset({"UNMEASURED", "MEASURED"})
+STATUS_VALUES = frozenset({UNMEASURED, MEASURED, HUMAN_APPROVED})
 
 #: Required keys per config file, as dotted paths through mappings. A path may not traverse a list:
 #: list contents are checked by the per-file tests, not by the schema.
@@ -296,3 +311,28 @@ def unmeasured(name: str, root: Path | str | None = None) -> list[str]:
             seen.add(target)
             found.append(target)
     return found
+
+
+def status_of(name: str, key: str, root: Path | str | None = None) -> str | None:
+    """The status word annotating ``key`` in ``config/<name>.yaml``, or ``None`` if it carries none.
+
+    Three sources, most specific first: the leaf's own value when it *is* a status word (form 1,
+    ``dds_interface: UNMEASURED``); a sibling ``<key>_status`` (form 2); the same sibling on an
+    ancestor, which annotates the whole subtree (``layout_status`` for ``layout.cells``). ``None``
+    means the key is a plain fact that was never tagged, not that it is measured.
+
+    Raises :class:`ConfigError` when the key does not exist, so that a caller cannot read a typo as
+    "no status". Only mappings are traversed, as everywhere else in this module.
+    """
+    data = load(name, root)
+    found, value = _get(data, key)
+    if not found:
+        raise ConfigError(f"config/{name}.yaml: no key {key!r}")
+    if isinstance(value, str) and value in STATUS_VALUES:
+        return value
+    parts = key.split(".")
+    for depth in range(len(parts), 0, -1):
+        found, status = _get(data, ".".join(parts[:depth]) + STATUS_SUFFIX)
+        if found:
+            return str(status)
+    return None

@@ -42,13 +42,38 @@ joint_velocity_limit_rad_s_status: UNMEASURED
 never `joint_velocity_limit_rad_s_status`), in document order, deduplicated. Paths are dotted, with
 `[i]` for list elements: `observation.task_ids[1]`, `apriltags.ids.corner_neg_x_neg_y`.
 
-A `_status` key may only hold `UNMEASURED` or `MEASURED`, and must annotate a key that exists;
-anything else is a `ConfigError` at load time, so that a typo (`unmeasured`, `UNMEASURD`) cannot
-silently hide a placeholder. A `_status` annotating a whole mapping marks the whole subtree:
-`layout_status: UNMEASURED` next to `layout:` reports one entry, `layout`.
+A `_status` key may only hold `UNMEASURED`, `MEASURED` or `HUMAN_APPROVED`, and must annotate a key
+that exists; anything else is a `ConfigError` at load time, so that a typo (`unmeasured`,
+`UNMEASURD`) cannot silently hide a placeholder. A `_status` annotating a whole mapping marks the
+whole subtree: `layout_status: UNMEASURED` next to `layout:` reports one entry, `layout`.
 
 When a Phase 1 measurement lands, replace the value **and** flip the status to `MEASURED` (or delete
 the status key) in the same commit, and name the measurement command in a comment next to the number.
+
+**The third status: `HUMAN_APPROVED`** (D-022). Some placeholders cannot be measured before the run
+they gate: the workspace box, the joint limits, the waist clamp, the velocity and first-step caps,
+the watchdog and the arm gains are what the first motion session is going to measure, and R3 says
+only a human may set them. `HUMAN_APPROVED` means a human read the value, agreed it is conservative
+for a first session, and committed the status change; the **value stays the placeholder**. It is not
+a measurement and never becomes one: when the session measures the real number, the value and the
+status change together to `MEASURED`.
+
+```yaml
+first_command_max_step_rad: 0.05
+first_command_max_step_rad_status: HUMAN_APPROVED   # Alois, 2026-09-xx: conservative for session 1
+```
+
+`unmeasured(name)` reports `UNMEASURED` only, so an approved key is not a gap in the config;
+`status_of(name, key)` returns whichever word annotates a key (`None` when nothing does, which is
+not a claim that it was measured). Only `tools/hardware_checks/session_preflight.py` treats the
+difference as a verdict: it passes an approved envelope key for the motion step it gates and still
+fails it at `UNMEASURED`, and it refuses an approval on a key that day 1 or day 2 measures read-only
+(the DDS interface, the hand port, the top camera, the tag geometry) — see `docs/safety.md`.
+Print the values to approve, and the exact status lines to write, with
+
+```
+.venv/bin/python tools/hardware_checks/session_preflight.py --show-envelope
+```
 
 ## Schema validation
 

@@ -27,6 +27,9 @@ from pathlib import Path
 
 import pytest
 
+from runtime.config import STATUS_SUFFIX
+from tools.hardware_checks.preflight_report import MOTION_KEYS, STEPS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNBOOK = REPO_ROOT / "docs" / "runbook_phase1.md"
 PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
@@ -101,6 +104,23 @@ def test_the_abort_section_names_the_estop_the_log_and_the_incident_rule():
         "agents/BLOCKERS.md",                     # what three aborts become
     ):
         assert needed in text, f"the abort section must state {needed!r}"
+
+
+def test_step_three_zero_names_every_value_a_human_approves():
+    """D-022: 3.0(b) must list exactly the keys the pre-flight lets a human approve (T-045)."""
+    step = runbook_text().split("### 3.0 ", 1)[1].split("\n### ", 1)[0]
+    assert "--show-envelope" in step and "HUMAN_APPROVED" in step
+    for entry in (key for key in MOTION_KEYS if key.approved_ok):
+        leaf = entry.key.rsplit(".", 1)[-1]
+        assert f"{leaf}{STATUS_SUFFIX}" in step, f"3.0 never tells the human to approve {entry.key}"
+    assert "no agent makes this edit" in step.lower()
+
+
+def test_every_phase_one_motion_step_has_its_own_scoped_preflight():
+    """Each motion step is gated by `--for <its own step>`, not by the strictest table (D-022)."""
+    text = runbook_text()
+    for step in (name for name in STEPS if name.startswith("t0")):
+        assert f"--for {step}" in text, f"the runbook never scopes the pre-flight to {step}"
 
 
 def test_every_motion_step_says_what_moves_and_what_goes_into_the_build_log():

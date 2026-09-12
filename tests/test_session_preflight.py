@@ -23,7 +23,7 @@ import yaml
 from runtime import config
 from runtime.clock import Stamped, now_ns
 from tools.hardware_checks import session_preflight as pf
-from tools.hardware_checks.session_preflight import FAIL, PASS, SKIP, Row
+from tools.hardware_checks.session_preflight import ALL_STEPS, FAIL, NO_STATUS, PASS, SKIP, STEPS, Row
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -139,6 +139,49 @@ def measured_root(tmp_path: Path, checklist: list[str] | None = None, **drop: st
     return root
 
 
+#: The envelope and gain keys a human approves before the first session (D-022), file by file.
+APPROVED: dict[str, tuple[str, ...]] = {
+    "safety": (
+        "workspace_box_m.min", "workspace_box_m.max", "workspace_box_m.margin_m", "joint_limits_rad",
+        "waist_yaw_clamp_rad", "joint_velocity_limit_rad_s", "first_command_max_step_rad", "watchdog_timeout_s",
+    ),
+    "robot": ("control.kp", "control.kd", "control.weight_ramp_s"),
+}
+#: What day 3 itself measures and so cannot require beforehand (D-022): kept UNMEASURED here.
+DAY_THREE: dict[str, tuple[str, ...]] = {
+    "robot": ("latency.arm_ms", "latency.hand_ms", "latency.glove_ms", "latency.pico_ms", "teleop.pico_to_pelvis"),
+    "hand": ("pinch.open_pose", "pinch.closed_pose"),
+}
+
+
+def _set_status(data: dict, dotted: str, status: str) -> None:
+    """Write ``<leaf>_status: status`` beside the leaf ``dotted`` names."""
+    *parents, leaf = dotted.split(".")
+    node = data
+    for part in parents:
+        node = node[part]
+    node[f"{leaf}{config.STATUS_SUFFIX}"] = status
+
+
+def approved_root(tmp_path: Path, checklist: list[str] | None = None) -> Path:
+    """A config directory as it stands on the morning of day 3, under D-022.
+
+    Everything days 1 and 2 measured read-only is MEASURED; the envelope and the arm gains are
+    HUMAN_APPROVED placeholders a human committed; the latencies, the controller transform and the
+    pinch poses -- what the motion day itself measures -- are still UNMEASURED.
+    """
+    root = measured_root(tmp_path, checklist=checklist)
+    for name in ("safety", "robot", "hand"):
+        path = root / f"{name}.yaml"
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for key in APPROVED.get(name, ()):
+            _set_status(data, key, config.HUMAN_APPROVED)
+        for key in DAY_THREE.get(name, ()):
+            _set_status(data, key, config.UNMEASURED)
+        path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return root
+
+
 def row_named(rows: list[Row], check: str) -> Row:
     return next(row for row in rows if row.check == check)
 
@@ -148,11 +191,36 @@ def row_named(rows: list[Row], check: str) -> Row:
 # --------------------------------------------------------------------------------------------
 
 
-def test_every_motion_key_names_a_real_config_file_and_a_reason() -> None:
-    for name, key, why in pf.MOTION_KEYS:
-        assert name in config.NAMES, key
-        assert pf._lookup(config.load(name), key)[0], f"{name}.{key} does not exist"
-        assert len(why) > 10, f"{name}.{key} has no stated reason"
+def test_every_motion_key_names_a_real_config_file_a_reason_and_the_steps_it_gates() -> None:
+    for entry in pf.MOTION_KEYS:
+        assert entry.name in config.NAMES, entry.key
+        assert pf._lookup(config.load(entry.name), entry.key)[0], f"{entry.name}.{entry.key} does not exist"
+        assert len(entry.why) > 10, f"{entry.name}.{entry.key} has no stated reason"
+        assert entry.gates, f"{entry.name}.{entry.key} gates nothing"
+        assert set(entry.gates) <= set(STEPS), entry.gates
+        assert entry.gates_step(ALL_STEPS)
+
+
+def test_only_the_envelope_and_the_gains_may_be_passed_by_a_human_approval() -> None:
+    """D-022 allows HUMAN_APPROVED for the values the session itself measures, and nothing else."""
+    approvable = {f"{entry.name}.{entry.key}" for entry in pf.MOTION_KEYS if entry.approved_ok}
+    assert approvable == {
+        "safety.workspace_box_m.min", "safety.workspace_box_m.max", "safety.workspace_box_m.margin_m",
+        "safety.joint_limits_rad", "safety.waist_yaw_clamp_rad", "safety.joint_velocity_limit_rad_s",
+        "safety.first_command_max_step_rad", "safety.watchdog_timeout_s",
+        "robot.control.kp", "robot.control.kd", "robot.control.weight_ramp_s",
+    }
+    # ...and every one of them is in force whatever the run is doing.
+    assert all(entry.gates == STEPS for entry in pf.MOTION_KEYS if entry.approved_ok)
+
+
+def test_the_first_motion_step_is_not_gated_by_what_it_measures() -> None:
+    """T-021 measures the latencies; D-022: they gate the later steps, never the first one."""
+    gated = {f"{e.name}.{e.key}" for e in pf.MOTION_KEYS if e.gates_step("t021_latency")}
+    assert "robot.latency.arm_ms" not in gated and "robot.teleop.pico_to_pelvis" not in gated
+    assert "hand.pinch.open_pose" not in gated  # measured by t022_hand's synergy tool
+    assert "robot.network.dds_interface" in gated  # measured read-only on day 1
+    assert {"safety.joint_limits_rad", "robot.control.kp"} <= gated
 
 
 def test_config_rows_fail_on_the_repo_today_and_are_all_motion_relevant() -> None:
@@ -160,6 +228,7 @@ def test_config_rows_fail_on_the_repo_today_and_are_all_motion_relevant() -> Non
     assert len(rows) == len(pf.MOTION_KEYS)
     assert all(row.motion_relevant for row in rows)
     assert all(row.status == FAIL and row.detail.startswith("UNMEASURED:") for row in rows)
+    assert all(row.key_status == "UNMEASURED" for row in rows)
 
 
 def test_config_rows_pass_when_the_placeholders_are_gone(tmp_path: Path) -> None:
@@ -172,6 +241,74 @@ def test_config_row_fails_when_the_key_is_gone(tmp_path: Path) -> None:
     root = measured_root(tmp_path, board="apriltags.centres_mm")
     row = row_named(pf.config_rows(root), "config board.apriltags.centres_mm")
     assert row.status == FAIL and "has no key" in row.detail
+
+
+def test_the_step_the_key_gates_decides_whether_it_is_part_of_the_verdict(tmp_path: Path) -> None:
+    """`--for` moves the star and the exit code, never the row: every key is still printed."""
+    rows = pf.config_rows(measured_root(tmp_path), "t021_latency")
+    assert len(rows) == len(pf.MOTION_KEYS)
+    starred = {row.check for row in rows if row.motion_relevant}
+    assert "config robot.latency.arm_ms" not in starred
+    assert row_named(rows, "config robot.latency.arm_ms").detail.endswith("not t021_latency]")
+    assert "config safety.joint_limits_rad" in starred
+    assert {row.check for row in pf.config_rows(measured_root(tmp_path), ALL_STEPS) if row.motion_relevant} == {
+        f"config {entry.name}.{entry.key}" for entry in pf.MOTION_KEYS
+    }
+
+
+def test_an_approved_envelope_is_a_go_for_the_first_step_and_a_no_go_for_recording(tmp_path: Path) -> None:
+    """The acceptance case of T-045: D-022's morning-of-day-3 config."""
+    root = approved_root(tmp_path)
+    first = pf.config_rows(root, "t021_latency")
+    assert pf.exit_code(first) == 0, [(r.check, r.detail) for r in first if r.motion_relevant and r.status != PASS]
+    approved = row_named(first, "config safety.joint_limits_rad")
+    assert (approved.status, approved.key_status) == (PASS, "HUMAN_APPROVED")
+    assert "D-022" in approved.detail
+    dds = row_named(first, "config robot.network.dds_interface")
+    assert (dds.status, dds.key_status) == (PASS, NO_STATUS)  # form 1: the placeholder value is gone
+
+    later = pf.config_rows(root, "phase2_recording")
+    assert pf.exit_code(later) == 1
+    failed = {row.check for row in later if row.motion_relevant and row.status == FAIL}
+    assert failed == {
+        "config robot.latency.arm_ms", "config robot.latency.hand_ms", "config robot.latency.glove_ms",
+        "config robot.latency.pico_ms", "config robot.teleop.pico_to_pelvis",
+        "config hand.pinch.open_pose", "config hand.pinch.closed_pose",
+    }
+    assert pf.exit_code(pf.config_rows(root, ALL_STEPS)) == 1
+
+
+def test_an_unmeasured_envelope_still_fails_the_first_step(tmp_path: Path) -> None:
+    """HUMAN_APPROVED is the only thing that passes an envelope key; UNMEASURED never does."""
+    root = approved_root(tmp_path)
+    data = yaml.safe_load((root / "safety.yaml").read_text(encoding="utf-8"))
+    data["workspace_box_m"]["min_status"] = config.UNMEASURED
+    (root / "safety.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    row = row_named(pf.config_rows(root, "t021_latency"), "config safety.workspace_box_m.min")
+    assert (row.status, row.key_status, row.motion_relevant) == (FAIL, "UNMEASURED", True)
+    assert row.detail.startswith("UNMEASURED:")
+
+
+def test_a_human_approval_is_refused_on_a_key_that_is_measured_read_only(tmp_path: Path) -> None:
+    """Nobody approves their way past the DDS interface: day 1 reads it off the machine."""
+    root = approved_root(tmp_path)
+    data = yaml.safe_load((root / "robot.yaml").read_text(encoding="utf-8"))
+    data["network"]["dds_interface"] = "enp0s31f6"
+    data["network"]["dds_interface_status"] = config.HUMAN_APPROVED
+    (root / "robot.yaml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    row = row_named(pf.config_rows(root, "t021_latency"), "config robot.network.dds_interface")
+    assert (row.status, row.key_status) == (FAIL, "HUMAN_APPROVED")
+    assert "approval is not enough" in row.detail
+    assert pf.exit_code(pf.config_rows(root, "t021_latency")) == 1
+
+
+def test_the_status_column_is_the_word_the_config_carries(tmp_path: Path) -> None:
+    rows = pf.config_rows(measured_root(tmp_path))
+    # MEASURED where a status key annotates the value, "-" where the placeholder value itself was
+    # replaced (form 1 leaves nothing behind to annotate). Nothing is UNMEASURED in that directory.
+    assert {row.key_status for row in rows} == {"MEASURED", NO_STATUS}
+    assert pf.session_row(FakeGate(FakeStatus(True, "open"))).key_status == NO_STATUS
+    assert pf.estop_row().key_status == NO_STATUS
 
 
 def test_config_rows_fail_with_the_loader_error_when_the_file_is_unusable(tmp_path: Path) -> None:
@@ -378,6 +515,39 @@ def test_render_marks_the_motion_rows_and_states_the_verdict() -> None:
     assert "NO-GO for a motion session." in no_go and "0/1" in no_go
 
 
+def test_render_names_the_step_in_the_verdict_and_prints_the_status_column() -> None:
+    rows = [Row("a", PASS, "fine", True, "HUMAN_APPROVED"), Row("b", FAIL, "broken", False)]
+    step = pf.render(rows, "t021_latency")
+    assert "1/1 checks that gate t021_latency pass" in step
+    assert "GO: every check that gates t021_latency passes." in step
+    assert "HUMAN_APPROVED" in step and "status" in step.splitlines()[0]
+    assert "NO-GO for t024_envelope." in pf.render([Row("a", SKIP, "absent", True)], "t024_envelope")
+
+
+def test_collect_takes_the_step_through_to_the_rows(tmp_path: Path) -> None:
+    """A step-scoped run of the whole table: only the keys that gate it carry a star."""
+    rows = pf.collect(
+        config_root=approved_root(tmp_path, checklist=["e-stop: the mains switch behind the rig"]),
+        gate=FakeGate(FakeStatus(False, "closed")), make_fn=make_fn_for(arm=FakeQueued(), hand=FakePolled()),
+        budget=BUDGET, devices=("arm", "hand"), step="t021_latency",
+    )
+    assert pf.exit_code(rows) == 0, [(r.check, r.detail) for r in rows if r.motion_relevant and r.status != PASS]
+    assert not row_named(rows, "config robot.latency.arm_ms").motion_relevant
+    assert row_named(rows, "e-stop named").motion_relevant  # every step needs the e-stop (Q-004)
+    assert row_named(rows, "device arm").motion_relevant
+
+
+def test_approval_report_shows_the_values_and_the_exact_status_line() -> None:
+    text = pf.approval_report()
+    assert "D-022" in text and "R3" in text
+    for key in ("workspace_box_m.min", "joint_limits_rad", "control.kp"):
+        assert key in text
+    assert "min_status: HUMAN_APPROVED" in text
+    assert "kp_status: HUMAN_APPROVED" in text
+    assert "left_shoulder_pitch_joint: [-3.0019, 2.5831]" in text  # the value, so a human can read it
+    assert "\n..." not in text  # pyyaml's end-of-document marker never reaches the human
+
+
 def run_cli(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "tools/hardware_checks/session_preflight.py", *args],
@@ -397,9 +567,35 @@ def test_cli_json_is_the_same_rows_as_a_list() -> None:
     assert done.returncode == 1
     rows = json.loads(done.stdout)
     assert isinstance(rows, list)
-    assert {"check", "status", "detail", "motion_relevant"} == set(rows[0])
+    assert {"check", "status", "detail", "motion_relevant", "key_status"} == set(rows[0])
     assert {row["check"] for row in rows} >= {"session gate", "e-stop named", "dataset disk", "git"}
     assert [row["check"] for row in rows if row["motion_relevant"]][0] == "e-stop named"
+
+
+def test_cli_for_the_first_motion_step_is_no_go_on_this_repo_today() -> None:
+    """T-045 acceptance: nothing is approved yet, so the e-stop and the envelope rows fail."""
+    done = run_cli("--no-devices", "--for", "t021_latency")
+    assert done.returncode == 1, done.stderr
+    assert "NO-GO for t021_latency." in done.stdout
+    assert "checks that gate t021_latency pass" in done.stdout
+    for named in ("e-stop named", "config safety.workspace_box_m.min", "config robot.control.kp"):
+        assert named in done.stdout.split("checks that gate")[1], f"{named} is not named in the verdict"
+    # ...while the keys day 3 measures are printed, unstarred, and are not the reason it says NO-GO.
+    body = done.stdout.split("* 0/")[0]
+    assert "  config robot.latency.arm_ms" in body and "not t021_latency]" in body
+
+
+def test_cli_rejects_an_unknown_step() -> None:
+    assert run_cli("--no-devices", "--for", "t099_nope").returncode == 2
+
+
+def test_cli_show_envelope_prints_the_approval_and_writes_nothing() -> None:
+    before = (REPO / "config" / "safety.yaml").read_bytes()
+    done = run_cli("--show-envelope")
+    assert done.returncode == 0, done.stderr
+    assert "HUMAN_APPROVED" in done.stdout and "D-022" in done.stdout
+    assert (REPO / "config" / "safety.yaml").read_bytes() == before
+    assert not (REPO / "hardware" / "session.enable").exists()
 
 
 def test_cli_rejects_a_non_positive_budget() -> None:

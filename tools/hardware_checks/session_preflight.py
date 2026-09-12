@@ -20,8 +20,16 @@ about to run a session wants to see them, not because they can make an arm move 
 table marks the difference with a ``*``. Exit codes: 0 when every motion-relevant row is PASS, 1
 when any is not (a SKIP included), 2 usage error.
 
+``--for STEP`` narrows the verdict to the keys that gate one Phase 1 motion run (T-045, D-022): the
+first run cannot require the latencies it is about to measure. Every key is still printed; only the
+``*`` and the exit code move. The status column shows the config status word behind each config
+row, and ``--show-envelope`` prints the values a human approves (HUMAN_APPROVED) before the first
+session, which this tool reads and never writes (R3).
+
 Usage:
     .venv/bin/python tools/hardware_checks/session_preflight.py [--json] [--budget 10] [--no-devices]
+    .venv/bin/python tools/hardware_checks/session_preflight.py --for t021_latency
+    .venv/bin/python tools/hardware_checks/session_preflight.py --show-envelope
 """
 
 from __future__ import annotations
@@ -38,6 +46,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # Run from anywhere: this script is executed by a human, usually from the repo root, sometimes not.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -45,10 +55,14 @@ from runtime import config  # noqa: E402
 from runtime.safety import REPO_ROOT  # noqa: E402
 from tools.hardware_checks import stream_stats  # noqa: E402
 from tools.hardware_checks.preflight_report import (  # noqa: E402
+    ALL_STEPS,
     FAIL,
     MOTION_KEYS,
+    NO_STATUS,
     PASS,
     SKIP,
+    STEPS,
+    MotionKey,
     Row,
     exit_code,
     render,
@@ -87,27 +101,94 @@ def _lookup(data: dict, dotted: str) -> tuple[bool, Any]:
     return True, node
 
 
-def config_rows(root: Path | str | None = None) -> list[Row]:
-    """One row per :data:`MOTION_KEYS` entry: PASS when measured, FAIL while it is a placeholder."""
+def config_rows(root: Path | str | None = None, step: str = ALL_STEPS) -> list[Row]:
+    """One row per :data:`MOTION_KEYS` entry, judged for ``step`` (default: every key, D-022).
+
+    PASS when the key is measured, or when it is a human-approved placeholder and this key is one of
+    the ones D-022 allows that for (the envelope and the gains, which are what the session the key
+    gates is going to measure). FAIL while it is UNMEASURED, whatever it is, and FAIL at
+    HUMAN_APPROVED for a key that day 1 or day 2 measures read-only.
+
+    A key that does not gate ``step`` is still printed, with its real status, but is not part of the
+    verdict: ``motion_relevant`` is what :func:`exit_code` counts, and the table marks it with a
+    ``*``. So ``--for t021_latency`` prints all 25 keys and stars the 12 that gate the arm-latency
+    run.
+    """
     rows: list[Row] = []
     cache: dict[str, tuple[dict | None, tuple[str, ...], str]] = {}
-    for name, key, why in MOTION_KEYS:
+    for entry in MOTION_KEYS:
+        name, key = entry.name, entry.key
         if name not in cache:
             try:
                 cache[name] = (config.load(name, root), tuple(config.unmeasured(name, root)), "")
             except config.ConfigError as exc:
                 cache[name] = (None, (), str(exc))
         data, placeholders, error = cache[name]
+        word = NO_STATUS
         if data is None:
             status, detail = FAIL, error
         elif not _lookup(data, key)[0]:
             status, detail = FAIL, f"config/{name}.yaml has no key {key!r}"
-        elif any(key == p or key.startswith(f"{p}.") for p in placeholders):
-            status, detail = FAIL, f"UNMEASURED: {why}"
         else:
-            status, detail = PASS, f"measured: {why}"
-        rows.append(Row(f"config {name}.{key}", status, detail, True))
+            word = config.status_of(name, key, root) or NO_STATUS
+            if any(key == p or key.startswith(f"{p}.") for p in placeholders):
+                status, detail = FAIL, f"UNMEASURED: {entry.why}"
+            elif word == config.HUMAN_APPROVED and entry.approved_ok:
+                status, detail = PASS, f"approved placeholder (D-022): {entry.why}"
+            elif word == config.HUMAN_APPROVED:
+                status, detail = FAIL, f"approval is not enough, this is MEASURED before a session: {entry.why}"
+            else:
+                status, detail = PASS, f"measured: {entry.why}"
+        gates = entry.gates_step(step)
+        if not gates:
+            detail = f"{detail} [gates {', '.join(entry.gates)}, not {step}]"
+        rows.append(Row(f"config {name}.{key}", status, detail, gates, word))
     return rows
+
+
+def approval_report(root: Path | str | None = None) -> str:
+    """The values a human reads and approves before the first motion session (D-022, R3).
+
+    One block per :data:`MOTION_KEYS` entry with ``approved_ok``: where it lives, what it currently
+    says, the status word it currently carries, and the exact line that turns it into an approval.
+    This tool prints them; it never writes them. Editing ``config/safety.yaml`` or the gains in
+    ``config/robot.yaml`` is a human commit and no agent does it (R3, CLAUDE.md 4.8).
+    """
+    out = [
+        "The envelope and the arm gains a human approves before the first motion session (D-022).",
+        "Read each value. If it is conservative for a first session, change its status line to",
+        f"{config.HUMAN_APPROVED} in the same commit; if it is not, write the value you want instead",
+        "and approve that. Both files are human-only: no agent edits them (R3, CLAUDE.md 4.8).",
+        "",
+    ]
+    for entry in (key for key in MOTION_KEYS if key.approved_ok):
+        leaf = entry.key.rsplit(".", 1)[-1]
+        out.append(f"config/{entry.name}.yaml  {entry.key}  [{_status_word(entry, root)}]  -- {entry.why}")
+        try:
+            found, value = _lookup(config.load(entry.name, root), entry.key)
+        except config.ConfigError as exc:
+            out += [f"    unreadable: {exc}", ""]
+            continue
+        body = _as_yaml(value) if found else "(no such key)"
+        out += [f"    {line}" for line in body.splitlines()]
+        out += [f"    approve by writing beside it:  {leaf}{config.STATUS_SUFFIX}: {config.HUMAN_APPROVED}", ""]
+    out.append("Then rerun with --for t021_latency: an approved envelope key is a PASS for that step,")
+    out.append("an UNMEASURED one is still a FAIL, and nothing here counts as a measurement (R5).")
+    return "\n".join(out)
+
+
+def _as_yaml(value: Any) -> str:
+    """``value`` as the human sees it in the file, without pyyaml's ``...`` end marker on a scalar."""
+    body = yaml.safe_dump(value, default_flow_style=None, sort_keys=False).rstrip()
+    return body[: -len("\n...")] if body.endswith("\n...") else body
+
+
+def _status_word(entry: MotionKey, root: Path | str | None) -> str:
+    """``entry``'s current status word, or :data:`NO_STATUS` when it has none or cannot be read."""
+    try:
+        return config.status_of(entry.name, entry.key, root) or NO_STATUS
+    except config.ConfigError:
+        return NO_STATUS
 
 
 def estop_row(root: Path | str | None = None, checklist: tuple[str, ...] | None = None) -> Row:
@@ -271,12 +352,17 @@ def collect(
     *,
     config_root: Path | str | None = None, gate: Any | None = None,
     make_fn: Callable[..., Any] | None = None, budget: float = 3.0,
-    devices: tuple[str, ...] = DEVICES,
+    devices: tuple[str, ...] = DEVICES, step: str = ALL_STEPS,
 ) -> list[Row]:
     """Every row, in table order. Each argument is a seam a test injects a fake through; the three
-    rows that take no seam here (calibration, disk, git) are informational and take their own."""
+    rows that take no seam here (calibration, disk, git) are informational and take their own.
+
+    ``step`` narrows which config keys are part of the verdict (:func:`config_rows`). The e-stop row
+    and the ``arm`` and ``hand`` device rows are in the verdict for every step: no motion run
+    happens without the e-stop the checklist names (Q-004), and neither actuator answers by halves.
+    """
     rows = [session_row(gate), estop_row(config_root)]
-    rows += config_rows(config_root)
+    rows += config_rows(config_root, step)
     rows += device_rows(budget, make_fn, devices)
     return rows + [calibration_row(root=config_root), disk_row(), git_row()]
 
@@ -289,17 +375,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--budget", type=float, default=3.0, help="seconds to sample each device")
     parser.add_argument("--no-devices", action="store_true", help="skip the device rows entirely")
     parser.add_argument("--json", action="store_true", help="emit the rows as a JSON list")
+    parser.add_argument(
+        "--for", dest="step", default=ALL_STEPS, choices=[*STEPS, ALL_STEPS],
+        help="judge only the keys that gate this Phase 1 step (default: %(default)s, every key)",
+    )
+    parser.add_argument(
+        "--show-envelope", action="store_true",
+        help="print the values a human approves before the first session (D-022) and exit 0",
+    )
     args = parser.parse_args(argv)
     if args.budget <= 0:
         print("--budget must be positive", file=sys.stderr)
         return 2
+    if args.show_envelope:
+        print(approval_report())
+        return 0
 
-    rows = collect(budget=args.budget, devices=() if args.no_devices else DEVICES)
+    rows = collect(budget=args.budget, devices=() if args.no_devices else DEVICES, step=args.step)
     if args.json:
         json.dump([dataclasses.asdict(row) for row in rows], sys.stdout, indent=2)
         sys.stdout.write("\n")
     else:
-        print(render(rows))
+        print(render(rows, args.step))
     return exit_code(rows)
 
 

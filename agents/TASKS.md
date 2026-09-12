@@ -1891,7 +1891,7 @@ result: (opus, 2026-09-12, branch wt/t044, commit 676ce6e)
     config/safety.yaml untouched. Only the five files in the touch list changed.
 
 ## T-045  HUMAN_APPROVED status and per-step gating in the pre-flight (D-022)
-status: in_progress
+status: review
 priority: P1
 phase: 1
 owner: opus
@@ -1913,3 +1913,23 @@ acceptance:
     with the e-stop and the approval rows named (output in BUILD_LOG.md)
 notes: No value changes in config/safety.yaml; only the loader and the tool learn a status word. The approval itself is a
   human commit (R3).
+result: (opus, 2026-09-12T11:20+07:00, commit COMMITHASH)
+  - runtime/config.py: STATUS_VALUES = {UNMEASURED, MEASURED, HUMAN_APPROVED}; unmeasured() unchanged (UNMEASURED only);
+    new status_of(name, key, root=None) -> str | None reading the value itself, a `<key>_status` sibling, or an ancestor's.
+  - preflight_report.py: MOTION_KEYS is 25 MotionKey(name, key, why, gates, approved_ok) entries over
+    STEPS = (t021_latency, t024_envelope, t022_hand, t023_reach, phase2_recording) with ALL_STEPS = "all" the default;
+    11 entries are approved_ok (8 safety envelope keys + robot.control.kp/kd/weight_ramp_s) and gate every step;
+    dds_interface gates the four arm steps; hand port + pinch poses gate t022_hand, t023_reach, phase2_recording;
+    top.device, the 4 apriltag keys, the 4 latencies and teleop.pico_to_pelvis gate t023_reach and phase2_recording.
+    Row gains key_status; render gains the status column and step-aware verdict wording (the ALL_STEPS wording unchanged).
+  - session_preflight.py: config_rows(root, step); collect(step=...); --for STEP (unknown step exits 2); --show-envelope
+    prints the 11 approvable keys, their values, their status word and the exact `<leaf>_status: HUMAN_APPROVED` line, and
+    exits 0 writing nothing. HUMAN_APPROVED is PASS only on an approved_ok key; UNMEASURED is FAIL on every key.
+  - tests 22 new: test_config.py 70 -> 75, test_session_preflight.py 29 -> 42, test_runbook.py 32 -> 36 (+1 skip unchanged).
+    On the D-022 morning-of-day-3 config copy (envelope HUMAN_APPROVED, latencies/transform/pinch poses UNMEASURED):
+    --for t021_latency exit 0; --for phase2_recording exit 1 on exactly the 7 keys day 3 measures; --for all exit 1.
+  - acceptance on this laptop, `session_preflight.py --for t021_latency --budget 1`: exit 1, "0/15 checks that gate
+    t021_latency pass" naming the e-stop row, the 11 envelope/gain rows, robot.network.dds_interface and the arm and hand
+    devices; "NO-GO for t021_latency." Full table without --for unchanged at 0/28, "NO-GO for a motion session."
+    Full output and the commands in agents/BUILD_LOG.md.
+  - config/ untouched (git diff --stat lists no file under config/); no session file created, read or restored.
