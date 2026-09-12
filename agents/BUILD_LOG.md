@@ -4684,3 +4684,9 @@ file read, created, edited or restored. R2: no scripted motion; the runbook desc
 untouched — the runbook says twice that a human commits the checklist item and the measured envelope,
 and that an agent only proposes. Nothing under `third_party/` touched. Only the five files the task
 lists were changed. Committed through the full pre-commit gate, no `--no-verify` (D-013).
+
+### Commit and gate
+Work commit **676ce6e** on branch `wt/t044`, through the full pre-commit gate (ruff + the whole
+suite, no `--no-verify`): **838 passed, 16 skipped in 466.10 s**. The 16 skips are the pre-existing
+absent-hardware, no-session and load-dependent ones plus this task's documented
+`enable_session.py` skip. This hash is recorded by the follow-up commit.

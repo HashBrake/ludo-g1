@@ -1832,7 +1832,7 @@ acceptance:
   - every command in the runbook exists and runs with --help (a test greps the runbook for `.venv/bin/python ...` lines and
     runs each with --help, exit 0); every H-item and Q-item referenced exists in the agents files (test)
 notes: Docs only, plus the test. This is what Alois reads before the first hardware day.
-result: (opus, 2026-09-12, branch wt/t044, commit COMMITHASH)
+result: (opus, 2026-09-12, branch wt/t044, commit 676ce6e)
   - docs/runbook_phase1.md (459 lines): day 0 baseline, day 1 read-only (H-002, H-003, H-004a/b,
     list_devices, the six config keys to fill, seven 600 s stream_stats runs, pytest -m readonly,
     session_preflight --json), day 2 calibration (H-001 stills, board.calibration on both, the
