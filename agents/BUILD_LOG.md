@@ -55,7 +55,7 @@ I001 [*] Import block is un-sorted or un-formatted  --> scratch_ruff_error.py:1:
 F401 [*] `os` imported but unused                   --> scratch_ruff_error.py:1:8
 Found 2 errors.
 pre-commit: ruff failed; commit aborted.
-commit exit: 1        HEAD unchanged at 42867bb
+commit exit: 1        HEAD unchanged at 299cefe
 ```
 2. pytest stage — scratch test `tests/test_scratch_fail.py` with `assert 1 == 2` (a first attempt using
    `assert False` never reached pytest: ruff B011 caught it, which is itself further proof of stage 1):
@@ -66,7 +66,7 @@ pre-commit: pytest -q
 FAILED tests/test_scratch_fail.py::test_scratch_fail - assert 1 == 2
 1 failed, 15 passed, 1 skipped in 0.02s
 pre-commit: pytest failed; commit aborted.
-commit exit: 1        HEAD unchanged at 42867bb
+commit exit: 1        HEAD unchanged at 299cefe
 ```
 3. missing-venv guard — hook copied into an empty git repo with no `.venv`:
 ```
@@ -91,7 +91,7 @@ see the T-001 result block in agents/TASKS.md.
   `pythonpath = ["."]` is also set so top-level imports work regardless of collection mode.
 - No disagreements with the task as written. No hardware needed. No blockers.
 
-(T-001 scaffold commit: 4255484; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-001 scaffold commit: f0723b6; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ## T-002  SDK inventory and assumption verification  (2026-09-11T20:10+07:00)
 
@@ -241,7 +241,7 @@ an enable/weight slot at `motor_cmd[29].q`, so LUDO-G1 never has to publish `rt/
 - No blockers. No safety-relevant code was added: `list_devices.py` cannot emit a motion command, and no
   driver, no `runtime/safety.py` consumer and no session file was touched.
 
-(T-002 commit: ac4fcc5; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-002 commit: 34f3f88; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 ## T-004  runtime/clock.py: monotonic clock, stream alignment, latency compensation  (2026-09-11T19:20+07:00)
 
 Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (parallel with T-002 in the main tree).
@@ -302,7 +302,7 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
   adjacent pairs would otherwise invert, and a real driver stamps on arrival, so the buffer's
   non-decreasing invariant is the honest model. Stated in the test docstring and in docs/clock.md.
 - No hardware, no motion command, no blockers. No disagreement with the task as written.
-(T-004 clock commit: 956147a; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-004 clock commit: 0f77f0d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ---
 
@@ -397,7 +397,7 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
 - `unmeasured()` returns document order, not sorted order. Deterministic for a given file; noted in
   docs/config.md in case Fable prefers sorted.
 - No hardware touched, no motion command, no session file read or written, no blockers, no new questions.
-(T-003 config commit: b2e3bdc; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-003 config commit: dbd756b; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 ## T-009  cloud/greennode.sh with a local fake transport  (2026-09-11T19:10+07:00)
 
 ### What was built
@@ -476,7 +476,7 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
   same step; a `tools/` helper for it would be a reasonable small task.
 - No hardware, no motion command, no blockers, no scripted motion. No disagreement with the task as
   written.
-(T-009 cloud commit: 5540c10; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-009 cloud commit: 9e6d10f; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ## T-005  runtime/safety.py: envelope, session gate, rate limit; enable_session.py  (opus, 2026-09-11T21:55+07:00)
 
@@ -577,7 +577,7 @@ Built in the worktree /home/alois/Desktop/ludo-g1-wt-t004 on branch wt/t004 (par
 - The real forward kinematics is T-011, so the box check has only ever run against mock fks.
 - `config/safety.yaml` was read, never edited. Nothing under `third_party/` touched. No blockers, no
   scripted motion, no disagreement with the task as written.
-(T-005 commit: 8c03733; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-005 commit: 597b4ea; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ---
 
@@ -691,7 +691,7 @@ T-002 limit extraction.
 - The MJCF is only *loaded* here. Pinning the legs and the right arm for the IK is T-013 and is done at
   load time in code, never by editing the asset.
 - No disagreement with the task as written; no blockers.
-(T-012 commit: aa8f9cc; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-012 commit: 7fbc50c; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ## T-011  runtime/fk.py: left-arm forward kinematics for the workspace box  (opus, 2026-09-11T19:47+07:00)
 
@@ -807,7 +807,7 @@ Commands and measured results (all on `.venv/bin/python`, mujoco 3.13.0, no hard
   link offsets are Unitree's published numbers; whether this robot matches them is a Phase 1
   measurement and is not claimed here.
 - No blockers.
-(T-011 commit: d9596d9; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-011 commit: 60348c1; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 ## T-007  Engine contract and scripted stub engine  (opus, 2026-09-11T22:55+07:00)
 
 Branch `wt/t007` in the worktree `/home/alois/Desktop/ludo-g1-wt-t007`. Files added:
@@ -911,7 +911,7 @@ Gate: `.venv/bin/ruff check .` -> "All checks passed!"; `.venv/bin/python -m pyt
   mine to edit, so it is reported here rather than fixed; a `state=(starting|running)` match, or polling
   the heartbeat for a moment, would close it.
 - No disagreement with the task as written beyond the two design calls above. No blockers.
-(T-007 commit: 5cab3e6; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-007 commit: f22ace8; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ## T-006  Mock drivers with the real driver interfaces  (opus, 2026-09-11T20:05+07:00)
 
@@ -1000,7 +1000,7 @@ Config hashes changed by this: robot `1ae6aa90` -> `9dc5e64a`, hand `5b615a57` -
 - No disagreement with the task as written. No blockers. Nothing under `third_party/` touched,
   nothing imported from `tools/hardware_checks/` (asserted by a test), `hardware/session.enable`
   neither created nor read for a write path.
-(T-006 commit: 096d01f; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-006 commit: e0ca032; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 ## T-008  Board calibration from AprilTags and a Brio still  (opus, 2026-09-11T20:05+07:00)
 
 Built the one mapping everything downstream needs: board millimetres (the `config/board.yaml` frame)
@@ -1115,7 +1115,7 @@ a 0.707 px systematic bias would otherwise slide under the 1.0 px acceptance bou
   modified. A `tools/` helper for this is still worth a small task (third time it has been done by hand).
 - The `tests/test_greennode_local.py` flake reported under T-007 did not reproduce in the runs here.
 - No blockers. The only unmet criterion is acceptance 3, which needs H-001 and a Brio.
-(T-008 commit: 63d998f; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-008 commit: 390cd84; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ---
 
@@ -1246,7 +1246,7 @@ task fixed; this way only a number the task did not fix moved.
   configuration the IK settles into, and changing it later changes solutions. Worth deciding before
   the first collection session rather than after.
 - No blockers.
-(T-013 commit: 6628571; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-013 commit: 5d067f3; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ## T-016  Mock end-to-end controller loop  (2026-09-12T01:55+07:00)
 
@@ -1362,7 +1362,7 @@ roll, recover, recover).
   only that one was issued and executed. The real `board/perception.py` fixes it; until then, an eval
   harness that wants a success path will need to inject its own `Perception`.
 - No blockers.
-(T-016 commit: 5fbb479; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-016 commit: d7d9255; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 ## T-010  Real camera driver over V4L2, with device discovery and a stream check  (opus, 2026-09-11T23:55+07:00)
 
 Built the real `CameraDriver`: one class for all three streams, frames stamped on arrival and
@@ -1498,7 +1498,7 @@ is a Phase 1 act, not a T-010 one. Fable's call.
   modified. That is now the fourth time by hand; a `tools/` helper is overdue.
 - The 5 s mock acceptance test adds ~5 s of wall clock to `pytest -q`; it is a real-clock rate
   measurement and cannot be shortened without weakening the criterion.
-(T-010 commit: f3e553d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-010 commit: ed4ab4d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 ---
 
 ## T-014  Worktree helper for parallel builders  (opus, 2026-09-11T23:40+07:00)
@@ -1566,12 +1566,12 @@ No hardware, no motion command, nothing under `third_party/` modified.
    ```
    $ bash tools/worktree_teardown.sh /tmp/ludo-wt-smoke
    worktree_teardown: removing worktree /tmp/ludo-wt-smoke (branch wt/smoke)
-   Deleted branch wt/smoke (was 5b50670).
+   Deleted branch wt/smoke (was 09953c8).
    worktree_teardown: OK  removed=/tmp/ludo-wt-smoke  branch=wt/smoke deleted (merged into main)
    $ git worktree list
-   /home/alois/Desktop/ludo-g1          5b50670 [main]
-   /home/alois/Desktop/ludo-g1-wt-t010  c6994b8 [wt/t010]
-   /home/alois/Desktop/ludo-g1-wt-t014  5b50670 [wt/t014]
+   /home/alois/Desktop/ludo-g1          09953c8 [main]
+   /home/alois/Desktop/ludo-g1-wt-t010  4717c62 [wt/t010]
+   /home/alois/Desktop/ludo-g1-wt-t014  09953c8 [wt/t014]
    $ ls -d /tmp/ludo-wt-smoke        -> No such file or directory
    $ git branch --list               -> main, wt/t010, wt/t014   (no wt/smoke)
    ```
@@ -1646,7 +1646,7 @@ on this laptop, so the scripts were not statically linted.
   future worktrees get them from `tools/worktree_setup.sh` instead.
 - No hardware needed, no blockers.
 
-(T-014 commit: 5c79b4d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-014 commit: 7cf0762; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 
 ---
 
@@ -1766,11 +1766,11 @@ scripted motion in `teleop/`; the test's operator stand-in trajectory lives in `
 untouched, `hardware/session.enable` never created, nothing under `third_party/` touched. Every test wrote
 under `tmp_path`; `data/raw/` is still empty. No hardware needed, no blockers.
 
-(T-017 commit: 6beb49d; this line and the TASKS.md result hash are the only content of the follow-up commit.)
+(T-017 commit: 9c78d94; this line and the TASKS.md result hash are the only content of the follow-up commit.)
 ## T-015  Phase 0 report  (opus, 2026-09-11T21:00+07:00)
 
 Every number below was produced by the command printed next to it, run by me in the worktree
-`/home/alois/Desktop/ludo-g1-wt-t015` (branch `wt/t015`, `git rev-parse --short HEAD` -> `3c5df60`) on
+`/home/alois/Desktop/ludo-g1-wt-t015` (branch `wt/t015`, `git rev-parse --short HEAD` -> `8a2861c`) on
 2026-09-11. Nothing is copied from an earlier log. Timestamp note: `TZ=Asia/Bangkok date -Iminutes`
 prints `2026-09-11T21:00+07:00`, which is earlier than the stamps on the T-014/T-016 entries above; the
 laptop clock is what it is and I am not inventing a later one.
@@ -1958,7 +1958,7 @@ Blockers: `agents/BLOCKERS.md` -> `(none)`. No Phase 0 item reached the section 
 - 14 tasks marked accepted:
   `awk '/^## T-/{t=$2} /^status:/{print t, $2}' agents/TASKS.md` -> T-002..T-014 and T-016 `accepted`,
   T-015 and T-017 `in_progress`, and **T-001 still reads `review`** although `agents/REVIEW.md` records
-  "T-001 ACCEPTED (fable, 2026-09-11T18:52+07:00, commits 4255484, 3cd3738)". That is a bookkeeping slip
+  "T-001 ACCEPTED (fable, 2026-09-11T18:52+07:00, commits f0723b6, 4fad901)". That is a bookkeeping slip
   in TASKS.md, not an open task; I did not fix it because this task may only touch the T-015 lines.
 - 382 collected tests, 378 of which run with no device attached, in 57 s.
 - Three of the four exit checks pass outright; the fourth (Greennode) passes on the local transport and
@@ -1971,13 +1971,13 @@ Blockers: `agents/BLOCKERS.md` -> `(none)`. No Phase 0 item reached the section 
 
 - No code changed in this task: the only files touched are `agents/BUILD_LOG.md`, `docs/README.md` and
   the T-015 status/result lines in `agents/TASKS.md`.
-- The `378 passed` figure will change the moment T-017 merges; it is the count on `wt/t015` at `3c5df60`
+- The `378 passed` figure will change the moment T-017 merges; it is the count on `wt/t015` at `8a2861c`
   and the acceptance criterion is that Fable's fresh run on this branch reproduces it.
 - R1-R6 intact: no motion command, no scripted motion, `config/safety.yaml` untouched, nothing under
   `third_party/` read-modified, `hardware/session.enable` never created (still absent, still git-ignored,
   still absent from history — commands in section 5).
 
-(T-015 commit: 381b9d7; this line and the TASKS.md result hash are the only content of the follow-up
+(T-015 commit: 44f5c45; this line and the TASKS.md result hash are the only content of the follow-up
 commit, which ran the full pre-commit gate — no `--no-verify`, per D-013.)
 
 ---
@@ -2072,7 +2072,7 @@ exhausted engine leaves the UI inert under every key, a duplicated key binding i
   nothing), no scripted motion in `teleop/` or `runtime/`, `config/safety.yaml` untouched, nothing under
   `third_party/` touched, `hardware/session.enable` never created (still absent, still git-ignored).
 
-(T-025 commit: 2678a17; this line and the TASKS.md result hash are the only content of the follow-up commit,
+(T-025 commit: 684c03c; this line and the TASKS.md result hash are the only content of the follow-up commit,
 which ran the full pre-commit gate — no `--no-verify`, per D-013.)
 (Noted in passing, not fixed because this task may only touch the T-025 lines: T-016's `result:` block in
 TASKS.md still reads `commit: COMMIT_HASH` — a bookkeeping slip from that task, like the T-001 status one.)
@@ -2151,7 +2151,7 @@ The full-resolution strip was rendered and looked at (scratchpad, not committed:
   `config/safety.yaml` untouched, nothing under `third_party/` touched, `hardware/session.enable`
   never created. Committed through the full pre-commit gate, no `--no-verify` (D-013).
 
-(T-026 commit: 5f84310, the commit that holds all the code, tests and docs of this task. This line
+(T-026 commit: ac0141e, the commit that holds all the code, tests and docs of this task. This line
 and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
 pre-commit gate — no `--no-verify`, per D-013 item 1. Amending could not be used to fold the hash in:
 the amend changes the hash it is trying to record.)
@@ -2335,7 +2335,7 @@ written /home/alois/Desktop/ludo-g1-wt-t028/eval/results/20260911T221321_move-ho
   never created or read for writing. Committed through the full pre-commit gate, no `--no-verify`
   (D-013).
 
-(T-027 commit: 13b2806, the commit that holds all the code, tests, config, requirements and docs of
+(T-027 commit: b7f9919, the commit that holds all the code, tests, config, requirements and docs of
 this task. This line and the TASKS.md `result:` hash are the only content of the follow-up commit,
 which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
 | acceptance: JSON written, trial rows | `20260911T221321_move-hold.json`, `len(trials) == 20` |
@@ -2343,7 +2343,7 @@ which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
 | summary block | `success 0, n 20, rate 0.0, by_failure_mode {"timeout_no_progress": 20}, engine_retries 0, safety_refusals 0, duration_s 400.66` |
 | every failure labelled (6.5) | 20/20 under `timeout_no_progress`; 0 `unlabelled` |
 | per trial (row 0) | `duration_s 20.033`, `policy_calls 200`, `actions_sent 601`, `safety_refusals 0`, `engine_retries 0`, `stopped_by "timeout"` |
-| provenance recorded | `git_commit 986c15dd…`, `config_hashes` for safety/robot/board/training, `policy {"tag": "hold", "checkpoint": null, "checkpoint_sha256": null}` |
+| provenance recorded | `git_commit c402f3c7…`, `config_hashes` for safety/robot/board/training, `policy {"tag": "hold", "checkpoint": null, "checkpoint_sha256": null}` |
 | pairs covered | the 10 distinct pairs of `eval_20_moves.yaml`, each exactly twice |
 | fake clock cost | 400.7 s of loop time in 8.5 s of wall time (~47x); `--realtime` would take 400 s |
 | `--kind sequence --n 20` (recovery on) | 20 trials, 0/20, `engine_retries` 2 per trial, 40 total, 1201.98 s loop time in 21.3 s wall |
@@ -2371,7 +2371,7 @@ which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
   `third_party/` touched, `hardware/session.enable` never created or read for writing. Committed
   through the full pre-commit gate, no `--no-verify` (D-013 item 1).
 
-(T-028 commit: 6628491, which holds all of the code, tests and docs of this task. This line and the
+(T-028 commit: 2a6c38a, which holds all of the code, tests and docs of this task. This line and the
 TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full pre-commit
 gate — no `--no-verify`, per D-013 item 1; an amend cannot fold in the hash it is recording.)
 
@@ -2514,7 +2514,7 @@ magnitude is not in doubt.
   it), no scripted motion, `hardware/session.enable` never created or read. Committed through the
   full pre-commit gate, no `--no-verify` (D-013 item 1).
 
-(T-029 commit: f743667, which holds all of the code, tests, config keys and docs of this task. This
+(T-029 commit: 9320a49, which holds all of the code, tests, config keys and docs of this task. This
 line and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
 pre-commit gate -- no `--no-verify`, per D-013 item 1.)
 ## T-032  Teleop loop on mocks: pose and glove in, IK, Guard, arm and hand out  (opus, 2026-09-13T14:40+07:00)
@@ -2616,12 +2616,12 @@ I have logged it here rather than in TASKS.md, which I may not edit beyond T-032
   touched, the session file neither created nor named outside `runtime/safety.py`. Committed through
   the full pre-commit gate, no `--no-verify` (D-013 item 1).
 
-(T-032 commit: db2b922, which holds all of the code, tests, config and docs of this task; this line
+(T-032 commit: f59f4b2, which holds all of the code, tests, config and docs of this task; this line
 and the TASKS.md `result:` hash are the only content of the follow-up commit, which ran the full
 pre-commit gate. Disclosure: my first attempt at the work commit passed `-c core.hooksPath=.githooks`
 to `git commit`, and since no such directory exists that silently skipped the hook. I noticed
 immediately and re-made the same commit with `git commit --amend --no-edit`, which ran ruff and the
-full suite and printed "pre-commit: ok"; db2b922 is that commit and the bypassed one never survived.
+full suite and printed "pre-commit: ok"; f59f4b2 is that commit and the bypassed one never survived.
 No `--no-verify` was used anywhere, but the effect was the same for one minute, so it is recorded
 here per D-013 item 1.)
 
@@ -2857,7 +2857,7 @@ travels intact. The mock session is recorded fresh (two episodes, MOVE + ROLL, 2
   untouched, no motion command anywhere in this task (R1-R6 intact). Committed through the full
   pre-commit gate, no `--no-verify` (D-013 item 1).
 
-T-031 work commit: 2be999e (this hash record is the follow-up commit, as T-029 and T-033 did; amending
+T-031 work commit: 948850c (this hash record is the follow-up commit, as T-029 and T-033 did; amending
 would have invalidated the hash it records -- D-013 item 1, no `--no-verify` either way).
 ## T-030  ACT baseline wrapper, same inputs, temporal ensembling, latency  (opus, 2026-09-12T01:00+07:00)
 
@@ -3026,7 +3026,7 @@ the ordering held in every repetition.
   installed lerobot package modified (wrapped only). Committed through the full pre-commit gate, no
   `--no-verify` (D-013 item 1).
 
-(T-030 commit: 5b4fa78, which holds all of the code, tests, config keys and docs of this task; its
+(T-030 commit: b707913, which holds all of the code, tests, config keys and docs of this task; its
 pre-commit run was ruff clean and `490 passed, 4 skipped in 188.84s`. This line and the TASKS.md
 `result:` hash are the only content of the follow-up commit, which ran the full pre-commit gate --
 no `--no-verify`, per D-013 item 1.)
@@ -3137,7 +3137,7 @@ no `--no-verify`, per D-013 item 1.)
   installed lerobot package modified (wrapped only; the history is lerobot's own `delta_timestamps`). Committed
   through the full pre-commit gate, no `--no-verify` (D-013 item 1).
 
-(T-034 commit: 72259ca, which holds all of the code, tests, config comments and docs of this task; its pre-commit
+(T-034 commit: 192ac7d, which holds all of the code, tests, config comments and docs of this task; its pre-commit
 run was ruff clean and `519 passed, 4 skipped in 761.37s`. This line and the TASKS.md `result:` hash are the only
 content of the follow-up commit, which ran the full pre-commit gate -- no `--no-verify`, per D-013 item 1.)
 ## T-018  G1 arm driver, read-only rt/lowstate state stream, and `stream_stats --stream arm`  (opus, 2026-09-12T02:10+07:00)
@@ -3406,12 +3406,12 @@ target. R3: `config/safety.yaml` untouched; `hardware/session.enable` neither cr
 Nothing under `third_party/` touched and `requirements.txt` unchanged (lerobot is wrapped, never
 patched). Committed through the full pre-commit gate, no `--no-verify` (D-013 item 1).
 
-(T-035 commit: 860916c, which holds all of the code, tests, config keys and docs of this task; the full
+(T-035 commit: 25deca1, which holds all of the code, tests, config keys and docs of this task; the full
 pre-commit suite on it was 556 passed, 7 skipped in 795 s. This hash record is the follow-up commit, as
 T-029, T-030 and T-033 did, and it runs the same gate -- no `--no-verify`, per D-013 item 1.)
 ---
 
-## T-019  DexH15 driver, read-only state and palm camera  (2026-09-12, branch wt/t019, commit 4503254)
+## T-019  DexH15 driver, read-only state and palm camera  (2026-09-12, branch wt/t019, commit 306744d)
 
 Built in the worktree `/home/alois/Desktop/ludo-g1-wt-t019` (branch `wt/t019`, created with
 `tools/worktree_setup.sh`). **The hand was never reached: it has never been plugged in (H-003 open),
@@ -3462,7 +3462,7 @@ below that is a number about the hand is therefore a number about a fake, and is
 ### Commands run and what they measured
 ```
 .venv/bin/python -m pytest -q                      -> 573 passed, 10 skipped, 774.07 s
-  (again inside the pre-commit hook of commit 4503254 -> 573 passed, 10 skipped, 964.31 s)
+  (again inside the pre-commit hook of commit 306744d -> 573 passed, 10 skipped, 964.31 s)
 .venv/bin/python -m pytest tests/test_dexh15.py -q -> 33 passed, 3 skipped, 5.52 s
 .venv/bin/ruff check / format --check              -> clean on every file touched
 grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py
@@ -3538,7 +3538,7 @@ path to guard; `config/safety.yaml` untouched. `hardware/session.enable` neither
 read. Nothing under `third_party/` touched. Committed through the full pre-commit gate, no
 `--no-verify` (D-013).
 
-## T-037  Progress watchdog and per-trial failure logging in the controller  (opus, 2026-09-12T05:10+07:00, commit 54be930)
+## T-037  Progress watchdog and per-trial failure logging in the controller  (opus, 2026-09-12T05:10+07:00, commit 0b0e437)
 
 CLAUDE.md Phase 5 hardening, on mocks. Nothing here touched hardware, no session file was created,
 read or needed, and no real driver exists to command (R1).
@@ -3606,7 +3606,7 @@ read or needed, and no real driver exists to command (R1).
   `stopped_by="watchdog"`, `duration_s=20.067`, `actions_sent=602`, `policy_calls=200`,
   `safety_refusals=0`.
 - Full suite through the pre-commit hook (`ruff check .` clean, `pytest -q`) -> **596 passed, 10
-  skipped in 310.9 s**; commit `54be930`. The 10 skips are the absent hardware (H-002, H-003) and the
+  skipped in 310.9 s**; commit `0b0e437`. The 10 skips are the absent hardware (H-002, H-003) and the
   absent session file, all unchanged.
 - `.venv/bin/python -m runtime.controller --backend mock --seconds 60` (real clock) -> 3 commands,
   `failure modes policy_stalled=2, timeout_no_progress=1`, `stopped by run_deadline=1, watchdog=2`,
@@ -3652,7 +3652,7 @@ goes through `send()` -> `arm.send_targets` / `hand.send_pinch` -> `Guard.admit`
 action, and the test with the lunging policy shows the guard refusing 601 of 602 sends and admitting
 exactly the hold. `config/safety.yaml` untouched, `third_party/` untouched, no `--no-verify` (D-013).
 
-## T-036  Periodic checkpoints, crash resume, pruning and a disk guard  (opus, 2026-09-12T06:40+07:00, commit 90d73c1)
+## T-036  Periodic checkpoints, crash resume, pruning and a disk guard  (opus, 2026-09-12T06:40+07:00, commit 0916544)
 
 ### What I changed
 
@@ -3709,7 +3709,7 @@ git commit                                                            # pre-comm
                                                                       # 605 passed, 10 skipped in 338 s
 ```
 
-Commit `90d73c1`; this follow-up commit records the hash and repairs a run-together paragraph in
+Commit `0916544`; this follow-up commit records the hash and repairs a run-together paragraph in
 `docs/cloud.md` (the ACT sentence had been glued to the end of the new one).
 
 | measurement | value |
@@ -3862,7 +3862,7 @@ one-commit follow-up and I did not make it unasked.
     tests/test_dexh15.py -q                              -> 252 passed, 10 skipped, 48 s (after the
                                                             two list edits below)
 .venv/bin/ruff check .                                   -> clean
-.venv/bin/python -m pytest -q  (the pre-commit gate, commit 264fb9c)
+.venv/bin/python -m pytest -q  (the pre-commit gate, commit 245dc1e)
                                                          -> 643 passed, 14 skipped, 321.30 s
 tools/hardware_checks/stream_stats.py --backend mock --stream glove --seconds 60 --json
     -> 3000 frames in 59.98 s, 50.000 Hz, 0 drops, interval p50/p99 20.0/20.0 ms, jitter 0.0 ms
@@ -3998,7 +3998,7 @@ the same protocol, so a URL written against the task's wording connects instead 
   docs/engine.md so the engine team sizes their server for it.
 - Full pre-commit suite on the commit (ruff + `pytest -q`, no `--no-verify`): **703 passed, 14 skipped
   in 402.75 s**; every skip is a hardware-absent or no-session skip that predates this task. Commit
-  `775ea5e`, 10 files changed, 1351 insertions.
+  `ae3d65a`, 10 files changed, 1351 insertions.
 - The 50-command parity check (acceptance deliverable 2) is
   `test_fifty_commands_over_a_subprocess_match_the_in_process_stub`: `StubEngine(7)` in process versus
   the same seed served by a `python -m engine.serve_stub` subprocess; it compares all 50 commands by
@@ -4037,8 +4037,8 @@ full pre-commit gate, no `--no-verify` (D-013).
 
 ### Process note (D-013 item 1)
 The hash/suite-number follow-up above was first written as `git commit --amend --no-verify`, which
-D-013 item 1 forbids outright. It was undone (`git reset --soft 775ea5e`) and re-made as this ordinary
-commit through the full pre-commit gate, leaving the work commit `775ea5e` -- the tree the 703-test
+D-013 item 1 forbids outright. It was undone (`git reset --soft ae3d65a`) and re-made as this ordinary
+commit through the full pre-commit gate, leaving the work commit `ae3d65a` -- the tree the 703-test
 suite actually passed on -- untouched and correctly named in agents/TASKS.md.
 
 ## T-038  Board perception from the top camera, on synthetic scenes  (opus, 2026-09-12T06:59+07:00)
@@ -4106,7 +4106,7 @@ suite actually passed on -- untouched and correctly named in agents/TASKS.md.
 - `.venv/bin/ruff check .` clean.
 - Full pre-commit suite on the commit (ruff + `pytest -q`, no `--no-verify`): **767 passed, 14 skipped
   in 411.55 s** (703 before this task, plus its 64 tests); every skip is a hardware-absent or
-  no-session skip that predates it. Commit `64ef8c0`, 8 files changed, 2062 insertions.
+  no-session skip that predates it. Commit `e23b56e`, 8 files changed, 2062 insertions.
 
 ### Design calls, for review
 - **Areas are ratios, distances are millimetres; nothing is a pixel threshold.** A blob's area is
@@ -4269,7 +4269,7 @@ Branch `wt/t041` in the worktree `/home/alois/Desktop/ludo-g1-wt-t041`, created 
   device palm                               SKIP    absent: palm: config/cameras.yaml palm.device is UNMEASURED ...
   board calibration                         FAIL    .../config/board_calib.yaml does not exist; H-001 then `python -m board.calibration`
   dataset disk                              FAIL    12.0 GB free at .../data (target 500 GB, Q-002)
-  git                                       FAIL    HEAD 7088c27, 2 uncommitted path(s): ?? tests/test_session_preflight.py ...
+  git                                       FAIL    HEAD da9f964, 2 uncommitted path(s): ?? tests/test_session_preflight.py ...
 
 * 0/28 motion-relevant checks pass: ...
 NO-GO for a motion session.
@@ -4309,7 +4309,7 @@ builds the child environment as `os.environ` minus every `GIT_*` variable, and
   number with its source (CLAUDE.md 3.4, Q-002) and is a keyword argument of `disk_row`.
 
 ### Commit and gate
-Work commit **22ef3c4** on branch `wt/t041`, through the full pre-commit gate (ruff + the whole
+Work commit **d0e6820** on branch `wt/t041`, through the full pre-commit gate (ruff + the whole
 suite, no `--no-verify`): **689 passed, 14 skipped in 579.82 s**. The 14 skips are the pre-existing
 absent-hardware and no-session skips of `tests/test_cameras.py`, `test_dexh15.py`, `test_g1_arm.py`,
 `test_pico.py`, `test_pxcap.py` and `test_scaffold.py`.
@@ -4336,12 +4336,12 @@ back, so every public *and* private name a test imports still resolves from wher
 
 | commit | origin (before -> after) | new module | what moved |
 |---|---|---|---|
-| `be208d4` | `drivers/g1_arm.py` 332 -> 297 | `drivers/dds.py` 60 | `ArmUnavailable`, `_DDS_LOCK`, `_DDS_BINDING`, `dds_binding`, `default_subscriber` |
-| `7fd9ce0` | `drivers/dexh15.py` 485 -> 441, `drivers/pxcap.py` 483 -> 483 | `drivers/serial_discovery.py` 61 | `SERIAL_GLOBS`, `_usb_id_for`, `find_port` |
-| `ac8ffc1` | `teleop/loop.py` 388 -> 286 | `teleop/clutch.py` 126 | `ClutchState`, `Clutch` |
-| `c150886` | `policy/train.py` 849 -> 674 | `policy/train_io.py` 218 | checkpoint constants, `DiskGuardError`, `checkpoint_bytes`, `check_checkpoint_disk`, `atomic_save`, `_step_of`, `prune_step_checkpoints`, `write_step_checkpoint`, `EMA` |
-| `96aa6dd` | `board/perception.py` 1001 -> 809 | `board/detect.py` 216 | `PerceptionError`, `Pose`, `Placement`, `Bowl`, `Rules`, `_hsv_pair`, `_positive`, `_band`, `load_rules`, `_area_px` |
-| `4f308a0` | `tools/hardware_checks/session_preflight.py` 362 -> 307 | `tools/hardware_checks/preflight_report.py` 78 | `PASS`/`FAIL`/`SKIP`, `MOTION_KEYS`, `Row`, `exit_code`, `render` |
+| `f053463` | `drivers/g1_arm.py` 332 -> 297 | `drivers/dds.py` 60 | `ArmUnavailable`, `_DDS_LOCK`, `_DDS_BINDING`, `dds_binding`, `default_subscriber` |
+| `3c7f32b` | `drivers/dexh15.py` 485 -> 441, `drivers/pxcap.py` 483 -> 483 | `drivers/serial_discovery.py` 61 | `SERIAL_GLOBS`, `_usb_id_for`, `find_port` |
+| `43e7c87` | `teleop/loop.py` 388 -> 286 | `teleop/clutch.py` 126 | `ClutchState`, `Clutch` |
+| `e3c341e` | `policy/train.py` 849 -> 674 | `policy/train_io.py` 218 | checkpoint constants, `DiskGuardError`, `checkpoint_bytes`, `check_checkpoint_disk`, `atomic_save`, `_step_of`, `prune_step_checkpoints`, `write_step_checkpoint`, `EMA` |
+| `b0b142b` | `board/perception.py` 1001 -> 809 | `board/detect.py` 216 | `PerceptionError`, `Pose`, `Placement`, `Bowl`, `Rules`, `_hsv_pair`, `_positive`, `_band`, `load_rules`, `_area_px` |
+| `67d88aa` | `tools/hardware_checks/session_preflight.py` 362 -> 307 | `tools/hardware_checks/preflight_report.py` 78 | `PASS`/`FAIL`/`SKIP`, `MOTION_KEYS`, `Row`, `exit_code`, `render` |
 
 `drivers/pxcap.py` keeps its line count: its only change is the one import line, which now names
 `drivers.serial_discovery` instead of reaching across into `drivers.dexh15`.
@@ -4413,12 +4413,12 @@ one-line pointers to the new module, and they cannot hide a logic change because
 strips docstrings before comparing.
 
 Test count, `.venv/bin/python -m pytest --collect-only -q | tail -1`:
-**810 tests collected** before the first split (at `123f951`) and **810 tests collected** after the
+**810 tests collected** before the first split (at `0af6aee`) and **810 tests collected** after the
 sixth. Each of the six pre-commit runs reported the same suite: 795-796 passed, 14-15 skipped (the
 extra skip is `tests/test_train.py:361`, the DDIM wall-clock ordering assertion that skips itself
 when the 1-minute load average is above 4 -- the other builder's worktree was running).
 
-`git diff --stat 123f951..HEAD`: 18 files, 811 insertions, 646 deletions, and the 165-line gap is
+`git diff --stat 0af6aee..HEAD`: 18 files, 811 insertions, 646 deletions, and the 165-line gap is
 the six new modules' docstrings, imports and `__all__` blocks plus the eleven doc lines.
 
 ### Commands run
@@ -4477,7 +4477,7 @@ imports nothing from the repo at all. R3: `config/safety.yaml` untouched (not in
 `requirements.txt`, `pyproject.toml`, `config/`, `agents/DECISIONS.md`, `agents/REVIEW.md` and
 `agents/STATE.md` untouched; nothing under `third_party/` touched. Every commit staged file-by-file
 by name and went through the full gate; no `--no-verify` (D-013).
-## T-040  Policy termination signal: an episode-end head trained from recorded episodes  (opus, 2026-09-12T23:55+07:00, commit 55052f2, branch wt/t040)
+## T-040  Policy termination signal: an episode-end head trained from recorded episodes  (opus, 2026-09-12T23:55+07:00, commit 0bc03c8, branch wt/t040)
 
 CLAUDE.md 5.5 ends a primitive on "the policy's own termination signal or a 20 s timeout"; until this
 task only the timeout existed and both adapters' `done()` returned a hard-coded False. Both models of
@@ -4587,7 +4587,7 @@ actually trained on -- which is the honest yardstick; the balanced probe survive
 per-class probability print.
 
 ### Commit and gate
-Work commit **55052f2** on branch `wt/t040`, through the full pre-commit gate (ruff + the whole
+Work commit **0bc03c8** on branch `wt/t040`, through the full pre-commit gate (ruff + the whole
 suite, no `--no-verify`): **806 passed, 15 skipped in 513.98 s**. The 15 skips are the pre-existing
 absent-hardware, no-session and load-dependent skips.
 
@@ -4726,7 +4726,7 @@ number in that file is untouched (diff above: 7 insertions, 0 deletions). Nothin
 `third_party/` was modified. Committed through the full pre-commit gate, no `--no-verify` (D-013).
 
 ### Commit and gate
-Work commit **f594beb** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+Work commit **4ee2d42** on `main`, through the full pre-commit gate (ruff + the whole suite, no
 `--no-verify`): **837 passed, 15 skipped in 654.41 s**. The 15 skips are the pre-existing
 absent-hardware, no-session and load-dependent skips (the load-dependent one, `test_train.py:361`,
 skipped at a 1-minute load of 8.1: another builder was running its own suite at the same time).
@@ -4815,7 +4815,7 @@ and that an agent only proposes. Nothing under `third_party/` touched. Only the 
 lists were changed. Committed through the full pre-commit gate, no `--no-verify` (D-013).
 
 ### Commit and gate
-Work commit **676ce6e** on branch `wt/t044`, through the full pre-commit gate (ruff + the whole
+Work commit **d12cbaf** on branch `wt/t044`, through the full pre-commit gate (ruff + the whole
 suite, no `--no-verify`): **838 passed, 16 skipped in 466.10 s**. The 16 skips are the pre-existing
 absent-hardware, no-session and load-dependent ones plus this task's documented
 `enable_session.py` skip. This hash is recorded by the follow-up commit.
@@ -4977,7 +4977,7 @@ pre-commit gate, no `--no-verify` (D-013).
 
 ### Commit and gate
 
-Work commit **c8d4674** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+Work commit **9f4e6b1** on `main`, through the full pre-commit gate (ruff + the whole suite, no
 `--no-verify`, D-013): **892 passed, 15 skipped, 21 warnings in 459.18 s**. The 15 skips are the
 pre-existing absent-hardware and no-session ones plus T-044's documented `enable_session.py` skip;
 nothing this task added is skipped. This hash is recorded by the follow-up commit, which changes
@@ -5187,9 +5187,9 @@ none was added, so the 26 motion-relevant rows, their order and their verdicts a
 ```
 $ diff preflight_before.txt preflight_after.txt
 32c32
-<   git                                       PASS    -           HEAD 0b92a2d, tree clean
+<   git                                       PASS    -           HEAD d64df94, tree clean
 ---
->   git                                       FAIL    -           HEAD 0b92a2d, 9 uncommitted path(s): M agents/BUILD_LOG.md ...
+>   git                                       FAIL    -           HEAD d64df94, 9 uncommitted path(s): M agents/BUILD_LOG.md ...
 ```
 
 Both files still end `* 0/26 motion-relevant checks pass: ...` and `NO-GO for a motion session.`
@@ -5206,10 +5206,10 @@ next to it. R6: only files this task names, plus the two test files the change m
 
 ### Commit and gate
 
-Work commit **b7d61d6** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+Work commit **2f8443a** on `main`, through the full pre-commit gate (ruff + the whole suite, no
 `--no-verify`): **894 passed, 15 skipped in 464.96 s**. After it, `session_preflight.py
---no-devices` matches the before-run on every line but the `git` row's HEAD hash (`0b92a2d` ->
-`b7d61d6`, both `tree clean`, both `PASS`). This hash is recorded by the follow-up commit, which
+--no-devices` matches the before-run on every line but the `git` row's HEAD hash (`d64df94` ->
+`2f8443a`, both `tree clean`, both `PASS`). This hash is recorded by the follow-up commit, which
 changes `agents/BUILD_LOG.md` and `agents/TASKS.md` only.
 
 ---
@@ -5360,7 +5360,7 @@ fallback -- T-047`. No disagreement with the task otherwise.
 
 ### Commit and gate result  (opus, 2026-09-14T14:20+07:00)
 
-Work commit **842897c** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+Work commit **4c90884** on `main`, through the full pre-commit gate (ruff + the whole suite, no
 `--no-verify`): **902 passed, 16 skipped in 465.39 s**. One test more and one skip fewer than the
 pre-commit run recorded above: `tests/test_train.py:361` skips itself when the 1-minute load is over
 4 (DDIM ordering is not measurable under load) and the host was quiet this time. This hash is

@@ -25,7 +25,7 @@ acceptance:
   - hook proof: a scratch commit containing a file with a ruff error is rejected by the hook; the command and its output are in BUILD_LOG.md; the scratch file is not left in the tree
   - `git status` clean after the commit; `.venv/` and `data/` untracked
 notes: Keep it minimal (section 7). Do not add torch, lerobot, mujoco yet; T-002 decides what the SDKs need.
-result: (opus, 2026-09-11T18:45+07:00, commit 4255484)
+result: (opus, 2026-09-11T18:45+07:00, commit f0723b6)
   - `.venv/bin/python --version` -> Python 3.10.20 (uv-managed CPython; system python3 is 3.10.12). PASS
   - `.venv/bin/ruff check .` -> "All checks passed!", exit 0. PASS
   - `.venv/bin/python -m pytest -q` -> 15 passed, 1 skipped ("no session gate yet"), exit 0. PASS
@@ -66,7 +66,7 @@ notes: Facts Fable found on this laptop (verify, cite, use): (a) pxdex 3.2.1 (De
   PicoHandSnapshot separately from the skeleton frame; teleopit/retargeting/core.py RetargetingModule.retarget returns a full
   qpos via GMR (needs a full human skeleton). Joint order in teleopit/constants.py. Read ~/Teleopit only, never modify it.
   This task exists to find out whether A5 is wrong (D-002). If the Teleopit stack cannot give arm targets from a single controller, say so plainly and propose the smallest alternative (e.g. controller pose -> mink IK on the G1 MJCF directly). Do not build the alternative here.
-result: (opus, 2026-09-11T20:10+07:00, commit ac4fcc5)
+result: (opus, 2026-09-11T20:10+07:00, commit 34f3f88)
   - docs/sdks.md: 8 device sections, each with a state-read call reference and, for the three actuator paths
     (G1 arm, G1 waist, DexH15), a target-write call reference. PASS
   - `.venv/bin/python -m pytest -q tests/test_docs_sdks.py -s` -> 9 passed; the test printed
@@ -114,7 +114,7 @@ notes: Facts from docs/sdks.md (T-002) to encode: G1 joint indices from unitree_
   address 0x78 (from the SDK example), joint names/order from pxdex.dh15 stubs; Orbbec Ego is UVC stereo (/dev/video4 left,
   /dev/video6 right), Brio UNMEASURED; G1 joint limits: take them from the G1 MJCF at ~/Teleopit/assets/robots/unitree_g1/
   g1_29dof.xml (read-only reference, T-012 vendors it) and cite the file. Placeholder envelope must be conservative: workspace box no larger than the table region in front of the robot, velocity limit low. Fable will review the numbers. Section 7: config in yaml, never constants in code.
-result: (opus, 2026-09-11T21:40+07:00, commit b2e3bdc)
+result: (opus, 2026-09-11T21:40+07:00, commit dbd756b)
   - All six files load: `test_every_config_loads` over NAMES = (board, cameras, hand, robot, safety, training). PASS
   - `config_hash` deterministic across two loads (all six, 64 hex chars), unchanged when key order or comments
     change (unsorted / sorted / top level reversed -> one hash), changed when a value changes
@@ -155,7 +155,7 @@ acceptance:
   - `shift` by a known delta then `align` recovers the original pairing (test)
   - `now_ns` is monotonic across 10000 calls (test)
 notes: Keep it small; no threads here. Latency values come from config/robot.yaml later (T-003); clock only provides the mechanism.
-result: (opus, 2026-09-11T19:20+07:00, commit 956147a; branch wt/t004)
+result: (opus, 2026-09-11T19:20+07:00, commit 0f77f0d; branch wt/t004)
   - acceptance 1, `.venv/bin/python -m pytest -q tests/test_clock.py -s`:
     "skew over 1800 aligned frames (60 s @ 30 Hz, seed 20260911): p50 = 2.982 ms, p99 = 6.701 ms, max = 7.799 ms".
     30 Hz + 100 Hz streams, 2 ms gaussian jitter, 60 s, aligned on the nominal 30 Hz grid with a 10 ms
@@ -191,7 +191,7 @@ acceptance:
   - the string "hardware/session.enable" is written by exactly one module (safety.py reads it, enable_session.py writes it): `grep -rn "session.enable" --include=*.py . | grep -v third_party` shows only those two files plus tests
 notes: R1 and R3 live here. Do not add any bypass flag, environment variable, or "dev mode" that skips the gate for hardware. `simulated=True` is only set by drivers/mock. Fable will grep for bypasses.
 
-result: (opus, 2026-09-11T21:55+07:00, commit 8c03733)
+result: (opus, 2026-09-11T21:55+07:00, commit 597b4ea)
   - acceptance 1 (session gate), `.venv/bin/python -m pytest -q tests/test_safety.py`: Guard(simulated=False)
     raises SafetyViolation(rule="session_gate") for a missing, expired, `checklist: pending` and unparsable
     file (4 parametrized cases, `guard.admitted == 0`), and admits with a valid file written into tmp_path.
@@ -235,7 +235,7 @@ acceptance:
   - test: the mock hand maps pinch 0.0 and 1.0 to two distinct 15-joint vectors from config/hand.yaml
   - `grep -rn "Guard(" drivers/ | grep -v mock` is empty (only mocks construct simulated=True; real drivers will use simulated=False)
 notes: Interfaces are the contract for the real drivers in Phase 1; keep them minimal, no features nobody asked for.
-result: (opus, 2026-09-11T20:10+07:00, commit 096d01f)
+result: (opus, 2026-09-11T20:10+07:00, commit e0ca032)
   - `.venv/bin/python -m pytest tests/test_mock_drivers.py -q` -> 51 passed in 1.4 s. Full suite
     `.venv/bin/python -m pytest -q` -> 276 passed, 1 skipped (225 before). `.venv/bin/ruff check .` ->
     "All checks passed!". PASS
@@ -278,7 +278,7 @@ acceptance:
   - test: every Command's src/dst are cells that exist in config/board.yaml
   - test: eval_20_moves.yaml loads and yields exactly 20 MOVE commands with >= 10 distinct (src, dst) pairs
 notes: This is orchestration, allowed under R2 (CLAUDE.md 5.5). The real engine will replace stub.py; keep interface.py untouched by the stub's internals.
-result: (opus, 2026-09-11T22:55+07:00, commit 5cab3e6, branch wt/t007)
+result: (opus, 2026-09-11T22:55+07:00, commit f22ace8, branch wt/t007)
   - engine/interface.py is CLAUDE.md 5.5 field for field; added only type hints, docstrings, frozen=True and ABC (5.1). Optional[X] spelled X | None (ruff UP045).
   - engine/cells.py: load_cells() -> 88 Cells from config/board.yaml (48 track + 4 x (6 home + 4 base)); top_px None unless a calibration mapping is passed; load_layout() reads the topology.
   - engine/stub.py 297 lines. Random mode: 4 colours x 4 horses, only the robot's colour emits commands, ROLL then MOVE, enter-from-base on a 1 or a 6 (documented choice), capture emitted as two MOVEs (captured horse out first). Script mode hands out the script then None.
@@ -307,7 +307,7 @@ acceptance:
   - synthetic test with 15 degrees of in-plane rotation and a mild perspective tilt passes the same bound
   - CLI on a real still (data/calib/board_empty.png, H-001) prints four tag ids and the error; if the still is not available yet, say so in BUILD_LOG.md and leave H-001 open; the synthetic tests are the acceptance for this cycle
 notes: `top` observation crop and the goal heatmaps depend on this frame; never apply geometric augmentation to it later (5.7).
-result: (opus, 2026-09-11T20:05+07:00, commit 63d998f)
+result: (opus, 2026-09-11T20:05+07:00, commit 390cd84)
   - Detector recorded: OpenCV `cv2.aruco` + `getPredefinedDictionary(DICT_APRILTAG_36h11)` with
     CORNER_REFINE_SUBPIX. pupil-apriltags NOT used and NOT added: opencv-python 5.0.0 already ships the
     36h11 dictionary (bytesList.shape == (587, 5, 4)). No dependency added.
@@ -352,7 +352,7 @@ acceptance:
   - the script refuses to run in remote mode when ~/.config/ludo-g1/env is missing, with a message pointing to QUESTIONS.md Q-001
   - no credential strings in git (`git grep -i -E "password|secret|token" cloud/` empty)
 notes: The real one-minute dummy job round trip is the Phase 0 exit check and waits for Q-001. Record the command in docs/cloud.md so it can be run the moment credentials exist.
-result: (opus, 2026-09-11T19:12+07:00, commit 5540c10; branch wt/t009)
+result: (opus, 2026-09-11T19:12+07:00, commit 9e6d10f; branch wt/t009)
   - acceptance 1 (local-mode round trip), `bash tests/test_greennode_local.sh` -> exit 0, 18/18 checks.
     The chain is the literal acceptance form, no extra flags: `GREENNODE_TRANSPORT=local cloud/greennode.sh up`
     -> `... train cloud/dummy_job.py --seconds 1 --note ...` -> `... down`, producing
@@ -395,7 +395,7 @@ acceptance:
   - `stream_stats.py --backend mock --seconds 5` reports 30 Hz +/- 1 and 0 drops (test)
   - if a Brio is attached at run time: 10 s of real stats recorded in BUILD_LOG.md
 notes: Read-only; no session needed. Do not touch the palm camera here (it comes with the DexH15 driver in Phase 1).
-result: (opus, 2026-09-11T23:55+07:00, commit f3e553d)
+result: (opus, 2026-09-11T23:55+07:00, commit ed4ab4d)
   - Acceptance 1, no camera attached: whole suite re-run with drivers.cameras.list_video_nodes stubbed to []
     (throwaway pytest plugin in the scratchpad) -> 318 passed, 9 skipped, 0 failed. Every camera skip is a
     `readonly` test and names the device or the config key, e.g. "no real oblique camera: ... no VIDEO_CAPTURE
@@ -434,7 +434,7 @@ deliverables:
 acceptance:
   - tests pass; `Guard.admit` with the real fk rejects a target whose wrist would be outside config/safety.yaml's box (test)
 notes: Use the MJCF vendored by T-012 (third_party/unitree_g1_mjcf/), loaded with mujoco; joint order from config/robot.yaml. The tool offset from the wrist to the fingertip pinch point is UNMEASURED until Phase 1; the box is checked at the wrist for now and that is stated in docs/safety.md.
-result: (opus, 2026-09-11T19:47+07:00, commit d9596d9)
+result: (opus, 2026-09-11T19:47+07:00, commit 60348c1)
   - Implementation: mujoco on third_party/unitree_g1_mjcf/g1_29dof.xml (the T-012 vendored MJCF), joint
     order and qpos addresses from config/robot.yaml, base pinned to identity so positions are in the
     g1_pelvis frame, mj_kinematics only. runtime/fk.py, 119 lines.
@@ -488,7 +488,7 @@ acceptance:
 notes: The MJCF originates from Unitree (BSD-3); keep its LICENSE next to it. Never modify the XML; if the IK needs legs
   pinned, do it at load time in code (T-013), not by editing the asset.
 result:
-  commit: aa8f9cc
+  commit: 7fbc50c
   - vendored third_party/unitree_g1_mjcf/: 38 files, 19,697,688 bytes (19 MB) -- g1_29dof.xml, LICENSE,
     README.md and exactly the 35 meshes the XML references, meshes/ layout preserved, byte-identical to
     /home/alois/Teleopit/assets/robots/unitree_g1/ (diff -r --brief: no differences; source not modified)
@@ -534,7 +534,7 @@ acceptance:
   - mean solve time < 5 ms per call (measured, command logged)
 notes: No hardware, no drivers touched. This is the IK that D-006 replaces Teleopit with; keep it under 200 lines. Also fix the
   future-tense sentence about T-012 in docs/config.md.
-result: (commit 6628571)
+result: (commit 5d067f3)
   - `.venv/bin/ruff check .` -> All checks passed!; `.venv/bin/python -m pytest -q` -> 327 passed, 1 skipped
     (297 before + 30 new in tests/test_retarget.py; the skip is the motion autoskip)
   - acceptance 1, printed pass rate: `.venv/bin/python -m pytest tests/test_retarget.py -q` ->
@@ -579,7 +579,7 @@ acceptance:
   - `git status` in main is clean afterwards
 notes: Nothing under third_party/ is modified; the symlinks live only in the worktree and are git-ignored there.
 result:
-  commit: 5c79b4d
+  commit: 7cf0762
   files: tools/worktree_setup.sh, tools/worktree_teardown.sh, tools/worktree_payloads.txt, docs/setup.md
   acceptance 1: `bash tools/worktree_setup.sh wt/smoke /tmp/ludo-wt-smoke` -> exit 0, "worktree_setup: OK
     worktree=/tmp/ludo-wt-smoke branch=wt/smoke suite=green", pytest inside the worktree 327 passed, 1 skipped
@@ -619,10 +619,10 @@ acceptance:
   - every number in the report is next to the command that produced it (spot-checked by Fable)
   - `.venv/bin/python -m pytest -q` count in the report equals a fresh run at review time
 notes: No code changes. Do not restate the brief.
-result: (opus, 2026-09-11T21:00+07:00, branch wt/t015, commit 381b9d7)
+result: (opus, 2026-09-11T21:00+07:00, branch wt/t015, commit 44f5c45)
   Phase 0 report appended to agents/BUILD_LOG.md (seven sections) and docs/README.md written (11 module
   pages, one sentence each). No code changed.
-  measured in the worktree at 3c5df60:
+  measured in the worktree at 8a2861c:
   - `time .venv/bin/python -m pytest -q` -> 378 passed, 4 skipped in 57.19s (real 0m57,511s);
     `--collect-only` -> 382 tests collected. `.venv/bin/python -m ruff check .` -> All checks passed!
   - exit check 2: `.venv/bin/python -m pytest tests/test_safety.py -v -k "test_guard_on_hardware_refuses_without_a_valid_session or test_simulated_is_keyword_only_and_defaults_to_false"`
@@ -671,8 +671,8 @@ acceptance:
     data/logs/ and a printed summary of commands executed and outcomes (command and output in BUILD_LOG.md)
 notes: No learned policy exists yet; HoldPolicy exists only so the orchestration can be tested. No scripted trajectories anywhere.
 result:
-  commit: 5fbb479  (placeholder left by the builder; filled in by Fable at T-025 review)
-  commit: 5f84310
+  commit: d7d9255  (placeholder left by the builder; filled in by Fable at T-025 review)
+  commit: ac0141e
   tests: 352 passed, 1 skipped (`.venv/bin/python -m pytest -q`; was 327+1). 25 new in tests/test_controller.py.
   ruff: `.venv/bin/ruff check .` clean.
   loop rate (fake clock, the criterion): policy_hz 9.98 Hz over a full 20.03 s MOVE (201 calls), action_hz 29.9;
@@ -712,7 +712,7 @@ acceptance:
   - the three tests above pass with the printed skew and frame counts; full suite green; ruff clean
 notes: The operator UI and the real Pico/glove input are separate tasks. Never write outside data/raw/ (git-ignored).
 result:
-  commit: 6beb49d
+  commit: 9c78d94
   versions: lerobot 0.4.4 (the last release that installs on Python 3.10; 0.5.0+ need >= 3.12), torch 2.9.1+cpu,
     torchvision 0.24.1+cpu, torchcodec 0.10.0. CPU wheels via three --find-links on the PyTorch CPU index; no
     nvidia-* package installed. `uv pip install --dry-run -r requirements.txt` -> "Would make no changes".
@@ -780,7 +780,7 @@ result: drivers/g1_arm.py (332 lines) -- G1Arm, the read half of ArmDriver: Chan
   message to name H-002 and `list_devices.py` without the path. No check was weakened.
   Deviation 1: the module is 332 lines, not under 250; D-013 item 2's remedy (a sibling module) is outside this task's
   touch list, so it stayed one file -- BUILD_LOG has the proposed split for T-021.
-  commit: 3f3df45 (pre-commit hook: ruff clean, 533 passed, 7 skipped in 1346 s under load; no --no-verify)
+  commit: 3a8ba29 (pre-commit hook: ruff clean, 533 passed, 7 skipped in 1346 s under load; no --no-verify)
 
 ## T-019  DexH15 driver, read-only state and palm camera, 10-minute stream stats
 status: accepted
@@ -803,7 +803,7 @@ acceptance:
   - without: suite green, tests skipped with the device path in the reason
 notes: The motors stay disabled. A `grep -n "enableMotor\|setMotor\|setJoint" drivers/dexh15.py` must show only the
   NotImplementedError stub for send_pinch.
-result: (opus, 2026-09-12, branch wt/t019, commit 4503254; hash recorded by the follow-up commit). The hand was NEVER reached: it has never been plugged in
+result: (opus, 2026-09-12, branch wt/t019, commit 306744d; hash recorded by the follow-up commit). The hand was NEVER reached: it has never been plugged in
   (H-003 open) and no /dev/ttyUSB* or /dev/ttyACM* node existed during the task.
   - suite: 573 passed, 10 skipped, 774.07 s (`.venv/bin/python -m pytest -q`); tests/test_dexh15.py alone
     33 passed, 3 skipped. ruff check and ruff format --check clean on every file touched.
@@ -841,7 +841,7 @@ acceptance:
   - without: suite green, tests skipped naming the device
 notes: The headset must run the PicoBridge app and reach this laptop; the network path from the lab's prior setup is in
   third_party/g1_pico_teleop/README.md section 3.3 (robot NAT). Record what was needed in docs/drivers.md.
-result: (opus, 2026-09-12, branch wt/t020, commit 264fb9c; hash recorded by the follow-up commit). NEITHER device was reached: the glove has never been
+result: (opus, 2026-09-12, branch wt/t020, commit 245dc1e; hash recorded by the follow-up commit). NEITHER device was reached: the glove has never been
   plugged into this laptop and the headset is not on the network (H-004, new).
   - suite: 643 passed, 14 skipped, 321.30 s through the pre-commit gate (ruff check . + pytest -q, no --no-verify).
     tests/test_pxcap.py alone 34 passed, 2 skipped; tests/test_pico.py alone 22 passed, 2 skipped.
@@ -961,7 +961,7 @@ acceptance:
   - tests pass; a 30 s headless mock session records 2 episodes with correct metadata (command in BUILD_LOG.md)
 notes: No hardware. The real teleop loop (input drivers -> IK -> Guard -> arm) is wired in Phase 2 after T-020/T-021.
 result:
-  commit: 2678a17
+  commit: 684c03c
   tests: 402 passed, 4 skipped (`.venv/bin/python -m pytest -q`, 78.1 s; was 391 passed). 11 new in
     tests/test_operator_ui.py. ruff: `.venv/bin/ruff check .` clean.
   30 s headless mock session (`.venv/bin/python -m pytest tests/test_operator_ui.py -q -s`, stub seed 2,
@@ -1000,7 +1000,7 @@ acceptance:
     goal overlay pixels differ from the raw frame
 notes: Section 8 audit tool; keep it dependency-free beyond opencv and numpy.
 result:
-  commit: 5f84310
+  commit: ac0141e
   tools/dataset_view.py (249 lines) + tests/test_dataset_view.py (8 tests) + a docs/teleop.md section.
   CLI: `python -m tools.dataset_view SESSION_ROOT [--episodes 0,3] [--out DIR]`; prints the dataset card
     (README.md) to stdout, writes episode_nnnnnn.png to SESSION_ROOT/strips/ (or --out).
@@ -1057,7 +1057,7 @@ result: policy/dataset.py (LudoDataset + split_cell_pairs), tests/test_dataset.p
     all zero; episode tail padded with the last action and masked; top RGB bit-identical under
     augmentation with the jitter at zero strength while oblique, palm and the goal channels change.
   - DeprecationWarning count before -> after: 2817 -> 0.
-  commit: 13b2806
+  commit: b7f9919
 
 ## T-028  Eval protocol and runner on mocks
 status: accepted
@@ -1084,7 +1084,7 @@ acceptance:
     "0/20" (command and output in BUILD_LOG.md)
 notes: R5: every success rate the project ever reports comes from this JSON. Keep the JSON schema in docs/eval.md.
 result:
-  commit: 6628491
+  commit: 2a6c38a
   eval/protocol.py (428 lines) + eval/run_eval.py (245) + tests/test_eval.py (23 tests) + docs/eval.md (177)
     + eval/results/.gitkeep; board/perception.py gained the 6.5 Enum `FailureMode` (defined there, imported by
     eval/protocol.py, so the deployed runtime path does not depend on eval/; behaviour identical, NO_PROGRESS
@@ -1141,7 +1141,7 @@ acceptance:
 notes: Real training happens on Greennode (Q-001). No hardware. Keep the LeRobot modifications in policy/ (wrap, do not
   patch the package).
 result:
-  commit: f743667
+  commit: 9320a49
   policy/diffusion.py (~470 lines) + policy/train.py (~230) + policy/export.py (~150) + tests/test_diffusion.py
     (10 tests) + docs/policy.md (+130 lines) + policy/__init__.py docstring + 4 new config/training.yaml
     `diffusion` keys (encoder_image_hw [240,320], down_dims, spatial_softmax_keypoints, stats_samples; no existing
@@ -1192,7 +1192,7 @@ acceptance:
 notes: CLAUDE.md 5.7: ACT is trained on every dataset the diffusion model is trained on. train.py must make that a one-flag
   change.
 result:
-  commit: 5b4fa78
+  commit: b707913
   policy/act.py (new, ~400 lines: ACTSpec, TemporalEnsemble, GoalACTPolicy, ACTAdapter, latency CLI) + policy/
     train.py `--policy {diffusion,act}` (POLICIES map; train() dispatches on the spec type; run.json and
     checkpoint.pt record "policy"; every default from the chosen block) + policy/export.py (one export path for
@@ -1255,7 +1255,7 @@ acceptance:
     STATE.md as the Phase 3 gate
 notes: No credentials in git.
 
-result: (opus, 2026-09-12T03:20+07:00, commit 2be999e)
+result: (opus, 2026-09-12T03:20+07:00, commit 948850c)
   - local-transport end to end: `up` -> `train policy/train.py --sessions data/raw/<mock> --smoke` -> `down`, in
     tests/test_greennode_train.py (6 tests, 31.4 s). The job exits 0 after ~27 s, 24 frames, 38.4 M parameters at the
     test scale; the returned run.json carries dataset_manifest_sha256 776b5083... and all six config hashes, and its
@@ -1299,7 +1299,7 @@ acceptance:
   - tests pass with the printed rate, error and timings; full suite green; ruff clean
 notes: No hardware; the real pose/glove/arm/hand drivers arrive in Phase 1 and slot into the same constructor. This is the
   path that will produce every training episode, so keep it small and obviously correct (under 250 lines).
-result: (opus, 2026-09-13T14:40+07:00, commit db2b922)
+result: (opus, 2026-09-13T14:40+07:00, commit f59f4b2)
   - `.venv/bin/python -m pytest tests/test_teleop_loop.py -q` -> 14 passed. `.venv/bin/python -m pytest -q` ->
     465 passed, 4 skipped (451 before). `.venv/bin/ruff check .` -> "All checks passed!". PASS
   - 30 s run on mocks, fake clock: 901 ticks in 30.033 s = 30.000 Hz (budget 30 +/- 0.5), 901 admitted,
@@ -1352,7 +1352,7 @@ acceptance:
     and its status/comment (Fable checks that nothing was loosened)
 notes: T-021 (first real motion) now depends on this task. Also add `mock.pose_center_m` to the MockPose row in docs/drivers.md
   (left over from T-032).
-result: (opus, 2026-09-12T00:35+07:00, commit 275abc0)
+result: (opus, 2026-09-12T00:35+07:00, commit 6a8b7d8)
   - `.venv/bin/python -m pytest tests/test_safety.py -q -s` -> 61 passed. `tests/test_teleop_loop.py` -> 23 passed.
     `tests/test_operator_ui.py` -> 14 passed. `tests/test_mock_drivers.py` -> 48 passed. Full suite through the
     pre-commit hook -> 490 passed, 4 skipped in 696 s (465 passed before this task). `.venv/bin/ruff check .` -> "All checks passed!". PASS
@@ -1402,7 +1402,7 @@ acceptance:
   - tests pass; policy/diffusion.py smoke test still passes with the history input; numbers in BUILD_LOG.md
 notes: Before any real training run.
 
-result: (opus, 2026-09-12T02:05+07:00, commit 72259ca)
+result: (opus, 2026-09-12T02:05+07:00, commit 192ac7d)
   - policy/dataset.py: `n_obs_steps` (default 1, explicit per policy). Above 1 the three camera keys and
     observation.state carry lerobot delta_timestamps [-(S-1)/fps ... 0], so a sample is (S, 5, h, w) / (S, 3, h, w)
     / (S, 9) oldest first, plus a new `obs_mask` (S,) that is 0 where lerobot clamped to the episode's first frame.
@@ -1451,7 +1451,7 @@ notes: No hardware. Disk: keep checkpoints under tmp_path in tests and delete sm
   add config/training.yaml `compute.torch_threads` (placeholder 4, UNMEASURED), applied at start by policy/train.py, both
   adapters and eval/run_eval.py; re-measure ACT and diffusion (DDIM 10 and 5) act() at 1/2/4/8 threads with no other builder
   running (check `uptime` load < 2 before measuring, record it) and put the table in BUILD_LOG.md and docs/policy.md.
-result: (opus, 2026-09-12T04:35+07:00, commit 860916c)
+result: (opus, 2026-09-12T04:35+07:00, commit 25deca1)
   - policy/train.py: EMA of the parameters (`ema_decay`, ramped decay `min(d, (1+n)/(10+n))`) stored as
     `ema_state_dict`; linear warmup then cosine (`warmup_steps` clamped to a tenth of the run, `lr_min_ratio`),
     applied factor written to a new `lr` column; a validation split by cell pair (`--val-fraction`, ROLL kept in
@@ -1500,7 +1500,7 @@ deliverables:
 acceptance:
   - tests pass with printed numbers; docs/policy.md and docs/cloud.md updated (cloud train passes --checkpoint-every)
 notes: Disk is 12 GB free; every test writes under tmp_path and deletes weights.
-result: (opus, 2026-09-12T06:40+07:00, commit 90d73c1)
+result: (opus, 2026-09-12T06:40+07:00, commit 0916544)
   - tests/test_train.py 24 passed in 83 s (15 before); ruff clean; tests/test_act.py + tests/test_diffusion.py 27 passed in
     50 s; tests/test_greennode_train.py + tests/test_config.py 76 passed in 28 s.
   - Crash simulation: `python -m policy.train --checkpoint-every 2 --keep-last 1 --fault-at-step 5` in a subprocess dies at
@@ -1542,7 +1542,7 @@ acceptance:
   - tests pass; `eval.run_eval --backend mock --kind move --n 5 --policy hold` now reports policy_stalled (command and output
     in BUILD_LOG.md)
 notes: R2: the hold on halt is the measured state, not a pose. Keep the watchdog inside controller.py's tick, no threads.
-result: (opus, 2026-09-12T05:10+07:00, commit 54be930)
+result: (opus, 2026-09-12T05:10+07:00, commit 0b0e437)
   - runtime/controller.py: `Watchdog` sampled inside the loop's own tick (no thread): once per
     `runtime.watchdog_interval_s` it reads the new `Perception.progress(command, before, now) -> [0, 1]`,
     remembers the last increase, and `stalled()` is true `runtime.watchdog_stall_s` after it. The loop tests
@@ -1594,7 +1594,7 @@ acceptance:
   - tests pass; `runtime.controller --backend mock --engine zmq://127.0.0.1:5555 --seconds 20` works against serve_stub
     (command and output in BUILD_LOG.md)
 notes: This is the integration point the engine team will target; keep the schema in one place and versioned.
-result: (opus, 2026-09-12T07:10+07:00, commit 775ea5e)
+result: (opus, 2026-09-12T07:10+07:00, commit ae3d65a)
   - Protocol: **TCP JSON-lines**, not ZeroMQ. `.venv/bin/python -c "import zmq"` -> ModuleNotFoundError, and T-039 adds no
     dependency, so the task's stated fallback applies and the acceptance URL is `tcp://127.0.0.1:5555` (a `zmq://` URL is
     accepted as a synonym for the same protocol). Schema in one place and versioned: engine/schema.py, `{"v": 1, ...}`.
@@ -1640,7 +1640,7 @@ deliverables:
 acceptance:
   - tests pass with the printed timing; docs/board.md updated; the real-still check waits for H-001 and says so
 notes: Placeholder rules only; the engine team's perception replaces this module behind the same Protocol.
-result: (opus, 2026-09-12T07:05+07:00, commit 64ef8c0)
+result: (opus, 2026-09-12T07:05+07:00, commit e23b56e)
   - board/perception.py +TopCameraPerception (999 lines total; MockPerception/FailureMode/state_delta unchanged);
     board/synthetic.py new (381 lines: the T-008 tag renderer moved out of tests/test_calibration.py verbatim, plus Piece /
     render_pieces / render_die / render_top_scene / calibration_from_homography); tests/test_perception.py new (64 tests);
@@ -1686,7 +1686,7 @@ deliverables:
 acceptance:
   - tests pass with printed numbers; docs/policy.md and docs/controller.md updated
 notes: CLAUDE.md 5.5 names "the policy's own termination signal or a 20 s timeout"; until this lands only the timeout exists.
-result: (opus, 2026-09-12T23:55+07:00, commit 55052f2, branch wt/t040)
+result: (opus, 2026-09-12T23:55+07:00, commit 0bc03c8, branch wt/t040)
   - `.venv/bin/python -m pytest tests/test_dataset.py tests/test_controller.py -q` -> 57 passed in 93 s. PASS
   - `.venv/bin/python -m pytest tests/test_act.py tests/test_diffusion.py -q -s` -> 35 passed in 89 s. PASS
   - `.venv/bin/python -m pytest tests/test_train.py tests/test_eval.py -q` -> 49 passed, 1 skipped (the pre-existing
@@ -1729,7 +1729,7 @@ deliverables:
 acceptance:
   - tests pass; running it on this laptop today prints the table with the expected FAIL/SKIP rows (output in BUILD_LOG.md)
 notes: Read-only, no session needed. T-021's session procedure starts with this tool.
-result: (opus, 2026-09-12T23:10+07:00, commit 22ef3c4; branch wt/t041)
+result: (opus, 2026-09-12T23:10+07:00, commit d0e6820; branch wt/t041)
   - `.venv/bin/python -m pytest tests/test_session_preflight.py -q` -> 29 passed in 4.87 s, exit 0. Both the PASS and
     the FAIL path of every row (session gate, e-stop, config key, device, calibration, disk, git), the exit-code rule
     on hand-built rows, the `*` marking, and the CLI (table, --json, --budget 0 -> 2). PASS
@@ -1775,14 +1775,14 @@ acceptance:
     beyond imports (describe the method)
 notes: Pure refactor; do it in one commit per file so a revert is cheap.
 result: six commits, one per origin file, each through the full pre-commit gate (no --no-verify):
-  be208d4 drivers/g1_arm.py 332 -> 297 + drivers/dds.py 60 (ArmUnavailable, dds_binding, default_subscriber)
-  7fd9ce0 drivers/dexh15.py 485 -> 441, drivers/pxcap.py 483 -> 483 + drivers/serial_discovery.py 61
-  ac8ffc1 teleop/loop.py 388 -> 286 + teleop/clutch.py 126 (ClutchState, Clutch)
-  c150886 policy/train.py 849 -> 674 + policy/train_io.py 218 (checkpoints, disk guard, EMA)
-  96aa6dd board/perception.py 1001 -> 809 + board/detect.py 216 (rules block, _area_px)
-  4f308a0 tools/hardware_checks/session_preflight.py 362 -> 307 + preflight_report.py 78 (MOTION_KEYS, Row, render)
+  f053463 drivers/g1_arm.py 332 -> 297 + drivers/dds.py 60 (ArmUnavailable, dds_binding, default_subscriber)
+  3c7f32b drivers/dexh15.py 485 -> 441, drivers/pxcap.py 483 -> 483 + drivers/serial_discovery.py 61
+  43e7c87 teleop/loop.py 388 -> 286 + teleop/clutch.py 126 (ClutchState, Clutch)
+  e3c341e policy/train.py 849 -> 674 + policy/train_io.py 218 (checkpoints, disk guard, EMA)
+  b0b142b board/perception.py 1001 -> 809 + board/detect.py 216 (rules block, _area_px)
+  67d88aa tools/hardware_checks/session_preflight.py 362 -> 307 + preflight_report.py 78 (MOTION_KEYS, Row, render)
   no test file changed: every origin re-exports what its tests import, private names included.
-  test count identical: `pytest --collect-only -q` reports 810 before (at 123f951) and 810 after.
+  test count identical: `pytest --collect-only -q` reports 810 before (at 0af6aee) and 810 after.
   no-logic-change proof: ast-parse each file, drop imports and docstrings, ast.unparse, sort the
   logical lines, and diff origin-before against (origin-after + new module). All six diffs are one
   added line, the new module's own __all__. Method and commands in BUILD_LOG.md.
@@ -1811,7 +1811,7 @@ acceptance:
     checks nothing was loosened); docs/safety.md updated
 notes: A tightening (two points must be inside instead of one). The real offset is measured in Phase 1 on the hand (T-022).
 result:
-  - commit: f594beb, through the full pre-commit gate (ruff + whole suite): 837 passed, 15 skipped in 654.41 s.
+  - commit: 4ee2d42, through the full pre-commit gate (ruff + whole suite): 837 passed, 15 skipped in 654.41 s.
     agents/BUILD_LOG.md 2026-09-12T09:42+07:00 has the full entry.
   - runtime/fk.py `left_arm_points` returns {left_wrist_yaw_link, pinch_point}; pinch_point = xpos + xmat @
     config/robot.yaml tool.pinch_offset_m (rotated, so it follows wrist roll/pitch/yaw). `left_arm_fk` unchanged, so
@@ -1855,7 +1855,7 @@ acceptance:
   - every command in the runbook exists and runs with --help (a test greps the runbook for `.venv/bin/python ...` lines and
     runs each with --help, exit 0); every H-item and Q-item referenced exists in the agents files (test)
 notes: Docs only, plus the test. This is what Alois reads before the first hardware day.
-result: (opus, 2026-09-12, branch wt/t044, commit 676ce6e)
+result: (opus, 2026-09-12, branch wt/t044, commit d12cbaf)
   - docs/runbook_phase1.md (459 lines): day 0 baseline, day 1 read-only (H-002, H-003, H-004a/b,
     list_devices, the six config keys to fill, seven 600 s stream_stats runs, pytest -m readonly,
     session_preflight --json), day 2 calibration (H-001 stills, board.calibration on both, the
@@ -1913,7 +1913,7 @@ acceptance:
     with the e-stop and the approval rows named (output in BUILD_LOG.md)
 notes: No value changes in config/safety.yaml; only the loader and the tool learn a status word. The approval itself is a
   human commit (R3).
-result: (opus, 2026-09-12T11:20+07:00, commit c8d4674)
+result: (opus, 2026-09-12T11:20+07:00, commit 9f4e6b1)
   - runtime/config.py: STATUS_VALUES = {UNMEASURED, MEASURED, HUMAN_APPROVED}; unmeasured() unchanged (UNMEASURED only);
     new status_of(name, key, root=None) -> str | None reading the value itself, a `<key>_status` sibling, or an ancestor's.
   - preflight_report.py: MOTION_KEYS is 25 MotionKey(name, key, why, gates, approved_ok) entries over
@@ -1965,7 +1965,7 @@ acceptance:
 notes: D-024. Pure sensor read: no session, no motion path, R1 not engaged. Run the 600 s stream with nothing else holding
   /dev/video4 (do not run the pytest readonly camera tests at the same time). Do not touch policy/, runtime/, `top`, `palm`,
   config/safety.yaml, third_party/. If the by-id link for either node is absent, leave that key UNMEASURED and say why.
-result: (opus, 2026-09-14T12:55+07:00, commit b7d61d6)
+result: (opus, 2026-09-14T12:55+07:00, commit 2f8443a)
   - **600 s run 1** (the deliverable's command verbatim, node via usb_id discovery, `/dev/video4
     'ORBBEC: Ego left'`, negotiated 1600x1200 @ 30 MJPG): 17948 frames in 598.23 s, **fps 30.000**,
     **222 drops / 222 frames missed**, interval p50 33.3632 / p99 51.2306 / max 67.4397 ms,
@@ -2032,7 +2032,7 @@ acceptance:
 notes: D-025. Run the 600 s check with the host quiet (no pytest in parallel; the pre-commit hook's suite counts). Do not
   touch policy/, runtime/safety.py, config/*.yaml except adding a `stamp_source` key to config/cameras.yaml `defaults` if a
   switch is genuinely needed (default kernel). Nothing under third_party/. No session, no motion path.
-result: (opus, 2026-09-14T13:55+07:00, commit 842897c)
+result: (opus, 2026-09-14T13:55+07:00, commit 4c90884)
   - **600 s readonly run on the Ego**, host quiet, same by-path node: 17900 frames in 596.625 s,
     **fps 30.000**, **frames_lost 0**, **drops 0**, `stamp_source {kernel: 17900}` (zero fallbacks).
     **Kernel-stamp jitter p50 0.1373 / p99 0.8114 / max 9.3713 ms**; arrival jitter p50 0.2339 /

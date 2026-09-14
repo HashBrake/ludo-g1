@@ -1,13 +1,13 @@
 # REVIEW.md (Fable verdicts per task or commit; newest at the bottom)
 
-## T-001  ACCEPTED  (fable, 2026-09-11T18:52+07:00, commits 4255484, 3cd3738)
+## T-001  ACCEPTED  (fable, 2026-09-11T18:52+07:00, commits f0723b6, 4fad901)
 Re-ran every acceptance check: python 3.10.20, ruff clean, pytest 15 passed 1 skipped, tree clean, .venv and data ignored,
 and my own scratch commit with a ruff error was rejected by the installed hook (exit 1, HEAD unchanged). Hook is identical to
 tools/pre-commit.sh and invokes the venv binaries explicitly. conftest fails closed on gate errors, which is the right default.
 Notes (not defects): venv is uv-managed 3.10.20 rather than /usr/bin/python3 3.10.12; acceptable, revisit only if the cp310
 DexH15 wheel refuses to load in T-002. requirements.txt pins transitives too; fine.
 
-## T-004  ACCEPTED  (fable, 2026-09-11T20:25+07:00, commits 956147a, 628361d, merged as 6709700)
+## T-004  ACCEPTED  (fable, 2026-09-11T20:25+07:00, commits 0f77f0d, 1350521, merged as 14d8661)
 Re-ran in the worktree: ruff clean; tests/test_clock.py 9 passed with the printed skew line p50 2.982 ms, p99 6.701 ms,
 max 7.799 ms (seed 20260911, 1800 frames, 10 ms tolerance so every frame also passed align); full suite 24 passed 1 skipped.
 Read runtime/clock.py and runtime/log.py in full: bisect nearest with tie-to-older, align names every failing stream, shift
@@ -16,7 +16,7 @@ copies rather than mutates, skew definition matches the guidance and docs/clock.
 Note (not a defect): runtime/log.py docstring says stderr but PrintLoggerFactory writes stdout; harmless until a long-running
 process cares, fix when the heartbeat writer lands.
 
-## T-002  ACCEPTED  (fable, 2026-09-11T20:25+07:00, commits ac4fcc5, 07db06b)
+## T-002  ACCEPTED  (fable, 2026-09-11T20:25+07:00, commits 34f3f88, 14c2501)
 Re-ran: ruff clean; tests/test_docs_sdks.py checked 157 path:line references (129 unique), 9 passed; list_devices.py exits 0
 with nothing attached. Spot-checked the two claims that change the project against the sources myself: pico4_provider.py
 _read_controller_state does drop controller.pose (lines 634-644), and g1_arm7_sdk_dds_example.py publishes rt/arm_sdk with
@@ -25,7 +25,7 @@ never opens a serial port. No motion path, no session file, no third_party edits
 Consequences are recorded as D-006..D-009; the requirements.txt file:// absolute path for pxdex is accepted for now and
 tracked under Q-007.
 
-## T-003  ACCEPTED  (fable, 2026-09-11T21:05+07:00, commits b2e3bdc, bcfc12b)
+## T-003  ACCEPTED  (fable, 2026-09-11T21:05+07:00, commits dbd756b, 64b2e88)
 Re-ran: ruff clean; 103 passed 1 skipped; all six configs load; hashes and unmeasured counts reproduce the result block
 (safety 10 unmeasured, training 0). Checked the joint limits against the MJCF ranges I extracted myself from
 ~/Teleopit/assets/robots/unitree_g1/g1_29dof.xml lines 160-207: safety.yaml equals range minus 0.0873 rad on each side for
@@ -35,7 +35,7 @@ the only geometry that yields 48 track + 6 home, and the engine team owns the re
 Envelope numbers accepted as placeholders for T-005; Phase 1 replaces every one of them by human commit.
 Note for T-005/driver: safety.yaml's watchdog_timeout_s releases the arm_sdk weight; the release must ramp (D-007).
 
-## T-009  ACCEPTED  (fable, 2026-09-11T21:05+07:00, commits 5540c10, c07491a, merged)
+## T-009  ACCEPTED  (fable, 2026-09-11T21:05+07:00, commits 9e6d10f, 247aa2b, merged)
 Re-ran in the worktree: 18/18 local round-trip checks; remote mode with a temp HOME refuses and names Q-001 without creating
 the env file; `git grep` for credential words in cloud/ empty; ruff clean; 35 passed 1 skipped. Read greennode.sh for
 destructive flags: the only `--delete` is on the push of the repo mirror to REMOTE_ROOT, never on the pull to local
@@ -43,7 +43,7 @@ data/checkpoints. Remote transport and Dockerfile are untested until Q-001 and s
 state, not a defect. Deviation accepted: `train` waits by default with `--detach` optional. The worktree note about the
 git-ignored PyInstaller payload is turned into T-014.
 
-## T-005  ACCEPTED  (fable, 2026-09-11T21:50+07:00, commits 8c03733, 1153c55)
+## T-005  ACCEPTED  (fable, 2026-09-11T21:50+07:00, commits 597b4ea, 9597e13)
 Read runtime/safety.py SessionGate.status, Guard.admit, and enable_session.py's write path in full; grepped for environ,
 getenv, bypass, dev mode, force: none. The only gate skip is the keyword-only `simulated` argument, and it never skips the
 envelope. Gate fails closed on: unreadable, unparsable, missing field, empty enabled_by, wrong checklist value, bad stamps,
@@ -54,19 +54,19 @@ reference aged by command_gap_reset_s, pinch clamped rather than rejected, Envel
 Audit note (section 8): every motion path must construct Guard through Guard.from_config; T-006 and the real drivers are
 reviewed against that.
 
-## T-012  ACCEPTED  (fable, 2026-09-11T22:15+07:00, commits aa8f9cc, f588009)
+## T-012  ACCEPTED  (fable, 2026-09-11T22:15+07:00, commits 7fbc50c, 4028ea5)
 Re-ran: imports of mujoco, mink, pico_bridge, cv2 succeed (cv2 5.0.0); `sha256sum -c MANIFEST.txt` 38 OK; `diff -r` of the
 vendored tree against ~/Teleopit/assets/robots/unitree_g1 shows only MANIFEST.txt as extra; 19 MB; ruff clean; 173 passed
 1 skipped; one opencv distribution. config/robot.yaml edits limited to limits_source and mjcf_qpos_index (+7 offset for the
 floating base, asserted by tests/test_assets.py). The cv2 namespace-package trap after uninstalling headless is documented
 in docs/setup.md and does not affect a fresh venv. docs/config.md future-tense sentence is cosmetic; folded into T-013.
 
-## T-011  ACCEPTED  (fable, 2026-09-11T23:00+07:00, commits d9596d9, ec86092)
+## T-011  ACCEPTED  (fable, 2026-09-11T23:00+07:00, commits 60348c1, 9f3e54b)
 Re-ran: ruff clean; test_fk + test_safety 80 passed; full suite 195 passed 1 skipped. My own call gives the zero-pose wrist at
 [0.1998, 0.1487, 0.0952] m and about 10 us per call. git diff of runtime/safety.py shows wiring and docstrings only; no
 check weakened. Findings recorded as D-010 (zero pose inside the box; wrist roll/yaw invisible to a wrist-point check).
 
-## T-007  ACCEPTED  (fable, 2026-09-11T23:00+07:00, commits 5cab3e6, 35d713a, merged)
+## T-007  ACCEPTED  (fable, 2026-09-11T23:00+07:00, commits f22ace8, c8d999d, merged)
 Re-ran in the worktree: ruff clean; 30 engine tests pass. engine/interface.py matches CLAUDE.md 5.5 field for field
 (`X | None` is the same type as Optional[X]; ABC added). Both design calls accepted: ROLL carries no cell until the bowl is
 measured (config/board.yaml die.bowl_centre_mm is UNMEASURED; inventing one would put a goal heatmap on a real cell), and a
@@ -74,21 +74,21 @@ finished board is re-dealt so the command stream never degenerates to ROLL-only.
 Fable fix in this merge: tests/test_greennode_local.sh polled status once immediately after `train --detach` and could see
 state=starting; it now polls up to 3 s for state=running. Reported by both T-007 and T-011 builders; logged per 4.1.
 
-## T-006  ACCEPTED  (fable, 2026-09-11T23:55+07:00, commits 096d01f, 671dd28, 39f81a0)
+## T-006  ACCEPTED  (fable, 2026-09-11T23:55+07:00, commits e0ca032, a42341d, 9c21395)
 Re-ran: ruff clean; 276 passed 1 skipped. Both mock actuators obtain their Guard via Guard.from_config(simulated=True) and
 call admit before touching state (drivers/mock/g1_arm.py:52,81; drivers/mock/dexh15.py:53,91); no other Guard construction
 in drivers/. Config edits are mock-only `mock:` blocks with UNMEASURED placeholders; the real synergy poses stay literal
 UNMEASURED, which is correct. Fable fix in this merge: tests/test_safety.py:550 wrote a session with under 1 s of validity
 left (59 s of a 60 s window) so a second boundary expired it early; now 30 s. Reported by the T-006 builder; logged per 4.1.
 
-## T-008  ACCEPTED  (fable, 2026-09-11T23:55+07:00, commits 63d998f, 6b2ebf3, merged)
+## T-008  ACCEPTED  (fable, 2026-09-11T23:55+07:00, commits 390cd84, 96d3c7d, merged)
 Re-ran in the worktree: ruff clean; 21 calibration tests pass (translation case rms 0.12 px, worst cell 0.008 px; rotated
 and tilted case rms 0.23 px, worst cell 0.054 px, per BUILD_LOG). config/board.yaml edit is the placeholder block my
 guidance required (family, size, ids, inset, all `_status: UNMEASURED`). brio_still.py only opens VideoCapture read-only.
 Criterion 3 (real still) stays open under H-001, correctly. calibration.py is 481 lines, larger than I would like but every
 part is used; noted as a style guideline, not a defect.
 
-## T-013  ACCEPTED  (fable, 2026-09-12T00:40+07:00, commits 6628571, bdb35bb)
+## T-013  ACCEPTED  (fable, 2026-09-12T00:40+07:00, commits 5d067f3, 785ec88)
 Re-ran: ruff clean; 30 retarget tests pass with the printed pass rate 100% (50/50), position median 0.30 mm, orientation
 median 0.09 deg; warm solve mean 0.62 ms, cold 3.85 ms (criterion: mean < 5 ms). git diff touches no driver or safety file.
 Deviation accepted: `teleop.ik.step_dt_s: 0.1` is a solver trust region; the command-level velocity limit stays in
@@ -97,7 +97,7 @@ is what section 7 asks for (no constants in code). Warm p99 of 9 ms is noted for
 Style note, not a defect: retarget.py is 318 lines against a 200-line guidance; the extra is docstrings and the detailed
 result type. Rest-pose choice raised as Q-010.
 
-## T-010  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits f3e553d, c6994b8, merged)
+## T-010  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits ed4ab4d, 4717c62, merged)
 Re-ran in the worktree with the Orbbec Ego attached: ruff clean; 323 passed 4 skipped; mock stream_stats 30.00 Hz, 0 drops;
 real Ego 5 s at 30.2 Hz, 0 drops. drivers/cameras.py only negotiates format via cap.set and never writes device state beyond
 that; no actuator involved. The tests/test_mock_drivers.py narrowing to actuated devices is the correct consequence of
@@ -105,14 +105,14 @@ cameras gaining a real backend. usb_id discovery accepted: it only runs while `d
 declared vendor:product. Criterion 3 (Brio) stays open under H-001, H-003. Ego ignoring the requested resolution is
 recorded for Phase 1 (config/cameras.yaml oblique.resolution stays UNMEASURED).
 
-## T-014  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits 5c79b4d, 356473b, merged)
+## T-014  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits 7cf0762, a6ea07d, merged)
 Ran the scripts myself: setup of wt/fablesmoke at /tmp/ludo-wt-fablesmoke created the venv, linked 327 payload entries and ran
 the suite green (327 passed, 31 s wall); teardown removed the path and deleted the merged branch; main's status unchanged.
 No pytest wrapper accepted for the reason logged (cost inside the suite). Process finding: the hash-record follow-up commit
 was made with --no-verify. The gate was re-run green at HEAD so nothing slipped, but this is not allowed again; recorded as
 D-013 and added to the builder prompt.
 
-## T-016  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits 5fbb479, 33b31d7)
+## T-016  ACCEPTED  (fable, 2026-09-12T02:10+07:00, commits d7d9255, 31c3c61)
 Re-ran: ruff clean; 352 passed 1 skipped; a 20 s mock run at 9.83 Hz policy / 29.45 Hz actions with 0 refusals and 0
 alignment failures and a heartbeat file under data/logs/. Import-only grep for tools/ in runtime/, board/, policy/ is empty;
 the one text hit is prose in runtime/safety.py. HoldPolicy's docstring states it commands no motion and is never deployed
@@ -125,52 +125,52 @@ REVIEW.md, DECISIONS.md, TASKS.md and STATE.md from "20:25" through "02:10" were
 up to five hours ahead. Their order is correct; their absolute times are not. From this entry on every Fable stamp is the
 output of `date -Iseconds`. Builders already used the real clock; their stamps stand.
 
-## T-015  ACCEPTED  (fable, 2026-09-11T21:32+07:00, commits 381b9d7, 31717df, merged)
+## T-015  ACCEPTED  (fable, 2026-09-11T21:32+07:00, commits 44f5c45, 20e7883, merged)
 Fresh run in the worktree: 378 passed 4 skipped, matching the report; 157 references; 14 GB free; docs/README.md indexes
 eleven pages. Every number sits next to its command. Its two findings were both right: T-001 was still marked review in
 TASKS.md (my bootstrap-time replace missed the status the builder had already set; fixed in this commit) and the timestamp
 drift above.
 
-## T-017  ACCEPTED  (fable, 2026-09-11T21:32+07:00, commits 6beb49d, b9358ad)
+## T-017  ACCEPTED  (fable, 2026-09-11T21:32+07:00, commits 9c78d94, 596f335)
 Re-ran: ruff clean; recorder tests print 1800 frames, skew p50 6.666 / p99 6.667 ms, zero drops on all seven streams, replay
 worst error 0.0, reload with the configured shapes; lerobot 0.4.4, torch 2.9.1+cpu, suite 391 passed 4 skipped. Polling
 faster than writing and phase-locking the grid to the board camera are the right calls and the reasons are logged.
 Goal heatmaps not stored per frame (cell ids in the sidecar, re-rendered at train time) accepted: same GoalRenderer both
 sides. Format v3 and the OpenCV collision are decisions, taken as D-015 and D-016. recorder.py at 421 lines: style note.
 
-## T-025  ACCEPTED  (fable, 2026-09-11T21:51+07:00, commits 2678a17, 2d5b48c)
+## T-025  ACCEPTED  (fable, 2026-09-11T21:51+07:00, commits 684c03c, a43156a)
 Re-ran: ruff clean; 11 UI tests pass with two episodes recorded, marked and one discarded on the fake clock; the UI imports
 only drivers.interfaces.CameraDriver and never calls send_targets, send_pinch or a Guard (grep). Deviations accepted: a
 mark-failure key (5.6 wants labelled failures), two operator-side failure_mode strings, 261 lines. Fable fix in this commit:
-TASKS.md line 674 (T-016 result block) still read COMMIT_HASH; set to 5fbb479.
+TASKS.md line 674 (T-016 result block) still read COMMIT_HASH; set to d7d9255.
 
-## T-026  ACCEPTED  (fable, 2026-09-11T21:53+07:00, commits 5f84310, 994c1e3, merged)
+## T-026  ACCEPTED  (fable, 2026-09-11T21:53+07:00, commits ac0141e, 13b6ba9, merged)
 Re-ran in the worktree: 8 tests pass; overlay changes 3072/3072 px with peaks within 1 px of the stored centres. Viewed a
 rendered strip myself (episode 1, a ROLL: header, three frame rows without overlay as expected, legend, action/state
 curves). No driver or Guard reference in the tool. This is the section 8 audit viewer; first real use at the Phase 2 card audit.
 
-## T-027  ACCEPTED  (fable, 2026-09-11T22:23+07:00, commits 13b2806, 5f75b9b)
+## T-027  ACCEPTED  (fable, 2026-09-11T22:23+07:00, commits b7f9919, e5ca910)
 Re-ran: ruff clean; 18 dataset tests pass with the benchmark 80 / 146 samples/s (workers 0 / 2) on mock frames; both opencv
 wheels at 4.12.0.88 and the GUI build active (getBuildInformation shows QT5); --dry-run reports no changes; training.yaml
 format lerobot_v3; DeprecationWarnings filtered to zero; policy/ imports nothing from eval/. Design calls accepted: pad the
 tail with a mask, chunk default from config, strict pair membership for the split with (None, None) for ROLL episodes.
 The two-wheel state is now stable by construction (identical versions); the repair line in docs/setup.md stays as a repair.
 
-## T-028  ACCEPTED  (fable, 2026-09-11T22:23+07:00, commits 6628491, cde6d20, merged)
+## T-028  ACCEPTED  (fable, 2026-09-11T22:23+07:00, commits 2a6c38a, 70a7a8c, merged)
 Re-ran in the worktree: 23 eval tests pass; the acceptance command prints `success 0/20 (0.0%)` with all 20 under
 timeout_no_progress and writes the JSON; `--backend real` exits 2 refusing to deploy HoldPolicy (R2). FailureMode lives in
 board/perception.py and eval imports it, so runtime never depends on eval/. Engine-level recovery only for the sequence
 kind is what CLAUDE.md Phase 4 asks. Fable fixes in this merge: eval/results/*.json git-ignored (results are committed
 with `git add -f` only when accepted as evidence, R5), and docs/README.md rows for policy.md and eval.md.
 
-## T-032  ACCEPTED  (fable, 2026-09-11T23:16+07:00, commits db2b922, 295b729, merged)
+## T-032  ACCEPTED  (fable, 2026-09-11T23:16+07:00, commits f59f4b2, e26bbde, merged)
 Re-ran in the worktree: 14 tests pass; 901 ticks in 30.033 s = 30.000 Hz, tracking error 0.00274 rad, IK mean 0.37 ms /
 p99 0.69 ms, out-of-box pose 61/61 refused with the arm unmoved. Every send goes through arm.send_targets/hand.send_pinch
 (loop.py:154-160). Pinch passthrough accepted (the distance conversion belongs to the glove driver). The clutch finding is
 correct and serious for hardware: D-018 and T-033 (P0) follow; T-021 now depends on T-033. The builder disclosed and
 repaired a hook-skipping commit by amending through the gate; the merged commit is the gated one.
 
-## T-029  ACCEPTED  (fable, 2026-09-11T23:16+07:00, commits f743667, 4572414)
+## T-029  ACCEPTED  (fable, 2026-09-11T23:16+07:00, commits 9320a49, 0f04884)
 Re-ran: ruff clean; the diffusion tests pass with the smoke loss falling 0.951 -> 0.770 over 30 steps (fixed probe -16.9%);
 requirements unchanged (--dry-run: no changes), so lerobot is wrapped, not patched; adaptation route (1x1 conv 5->3 plus
 task one-hot on the state) is the only one 0.4.4 permits and a test pins why. Export round trip identical to 1e-5. Latency
@@ -178,8 +178,8 @@ DDIM 10 median 804 ms and DDIM 5 median 498 ms on this CPU: recorded, not a defe
 Its four findings become: D-019 (inference budget), T-034 (observation history in the dataset), T-035 (EMA, warmup,
 validation curves), Q-002 escalated (12 GB free; one checkpoint plus bundle is 2.3 GB). tests/test_eval.py edit accepted.
 
-## T-033  ACCEPTED  (fable, 2026-09-12T00:39+07:00, commits 275abc0, 3efa76a, 329a549)
-Checked `git diff a3bb076..main -- config/safety.yaml`: eight added lines (the key, its UNMEASURED status, the R3 comment),
+## T-033  ACCEPTED  (fable, 2026-09-12T00:39+07:00, commits 6a8b7d8, db42518, 623f7aa)
+Checked `git diff 876039f..main -- config/safety.yaml`: eight added lines (the key, its UNMEASURED status, the R3 comment),
 no deletion, nothing loosened. Re-ran safety and loop tests: 0.05 rad admitted / 0.055 refused as first_command_step; raw
 engage at 0.443 rad refused with the arm unmoved; clutch engage first step 0.000709 rad; 917 ticks at 30.000 Hz with 0
 refusals once engaged. Bypass grep clean. The three test files outside the list had to change because the tighter envelope
@@ -188,7 +188,7 @@ moves to teleop/clutch.py the next time loop.py is touched. Fable fix in this co
 lists first_command_max_step_rad (the builder's finding 4). The 0-refusal out-of-box session is correct: the clutch never
 sends an unreachable target.
 
-## T-030  ACCEPTED  (fable, 2026-09-12T01:17+07:00, commits 5b4fa78, 0bc973a, merged)
+## T-030  ACCEPTED  (fable, 2026-09-12T01:17+07:00, commits b707913, 778d455, merged)
 Re-ran in the worktree: ruff clean; 15 ACT tests pass (smoke loss 23.46 -> 0.97, probe -96.9%, test-scale act() 22 ms);
 requirements unchanged (--dry-run: no changes). Ensembling in the adapter with lerobot's weights pinned to 2.9e-8 against
 the library's own ensembler is the right way around lerobot forcing n_action_steps=1. Removing the never-existing
@@ -197,21 +197,21 @@ act.encoder_per_camera key and disabling pretrained backbone weights so both arc
 the thread-count finding (ACT 154 ms at 4 threads vs seconds oversubscribed) is D-020. The private imports from
 policy/diffusion.py move to policy/_shared.py in T-034, which touches both files anyway.
 
-## T-031  ACCEPTED  (fable, 2026-09-12T01:17+07:00, commits 2be999e, 0257044)
+## T-031  ACCEPTED  (fable, 2026-09-12T01:17+07:00, commits 948850c, dbf8aed)
 Re-ran: ruff clean; 6 greennode-train tests pass (local-transport up/train --smoke/down round trip with the pushed
 config's hashes in run.json); `git grep` for credential words in cloud/ empty; CUDA base pinned by digest, torch
 2.9.1+cu128 and lerobot 0.4.4 in the training subset, no pxdex or unitree_sdk2py in the image. The remote command is in
 docs/cloud.md verbatim. The STATE.md clause is done in this commit (Fable's file). The image has never been built (no
 docker here) and --device cuda has never executed; both are stated, which is what R5 requires until Q-001.
 
-## T-034  ACCEPTED  (fable, 2026-09-12T03:07+07:00, commits 72259ca, ba4dab3)
+## T-034  ACCEPTED  (fable, 2026-09-12T03:07+07:00, commits 192ac7d, e4c1fcc)
 Re-ran tests/test_dataset.py, test_diffusion.py, test_act.py detached: 51 passed. policy/_shared.py is imported by both
 wrappers and export; the per-policy n_obs_steps (diffusion 2, ACT 1) and the adapter/dataset parity test are what I asked
 for. The dataset_stats defect (palm mean/std scaled by top's pixel count) was found and fixed before any checkpoint used it;
 good catch, logged. Benchmark cost of history (45 samples/s at n_obs_steps 2 vs 80) noted for Greennode workers.
 obs_mask unused by design: accepted. dataset.py at 412 lines: style note.
 
-## T-018  ACCEPTED  (fable, 2026-09-12T03:07+07:00, commits 3f3df45, 3b0d6e9, merged)
+## T-018  ACCEPTED  (fable, 2026-09-12T03:07+07:00, commits 3a8ba29, ca968ee, merged)
 Verified in the worktree: no ChannelPublisher, rt/arm_sdk, rt/lowcmd or Write call in drivers/g1_arm.py; the DDS factory
 initialises lazily, never at import; 23 tests pass and the 3 readonly tests skip naming the UNMEASURED interface and H-002;
 mock --stream arm gives 100.00 Hz, 0 drops; real --stream arm exits 3 with the same message. The 10-minute LAN-up
@@ -223,7 +223,7 @@ Two parallel builders each running the full suite (now 533 tests, ~4 min alone) 
 51-test file to 13 minutes. From now on builder prompts say: run only the relevant test files while developing; the
 pre-commit hook is the one full-suite run per commit. Fable's own verification runs targeted files.
 
-## T-035  ACCEPTED  (fable, 2026-09-12T04:21+07:00, commits 860916c, e7e0249)
+## T-035  ACCEPTED  (fable, 2026-09-12T04:21+07:00, commits 25deca1, 6eebbe4)
 Re-ran tests/test_train.py: 15 passed with the printed lr multipliers 0.2/1.0/0.5/0.0, EMA delta 6.4e-5, validation
 0.918 -> 0.882 on held-out frames, resume 10+10 vs 20 identical to 0.0. set_torch_threads is applied in train.py, both
 adapters and run_eval.py; compute.torch_threads is 8 and measured (the sweep table is in BUILD_LOG and docs/policy.md,
@@ -231,7 +231,7 @@ taken at 1-minute load 2.8 and 0.94). The --stop-after addition is the honest wa
 and logged as the builder's disagreement. The DataLoader worker-seed bug it found is the kind of thing R5 exists for.
 Consequences: D-021 (inference landing), T-036 (checkpoint-every, disk guard).
 
-## T-019  ACCEPTED  (fable, 2026-09-12T04:27+07:00, commits 4503254, 061b47a, merged)
+## T-019  ACCEPTED  (fable, 2026-09-12T04:27+07:00, commits 306744d, 547fc1f, merged)
 Verified in the worktree: the only enableMotor/setMotor/setJoint text in drivers/dexh15.py is inside the send_pinch
 NotImplementedError message, initMotorPosition absent; 33 tests pass, 3 readonly skips name the device and H-003; real
 --stream hand exits 3 with the same reason; docs/sdks.md untouched because no A3 measurement exists (R5, correct).
@@ -239,7 +239,7 @@ Hand-present acceptance stays open under H-003. dexh15.py at 485 lines: the Palm
 into drivers/serial_discovery.py when T-022 touches the file. The calculateRealAngle-needs-a-device finding is recorded
 for the H-003 session.
 
-## T-037  ACCEPTED  (fable, 2026-09-12T05:06+07:00, commits 54be930, ea93f0f)
+## T-037  ACCEPTED  (fable, 2026-09-12T05:06+07:00, commits 0b0e437, b64bcb4)
 Re-ran: ruff clean; test_controller + test_eval 56 passed; `eval.run_eval --backend mock --kind move --n 5 --policy hold`
 halts every trial by the watchdog at 20.07 s with policy_stalled and the controller log agrees. The hold on halt is
 read_state() of arm and hand concatenated and sent through the drivers (controller.py:276-277): a measurement, not a pose
@@ -247,7 +247,7 @@ read_state() of arm and hand concatenated and sent through the drivers (controll
 correct interaction with the 60 Hz rate limit. controller.py at 406 lines with build/main still inside: style note; the
 import cycle the builder describes is real, leave it.
 
-## T-020  ACCEPTED  (fable, 2026-09-12T05:53+07:00, commits 264fb9c, 91bd32a, merged)
+## T-020  ACCEPTED  (fable, 2026-09-12T05:53+07:00, commits 245dc1e, a55d7ac, merged)
 Verified in the worktree: 56 glove/pose tests pass with 4 readonly skips naming the devices; the vendored PxCapPro bundle's
 cp310 binding loads in-process in our venv (get_sdk_version -> 1.0.8) with the RTLD_GLOBAL preload, so Q-005's answer on the
 host side is "the bundle route works, the deb would be cleaner"; TCP 63901 is held by the leftover holosim-pcservice
@@ -259,13 +259,13 @@ lines: split with the T-019 serial discovery when T-022 lands. Fable fix in this
 10 wall-clock ordering assertion skips when the 1-minute load average is above 4, because it fails whenever two suites share
 the laptop (reported by T-020).
 
-## T-036  ACCEPTED  (fable, 2026-09-12T05:53+07:00, commits 90d73c1, 0b2c483)
+## T-036  ACCEPTED  (fable, 2026-09-12T05:53+07:00, commits 0916544, 5189f9d)
 Re-ran tests/test_train.py: the crash run dies at step 5 with --fault-at-step, leaves checkpoint.pt plus one pruned step
 copy, and the resume reproduces the straight run to 0.0; the disk guard refuses 293 M parameters at a mocked 7.74 GB free;
 the estimate is 1.10x a real file. atomic_save via os.replace. The estimate print in main() recomputed from the record is
 fine. Q-002 is now quantified: the full diffusion run needs 10.3 GB free on this laptop; Greennode or diffusion_small first.
 
-## T-039  ACCEPTED  (fable, 2026-09-12T06:30+07:00, commits 775ea5e, 6417531)
+## T-039  ACCEPTED  (fable, 2026-09-12T06:30+07:00, commits ae3d65a, 933e7dc)
 Re-ran: ruff clean; 43 engine-net tests pass (parity with the in-process stub over 50 commands, dropped server ->
 EngineUnavailable, silent socket bounded by its timeout); my own controller run against `engine.serve_stub` on
 127.0.0.1:5561 exits 0 at 9.7 Hz policy rate. TCP JSON-lines is the right fallback since pyzmq is not installed and no
@@ -273,14 +273,14 @@ dependency may be added; zmq:// accepted as a synonym is fine. The engine block 
 accepted for now (the six-file NAMES pin is deliberate); it moves to config/engine.yaml when the real engine's URL is
 known. The builder's --no-verify slip was undone and redone through the gate before the report; logged, no further action.
 
-## T-041  ACCEPTED  (fable, 2026-09-12T07:19+07:00, commits 22ef3c4, bc69700, merged)
+## T-041  ACCEPTED  (fable, 2026-09-12T07:19+07:00, commits d0e6820, 6a21ec0, merged)
 Ran the tool myself in the worktree: exit 1, "0/28 motion-relevant checks pass, NO-GO", with the e-stop row failing on
 Q-004, every MOTION_KEYS placeholder listed, arm and hand SKIP with their drivers' H-002/H-003 messages, the Orbbec PASS at
 30 Hz, calibration FAIL on H-001, disk FAIL on Q-002. 29 tests pass; the source has no Guard, writer or actuator call and
 reads the gate only through SessionGate.status(). The GIT_* scrubbing defect found by the hook is the kind of thing this tool
 exists to catch. 362 lines: split with T-042. This is now the first step of every session procedure (docs/safety.md).
 
-## T-038  ACCEPTED  (fable, 2026-09-12T07:19+07:00, commits 64ef8c0, c69f779)
+## T-038  ACCEPTED  (fable, 2026-09-12T07:19+07:00, commits e23b56e, 3aa2400)
 Re-ran: ruff clean; perception + calibration 85 passed with detect at 4.4 ms mean on 640x480 (bound 30 ms); the calibration
 tests are unchanged after the renderer moved to board/synthetic.py; the perception block is a placeholder under
 perception_status UNMEASURED and REQUIRED_KEYS is untouched. Every 6.5 variant has its own test. The honest framing stands:
@@ -288,13 +288,13 @@ these numbers pin the rules, not a detection rate; the first real still (H-001) 
 in this commit: docs/README.md's board.md row now mentions perception. perception.py at 999 lines: T-042 splits the
 synthetic-independent detection rules out (board/detect.py) alongside its other splits.
 
-## T-042  ACCEPTED  (fable, 2026-09-12T09:03+07:00, commits be208d4, 7fd9ce0, ac8ffc1, c150886, 96aa6dd, 4f308a0, 640f0cb)
+## T-042  ACCEPTED  (fable, 2026-09-12T09:03+07:00, commits f053463, 3c7f32b, 43e7c87, e3c341e, b0b142b, 67d88aa, 3976d32)
 Seven commits, one per split, each through the hook. I re-implemented the AST-based no-logic-change check independently
-for teleop/loop.py + teleop/clutch.py against 123f951: no missing logical line, additions are the new module's docstring
+for teleop/loop.py + teleop/clutch.py against 0af6aee: no missing logical line, additions are the new module's docstring
 and __all__ only. Test count 810 before and after; ruff clean; the four test files that import the split modules pass
 (139 passed 3 skipped). No test file changed. Judgement calls accepted (method-bound helpers stay in perception.py).
 
-## T-040  ACCEPTED  (fable, 2026-09-12T09:12+07:00, commits 55052f2, 44a4666, merged)
+## T-040  ACCEPTED  (fable, 2026-09-12T09:12+07:00, commits 0bc03c8, 5f3bf1b, merged)
 Verified in the worktree: the done-related tests pass across dataset, both wrappers and the controller (stub adapter stops
 the primitive with stopped_by policy_done in 0.43 s against a 20 s timeout); the file boundary with T-042 was respected
 (no diff in train.py, controller.py, loop.py, drivers/). Zero-initialised output layer so an untrained head never fires is
@@ -302,13 +302,13 @@ the right default. Done loss falls on mock data (diffusion 0.693 -> 0.666, ACT 0
 Follow-ups noted: done_loss column in loss.csv (train.py) and the one-tick lag of done(); both small, folded into T-044's
 runbook notes rather than a new task, since neither affects a Phase 1 session.
 
-## T-044  ACCEPTED  (fable, 2026-09-12T10:05+07:00, commits 676ce6e, d16720b, merged)
+## T-044  ACCEPTED  (fable, 2026-09-12T10:05+07:00, commits d12cbaf, e5afa75, merged)
 Ran tests/test_runbook.py in the worktree: 32 passed, 1 skipped (enable_session.py refuses --help by design, asserted
 separately). Read days 1-3 and the abort section myself: every step has a check, the motion steps say what moves and what
 BUILD_LOG gets, the abort order is e-stop, Ctrl-C, delete the session file, and a SAFETY INCIDENT line stops the loop under
 R4(c). The finding that placeholders block the pre-flight for keys the motion day itself measures is right: D-022, T-045.
 
-## T-043  ACCEPTED  (fable, 2026-09-12T10:05+07:00, commits f594beb, 018ad6b)
+## T-043  ACCEPTED  (fable, 2026-09-12T10:05+07:00, commits 4ee2d42, cf7b08d)
 Checked `git diff -- config/safety.yaml`: seven added lines, the `points` list and its comment, no deletion, nothing
 loosened (two points must now be inside instead of one). Re-ran FK, safety and loop tests: every joint moves the pinch
 point by more than 1 cm at 0.3 rad including wrist roll (14.9 mm) and wrist yaw (35.9 mm), which the wrist point never
@@ -320,14 +320,14 @@ Addendum (fable): making workspace_box_m.points a required key broke T-043's "co
 point" test; the fallback was the builder's compatibility choice, the refusal is mine (a tightening must not be droppable by
 omitting a key). Test renamed test_a_config_without_points_is_refused and asserts ConfigError. Logged per 4.1.
 
-## T-045  ACCEPTED  (fable, 2026-09-12T11:14+07:00, commits c8d4674, c998dd6)
+## T-045  ACCEPTED  (fable, 2026-09-12T11:14+07:00, commits 9f4e6b1, 65769b6)
 Re-ran: ruff clean; config, pre-flight and runbook tests 153 passed; config/, third_party/, hardware/ untouched in the range
 diff; `--for t021_latency --no-devices` says NO-GO naming the e-stop, the eleven approvable keys and the DDS interface;
 `--show-envelope` prints the human approval procedure and writes nothing; STATUS_VALUES is exactly the three words.
 Both judgement calls accepted: the hand bench does not need the arm LAN, and the envelope test is guarded by the Guard
 regardless of latency values (D-022's wording stands).
 
-## T-046  ACCEPTED  (fable, 2026-09-14T13:10+07:00, commits b7d61d6, 435469d)
+## T-046  ACCEPTED  (fable, 2026-09-14T13:10+07:00, commits 2f8443a, 90d22fe)
 Read the whole range diff (10 files). Re-ran: ruff clean; tests/test_config.py + tests/test_cameras.py 103 passed 5 skipped
 (one readonly oblique test failed once when run within a second of another process releasing the camera, passed twice
 alone: not a T-046 defect, noted); `grep -c UNMEASURED config/cameras.yaml` 16; pre-flight --no-devices unchanged but the
@@ -340,7 +340,7 @@ Finding on the number itself, not a defect of the task: "222 frames missed" is i
 achieved rate of exactly 30.000 Hz over 17948 frames says nothing was lost. My 30 s check: 901 frames in 30.00 s (nominal
 900), 12 gaps > 50 ms matched by 11 intervals < 16.7 ms, i.e. late delivery then catch-up. D-025 and T-047 follow.
 
-## T-047  ACCEPTED  (fable, 2026-09-14T14:20+07:00, commits 842897c, 987f2fd)
+## T-047  ACCEPTED  (fable, 2026-09-14T14:20+07:00, commits 4c90884, 2435e72)
 Read the whole range diff (9 files). Re-ran with the Ego attached: ruff clean; tests/test_cameras.py + tests/test_clock.py
 47 passed 4 skipped (top absent); mock CLI --json carries stamp_source {driver: n}, stats_arrival null, arrival_minus_kernel
 null, frames_lost 0; a 30 s real run of the new tool: 900 frames, stamps kernel 900, lost 0, drops 0, kernel jitter p99

@@ -3,7 +3,7 @@
 updated: 2026-09-14T14:20+07:00
 phase: 0 closed (D-014). Phase 1 read-only measurements: oblique (Orbbec Ego) done and clean on kernel stamps (T-046, T-047, D-026); arm, hand, palm, glove, pose wait on H-002..H-004. Everything Phase 1-5 can build without hardware is built and accepted on mocks (D-023).
 milestone: the first hardware days. Read docs/runbook_phase1.md; it is the whole procedure.
-last_accepted_commit: 987f2fd (T-047 accepted; 43 tasks accepted; 902 tests green; audit D-026 clean)
+last_accepted_commit: 2435e72 (T-047 accepted; 43 tasks accepted; 902 tests green; audit D-026 clean)
 remote: github.com/HashBrake/ludo-g1 (private), pushed after every Fable commit.
 loop: STOPPED under R4(b) at 2026-09-14T14:20+07:00. Every remaining task (T-021..T-024) needs a human hardware action. Restart the Fable session ("continue") after doing any item below; it resumes from this file.
 
