@@ -326,3 +326,16 @@ diff; `--for t021_latency --no-devices` says NO-GO naming the e-stop, the eleven
 `--show-envelope` prints the human approval procedure and writes nothing; STATUS_VALUES is exactly the three words.
 Both judgement calls accepted: the hand bench does not need the arm LAN, and the envelope test is guarded by the Guard
 regardless of latency values (D-022's wording stands).
+
+## T-046  ACCEPTED  (fable, 2026-09-14T13:10+07:00, commits b7d61d6, 435469d)
+Read the whole range diff (10 files). Re-ran: ruff clean; tests/test_config.py + tests/test_cameras.py 103 passed 5 skipped
+(one readonly oblique test failed once when run within a second of another process releasing the camera, passed twice
+alone: not a T-046 defect, noted); `grep -c UNMEASURED config/cameras.yaml` 16; pre-flight --no-devices unchanged but the
+git row. Verified the by-id claim myself: `/dev/v4l/by-id/usb-ORBBEC_EGO_..-video-index0 -> video6 'Ego right'` today, so
+deviation 1 (by-path) is correct and accepted, D-025. Deviation 2 (header comment) accepted: the old sentence was false.
+The measurement is reported honestly and the acceptance failure (drops, jitter) is stated as measured, which is what R5
+asks. Fable one-line fix in this commit: docs/config.md line 155 said "a 600 s run held that rate with no drops", which
+contradicts the T-046 numbers; corrected to name the late frames and H-005.
+Finding on the number itself, not a defect of the task: "222 frames missed" is inferred from arrival timestamps, and the
+achieved rate of exactly 30.000 Hz over 17948 frames says nothing was lost. My 30 s check: 901 frames in 30.00 s (nominal
+900), 12 gaps > 50 ms matched by 11 intervals < 16.7 ms, i.e. late delivery then catch-up. D-025 and T-047 follow.

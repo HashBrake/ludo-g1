@@ -212,3 +212,22 @@ the by-id path is what the driver prefers (docs/drivers.md) and node numbers mov
 pyorbbecsdk for depth (D-009 stands, Q-008 open); (c) stereo depth from the two streams (no consumer). The `top` (Brio)
 and `palm` rows stay UNMEASURED: those devices are not attached (H-001, H-003).
 After T-046 the loop stops again under R4(b) unless an H-item or HUMAN: line has appeared.
+
+## D-025  Oblique nodes by-path; the Ego's "drops" are delivery jitter, fixed at the timestamp, not the cable  (2026-09-14T13:10+07:00)
+Supersedes D-024's wording "device -> /dev/v4l/by-id path": this Ego gives both UVC functions one by-id name, which pointed
+at the left node on 2026-09-11 and at the right node on 2026-09-14 (verified by Fable with ls -l). `oblique.device` and
+`device_right` are the /dev/v4l/by-path links (interface 1.0 left, 1.2 right), which fail loudly on a port change instead of
+swapping cameras. Rule for every camera from now on: a by-id link goes into the config only after `readlink -f` shows it
+names the intended node; otherwise by-path.
+On the T-046 measurement: frame count over 600 s equals the nominal count (30.000 Hz achieved), so the 222/207 "missed"
+frames are not lost frames. Fable's 30 s checks on the same node: run A (12:57, 5-min load 1.8 right after the gate's
+pytest, governor powersave) 901 frames, 12 gaps > 50 ms and 11 intervals < 16.7 ms, arrival jitter p99 18 ms; run B
+(13:03, host quiet) 901 frames, 0 gaps, arrival jitter p99 1.37 ms. The phenomenon is intermittent host-side delivery
+delay, and the V4L2 buffer timestamp (cv2 CAP_PROP_POS_MSEC, CLOCK_MONOTONIC, lags arrival by 2.4 ms p50 / 3.2 ms p99)
+carries the sensor-side time with jitter p99 0.68 ms in run B. Decision: the camera driver stamps frames with the kernel
+buffer timestamp converted to runtime.clock ns, arrival time only as a fallback, and the recorder therefore aligns on the
+time the frame was captured, not the time user space got round to it. This is T-047, non-hardware except its readonly
+check. H-005 stays open but is reframed: its post-check runs after T-047 and its pass criterion is on the kernel stamp;
+the USB-3 re-seat is still worth one try and costs nothing. T-016's 10 ms p99 skew budget is judged on kernel stamps.
+Alternatives rejected: raising the drop threshold (hides the jitter the recorder cares about); a realtime priority for the
+grab thread (root, and does not fix a late USB completion); switching the governor from the agents (system state, human).

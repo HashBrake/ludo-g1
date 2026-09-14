@@ -1935,7 +1935,7 @@ result: (opus, 2026-09-12T11:20+07:00, commit c8d4674)
   - config/ untouched (git diff --stat lists no file under config/); no session file created, read or restored.
 
 ## T-046  Orbbec Ego 10-minute read-only stream statistics; oblique capture placeholders measured
-status: review
+status: accepted
 priority: P1
 phase: 1
 owner: opus
@@ -2000,3 +2000,35 @@ result: (opus, 2026-09-14T12:55+07:00, commit b7d61d6)
     new hardware-free `tests/test_cameras.py::test_the_measured_oblique_capture_mode_downscales_to_the_policy_frame`;
     the existing `test_real_frames_arrive_at_the_policy_resolution[oblique]` asserts the same shape but
     is `readonly` and skips without the camera, so it could not stand in for it.
+
+## T-047  Camera frames stamped with the V4L2 kernel buffer timestamp; stream_stats separates late delivery from loss
+status: todo
+priority: P1
+phase: 2
+owner: opus
+depends_on: T-046
+hardware: read-only (one readonly test and one 600 s check; everything else on mocks)
+deliverables:
+  - drivers/cameras.py: after each successful grab(), read the kernel buffer timestamp (cv2 CAP_PROP_POS_MSEC on the V4L2
+    backend; CLOCK_MONOTONIC ms, verified in D-025) and use it as the frame's stamp in runtime.clock ns units; fall back to
+    the arrival stamp when the value is 0, non-monotonic, or more than 100 ms from arrival, and count the fallbacks; the
+    frame carries `stamp_source: kernel|arrival` (or the driver exposes a counter) so the recorder card can report it;
+    document in docs/drivers.md and docs/clock.md how the kernel stamp relates to runtime.clock.now_ns (both monotonic)
+  - tools/hardware_checks/stream_stats.py: report both stamps for cameras (kernel and arrival: rate, interval, jitter), a
+    `frames_lost = round(span * nominal) + 1 - received` figure separate from `drops` (which stays as the late-delivery
+    count), and `arrival_minus_kernel_ms` p50/p99/max; the --json schema gains those keys and the text output shows them
+  - tests (mocks): a fake capture whose get(POS_MSEC) returns a clean 30 Hz grid while grab() returns late-and-burst
+    arrival times; assert the kernel stamps are used, jitter on the kernel stamp is < 1 ms, drops counted on arrival,
+    frames_lost 0; fallback triggered when POS_MSEC is 0; a readonly test on the Ego asserting kernel stamps are within
+    100 ms of arrival and monotonic
+  - recorder: no logic change; verify with the existing mock end-to-end test that the skew statistic still comes from the
+    frame stamp (it should pick up the kernel stamp automatically); say so in BUILD_LOG.md
+acceptance:
+  - mock tests as above green; full suite green; ruff clean
+  - readonly 600 s run on the Ego with the new stream_stats: frames_lost, drops, arrival jitter p99, kernel-stamp jitter
+    p99 and arrival_minus_kernel p99 all in BUILD_LOG.md; the run is reported whatever it shows (R5). Expected from D-025:
+    frames_lost 0, kernel-stamp jitter p99 < 2 ms; if kernel-stamp jitter p99 >= 10 ms, say so and H-005 step 1 follows
+  - MockCamera unchanged in interface; every existing camera test passes without edits except where the stamp field is new
+notes: D-025. Run the 600 s check with the host quiet (no pytest in parallel; the pre-commit hook's suite counts). Do not
+  touch policy/, runtime/safety.py, config/*.yaml except adding a `stamp_source` key to config/cameras.yaml `defaults` if a
+  switch is genuinely needed (default kernel). Nothing under third_party/. No session, no motion path.

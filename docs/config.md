@@ -152,7 +152,7 @@ the capture resolution/fps/fourcc, and `policy_resolution`, the size the policy 
 `policy_resolution` is a design choice from the brief and is **not** a placeholder. The capture
 values of `top` and `palm` are, because neither device has ever been connected (H-001, H-003). The
 `oblique` block is **MEASURED** (T-046, D-024): the Ego negotiates `1600x1200 @ 30 MJPG` whatever is
-asked for, and a 600 s run held that rate with no drops, so the capture request is now the mode that
+asked for, and two 600 s runs held that rate (with ~1.2% late-delivered frames and jitter p99 18 ms, H-005), so the capture request is now the mode that
 exists rather than a mode that does not. `policy_resolution` stayed `[640, 480]`: the driver
 downscales 2.5x with `INTER_AREA`, so nothing in `policy/` or the dataset changed.
 

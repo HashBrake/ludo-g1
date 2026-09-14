@@ -119,3 +119,13 @@ ls -l /dev/v4l/by-path/ /dev/v4l/by-id/
 Pass: 0 drops and jitter p99 < 10 ms, as T-046's acceptance asked for. If the port changed, `config/cameras.yaml`
 `oblique.device` and `device_right` must be updated to the new by-path paths (the old ones stop existing, and the
 driver then refuses to open the stream by name rather than opening the wrong one).
+
+### H-005 amendment  (fable, 2026-09-14T13:10+07:00)
+Fable's own checks (D-025) show the frame count is exact and the gaps come and go with host load: 12 gaps in 30 s right
+after a test suite finished, 0 gaps six minutes later with the host quiet. So before step 1: (0) run the post-check with
+nothing else running on the laptop; if it passes, the port and cable are fine. The post-check itself changes with T-047:
+the stream_stats JSON will then report the kernel-timestamp jitter and a separate "frames lost" count (expected minus
+received); the pass criterion becomes frames lost = 0 and kernel-stamp jitter p99 < 10 ms. Step 1 (USB 3 port) is still
+worth one try. One more human-only variable, in this order after step 1: the CPU governor is `powersave`
+(`cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`); `sudo cpupower frequency-set -g performance` for one run
+tells us whether that is the cause. Agents do not change it (system state).
