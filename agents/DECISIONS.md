@@ -196,3 +196,19 @@ it prints is 0/N by construction (HoldPolicy), as R5 requires.
 Stop: every task left in todo (T-021..T-024) needs a human hardware action (H-002..H-004, Q-004, a session), and no further
 non-hardware task is productive: the mock-side system is built end to end and further mock work would not change what the
 first hardware day needs. R4(b) applies. The loop resumes the moment a HUMAN: line or a completed H-item appears.
+
+## D-024  Loop resumed; one read-only Phase 1 measurement is possible without a human  (2026-09-14T09:10+07:00)
+Alois restarted the session ("continue") with no HUMAN: line and no completed H-item: no 192.168.123.x interface, no serial
+node, no Logitech id, port 63901 still held by RoboticsService, no data/calib stills, no ~/.config/ludo-g1/env, /home 12 GB.
+D-023's stop condition still holds for T-021..T-024. One item D-023 missed: the Orbbec Ego (2bc5:1201) IS plugged in, and
+Phase 1's read-only line ("stream every device at target rate for 10 minutes") was never run on it; T-010 ran 10 s only, and
+T-018/T-019/T-020 cover arm, hand, palm, glove, pose but not `oblique`. A sensor read needs no session (R1). T-046 runs it.
+Decision on T-010's finding ("the Ego overrules the requested resolution; Fable's call"): the capture request in
+config/cameras.yaml `oblique.resolution` becomes [1600, 1200] MEASURED, the only mode the device negotiates; `fps` 30 and
+`fourcc` MJPG become MEASURED on the 600 s evidence; `device`/`device_right` become the /dev/v4l/by-id paths (serial
+AZER76400HV, this lab's unit); `policy_resolution` stays [640, 480] (CLAUDE.md 5.3), so nothing in policy/ or the dataset
+changes. Rationale: a placeholder that names a mode the device cannot deliver is a false statement in a config file;
+the by-id path is what the driver prefers (docs/drivers.md) and node numbers move. Alternatives rejected: (b) building
+pyorbbecsdk for depth (D-009 stands, Q-008 open); (c) stereo depth from the two streams (no consumer). The `top` (Brio)
+and `palm` rows stay UNMEASURED: those devices are not attached (H-001, H-003).
+After T-046 the loop stops again under R4(b) unless an H-item or HUMAN: line has appeared.

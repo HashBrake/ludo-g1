@@ -1933,3 +1933,35 @@ result: (opus, 2026-09-12T11:20+07:00, commit c8d4674)
     devices; "NO-GO for t021_latency." Full table without --for unchanged at 0/28, "NO-GO for a motion session."
     Full output and the commands in agents/BUILD_LOG.md.
   - config/ untouched (git diff --stat lists no file under config/); no session file created, read or restored.
+
+## T-046  Orbbec Ego 10-minute read-only stream statistics; oblique capture placeholders measured
+status: in_progress
+priority: P1
+phase: 1
+owner: opus
+depends_on: T-010
+hardware: read-only
+deliverables:
+  - agents/BUILD_LOG.md: the 600 s run `.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json`
+    with the command, the full JSON, achieved rate, drop count and frames missed, interval and jitter p50/p99/max, and one
+    frame's mean/std as in T-010 (proof it is imagery, not a black stream). Every run made is reported, including bad ones.
+  - config/cameras.yaml `oblique` only: `device` -> the /dev/v4l/by-id/... path of 'ORBBEC: Ego left' and `device_right` ->
+    the by-id path of 'ORBBEC: Ego right' (both from `list_devices.py --json`); `resolution` [1600, 1200] with
+    `resolution_status: MEASURED`; `fps_status: MEASURED`; `fourcc_status: MEASURED`; `policy_resolution` [640, 480]
+    unchanged; a comment citing T-010 (device negotiates 1600x1200@30 MJPG whatever is asked) and T-046 (600 s run)
+  - docs/sdks.md 8.2: the "Rate/units/resolution: UNMEASURED" line replaced by the measured numbers and the by-id nodes;
+    docs/drivers.md and docs/config.md wherever they describe the oblique placeholders
+  - tests: whatever config test enumerates UNMEASURED keys or statuses still passes; add a test that an `oblique` spec with
+    resolution [1600, 1200] and policy_resolution [640, 480] yields (480, 640, 3) frames through the mock/downscale path,
+    unless tests/test_cameras.py already asserts exactly that (say which test if so)
+acceptance:
+  - 600 s real run in BUILD_LOG.md: achieved rate within 1% of 30 Hz, 0 drops, jitter p99 < 10 ms. If any run has drops,
+    report it as measured and do not re-run to get a clean number; a second run may follow, both are logged.
+  - `grep -c UNMEASURED config/cameras.yaml` goes from 21 to 16 and `git diff config/cameras.yaml` touches only the
+    `oblique` block; `top` and `palm` rows untouched
+  - `.venv/bin/python -m pytest -q` green with the Ego attached (count in BUILD_LOG.md); `.venv/bin/ruff check .` clean
+  - `.venv/bin/python tools/hardware_checks/session_preflight.py --no-devices` output unchanged before/after apart from
+    any oblique row (paste both if a row changed)
+notes: D-024. Pure sensor read: no session, no motion path, R1 not engaged. Run the 600 s stream with nothing else holding
+  /dev/video4 (do not run the pytest readonly camera tests at the same time). Do not touch policy/, runtime/, `top`, `palm`,
+  config/safety.yaml, third_party/. If the by-id link for either node is absent, leave that key UNMEASURED and say why.
