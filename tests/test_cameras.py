@@ -158,6 +158,32 @@ def test_discovery_that_finds_nothing_names_the_usb_id(tmp_path: Path, monkeypat
     assert "2bc5:1201" in str(exc.value)
 
 
+def test_the_measured_oblique_capture_mode_downscales_to_the_policy_frame() -> None:
+    """T-046: 1600x1200 captured -> (480, 640, 3) delivered, with no crop and no aspect change.
+
+    Hardware-free: the capture-to-policy conversion is run on a synthetic frame the size the Ego
+    actually negotiates, with the real ``config/cameras.yaml`` spec (resolution [1600, 1200],
+    policy_resolution [640, 480]). The readonly twin of this,
+    ``test_real_frames_arrive_at_the_policy_resolution[oblique]``, needs the camera attached.
+    """
+    spec = config.load("cameras")["oblique"]
+    assert spec["resolution"] == [1600, 1200] and spec["policy_resolution"] == [640, 480]
+
+    camera = V4L2Camera.__new__(V4L2Camera)  # no device: only the frame conversion is under test
+    camera.name = "oblique"
+    camera.crop = None
+    camera.policy_resolution = tuple(spec["policy_resolution"])
+
+    rng = np.random.default_rng(46)
+    captured = rng.integers(0, 256, size=(1200, 1600, 3), dtype=np.uint8)
+    frame = camera._to_policy(captured)
+    assert frame.shape == (480, 640, 3)
+    assert frame.dtype == np.uint8
+    # 1600x1200 and 640x480 are both 4:3, so the downscale is a clean 2.5x with nothing cut off.
+    assert captured.shape[1] / captured.shape[0] == frame.shape[1] / frame.shape[0]
+    assert frame.shape == MockCamera("oblique").grab().payload.shape
+
+
 def test_node_selector_prefers_the_stable_by_id_path() -> None:
     assert node("/dev/video4", by_id="/dev/v4l/by-id/x").selector == "/dev/v4l/by-id/x"
     assert node("/dev/video4").selector == "/dev/video4"

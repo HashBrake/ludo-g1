@@ -147,9 +147,13 @@ no write call on this protocol at all — a test asserts the class has none.
 **Device discovery**, in order:
 
 1. an explicit `device=` (a `/dev/...` path or a numeric index);
-2. `config/cameras.yaml` `<name>.device`, when it is not the `UNMEASURED` placeholder. Put a
-   `/dev/v4l/by-id/...` path there, never `/dev/videoN`: node numbers move when devices are
-   replugged, and a policy trained on `top` must never be fed `oblique`;
+2. `config/cameras.yaml` `<name>.device`, when it is not the `UNMEASURED` placeholder. Put a stable
+   `/dev/v4l/...` path there, never `/dev/videoN`: node numbers move when devices are replugged, and
+   a policy trained on `top` must never be fed `oblique`. By-id is the first choice, but check that
+   udev actually made one link *per node*: this lab's Ego gives both of its UVC functions the same
+   by-id name, and that single link pointed at the left node in T-010 and at the right node in T-046,
+   so `oblique` uses `/dev/v4l/by-path/...` instead, where the USB interface number separates left
+   (`1.0`) from right (`1.2`) (T-046, D-024, `config/cameras.yaml`);
 3. `<name>.usb_id`: the lowest-numbered `VIDEO_CAPTURE` node whose USB `vendor:product` matches,
    reported through its by-id link when udev made one. Enumeration is sysfs plus one read-only
    `VIDIOC_QUERYCAP`; it never streams. Because the id comes from the config, discovery can only
@@ -172,7 +176,7 @@ angles (`--camera` still works for a camera):
 
 ```
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend mock --seconds 5
-.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 10 --warmup 15
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream arm --seconds 600
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream hand --seconds 600
 ```

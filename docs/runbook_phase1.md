@@ -100,7 +100,9 @@ Check: exit 0. Keep the JSON: it is the evidence for the `docs/sdks.md` rows tha
 ### 1.5 Fill the device keys the drivers refuse to run without
 
 Edit, by hand, from the JSON of 1.4 (stable `by-id` paths only, never `/dev/videoN` or `/dev/ttyACMn`
-— the node numbers move):
+— the node numbers move). Check the link you paste actually resolves to the node you mean
+(`readlink -f`): a multi-interface camera can give two nodes the same by-id name, which is why
+`oblique` ended up on `/dev/v4l/by-path/...` (T-046, D-024):
 
 | File | Key | Source |
 |---|---|---|
@@ -124,7 +126,7 @@ mode that day 3 cannot use, and that is worth knowing before the other 60 minute
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream hand --seconds 600 --json
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream palm --seconds 600 --json
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream top --seconds 600 --json
-.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json   # done: T-046
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream glove --seconds 600 --json
 .venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream pose --seconds 600 --json
 ```

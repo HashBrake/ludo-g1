@@ -1,12 +1,14 @@
 # LUDO-G1 camera configuration: the three observation streams of CLAUDE.md 5.3.
 #
 # Placeholder convention (docs/config.md): the literal value UNMEASURED, or a numeric leaf with a
-# sibling `<key>_status: UNMEASURED`. Nothing here was measured: the Brio and the DexH15 were not
-# connected during the SDK inventory (T-002, docs/sdks.md 8.1 and 5), and no stream was ever opened.
+# sibling `<key>_status: UNMEASURED`. `top` and `palm` are still entirely placeholders: the Brio and
+# the DexH15 have never been connected (T-002, docs/sdks.md 8.1 and 5, H-001, H-003). `oblique` is
+# measured: its stream was opened and run for 600 s in T-046 (D-024).
 #
-# `device` is a V4L2 selector. Prefer a stable /dev/v4l/by-id/... path over /dev/videoN: the node
-# numbers move when devices are replugged, and a policy that trains on `top` must never be fed
-# `oblique` because the enumeration order changed.
+# `device` is a V4L2 selector. Never /dev/videoN: the node numbers move when devices are replugged,
+# and a policy that trains on `top` must never be fed `oblique` because the enumeration order
+# changed. Prefer a stable /dev/v4l/by-id/... path -- but check it resolves to the node you mean,
+# because udev can give two nodes of one device the same by-id name (see `oblique` below).
 
 defaults:
   driver: opencv_v4l2       # cv2.VideoCapture(..., cv2.CAP_V4L2), docs/sdks.md 8.1
@@ -37,22 +39,44 @@ top:
 
 # --- oblique: Orbbec Ego on the rig at chest height (parallax, replaces the missing head camera) --
 # D-009: depth is deferred. The Ego enumerates as a plain UVC stereo pair and pyorbbecsdk on PyPI is
-# unusable (docs/sdks.md 8.2), so `oblique` is the LEFT RGB stream over V4L2, exactly the 640x480 RGB
-# that CLAUDE.md 5.3 asks for. The right node is recorded here only so a later stereo-depth route
+# unusable (docs/sdks.md 8.2), so `oblique` is the LEFT RGB stream over V4L2, captured at the one
+# mode the device offers and delivered to the policy at the 640x480 CLAUDE.md 5.3 asks for (see
+# `resolution` below). The right node is recorded here only so a later stereo-depth route
 # (D-009 option c) does not have to rediscover it.
 oblique:
-  device: UNMEASURED        # /dev/video4 during T-002 ("ORBBEC: Ego left"), but the number moves
-  device_right: UNMEASURED  # /dev/video6 during T-002 ("ORBBEC: Ego right"); unused today
-  # ORBBEC EGO, enumerated in T-002. This is a real id, not a placeholder, and it is what
-  # drivers/cameras.py discovers the node by while `device` above is still UNMEASURED: the
-  # lowest-numbered VIDEO_CAPTURE node with this id is the Ego's LEFT stream (T-010).
+  # T-046/D-024: these are /dev/v4l/by-path, NOT by-id, and that is deliberate. This unit
+  # (serial AZER76400HV) gives its two UVC functions the SAME udev by-id name, so only one link
+  # exists for both and whichever function udev processes last owns it:
+  #   /dev/v4l/by-id/usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0 -> /dev/video6 'Ego right'
+  # It resolved to /dev/video4 'Ego left' during T-010 and to /dev/video6 'Ego right' at T-046, i.e.
+  # it has already flipped once on this laptop. Writing it here would silently feed the RIGHT camera
+  # to `oblique`. The by-path link carries the USB interface number (1.0 = left, 1.2 = right), so it
+  # names one stream and only one. It is tied to the USB port: plug the Ego into another port and
+  # the path stops existing, which drivers/cameras.py reports as CameraUnavailable naming the path
+  # (a loud failure, not a wrong stream). A udev rule keyed on ID_V4L_PRODUCT would give each node a
+  # permanent name; that needs root and is not done here.
+  device: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0        # 'ORBBEC: Ego left', /dev/video4 at T-046
+  device_right: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.2-video-index0  # 'ORBBEC: Ego right', /dev/video6; unused today
+  # ORBBEC EGO, enumerated in T-002. This is a real id, not a placeholder; it is the discovery key
+  # drivers/cameras.py used while `device` above was still UNMEASURED (T-010 to T-046) and the route
+  # it falls back to: the lowest-numbered VIDEO_CAPTURE node with this id is the Ego's LEFT stream.
   usb_id: "2bc5:1201"
-  resolution: [640, 480]
-  resolution_status: UNMEASURED
+  # MEASURED in T-046 (two 600 s runs, 17948 and 17955 frames, both at 30.00 Hz) and in T-010: the
+  # device negotiates 1600x1200 @ 30 MJPG whatever is asked for -- 320x240, 640x480, 1280x720 and
+  # 1600x1200 all come back 1600x1200 (T-010). So the capture request is the one mode that exists.
+  # 1600x1200 is 4:3, the same aspect as the policy frame, so drivers/cameras.py downscales 2.5x
+  # with INTER_AREA, no crop, no distortion. `policy_resolution` is unchanged and stays what
+  # CLAUDE.md 5.3 fixes it at.
+  # The rate is measured; the *timing* is not clean. Both 600 s runs dropped ~1.2% of frames
+  # (222 and 207 missed) with jitter p99 18.3 ms, and a 10 s run repeating T-010's command shows the
+  # same, where T-010 saw 0 drops and p99 1.4-2.9 ms on 2026-09-11. Unexplained; see H-005 and the
+  # T-046 entry in agents/BUILD_LOG.md before this stream is trusted at 30 Hz for recording.
+  resolution: [1600, 1200]
+  resolution_status: MEASURED
   fps: 30
-  fps_status: UNMEASURED
+  fps_status: MEASURED
   fourcc: MJPG
-  fourcc_status: UNMEASURED
+  fourcc_status: MEASURED
   policy_resolution: [640, 480]
 
 # --- palm: DexH15 built-in palm camera (close-in view during the grasp) ---------------------------

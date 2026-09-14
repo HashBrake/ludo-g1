@@ -514,11 +514,32 @@ def test_camera_policy_resolutions_match_the_observation_space_of_5_3():
     assert cameras["palm"]["policy_resolution"] == images["palm"] == [320, 240]
 
 
-def test_camera_devices_are_all_unresolved():
-    """No camera node was ever opened (T-002), so no device selector may look like a real one."""
+def test_camera_devices_are_unresolved_except_the_one_that_was_streamed():
+    """A device selector may only look real once that node was actually opened and streamed.
+
+    `top` (Brio) and `palm` (DexH15) have never been connected (H-001, H-003), so their selectors
+    stay placeholders. `oblique` was streamed for 600 s in T-046, so its two nodes are measured
+    (D-024) -- as a /dev/v4l/by-path path, see the comment in config/cameras.yaml.
+    """
     unmeasured = config.unmeasured("cameras")
-    for stream in ("top", "oblique", "palm"):
+    for stream in ("top", "palm"):
         assert f"{stream}.device" in unmeasured
+    oblique = config.load("cameras")["oblique"]
+    for key in ("device", "device_right"):
+        assert f"oblique.{key}" not in unmeasured
+        assert oblique[key].startswith("/dev/v4l/")
+
+
+def test_the_oblique_capture_mode_is_the_one_the_ego_negotiates():
+    """T-046/D-024: the Ego answers 1600x1200 @ 30 MJPG whatever is requested, so that is the request."""
+    oblique = config.load("cameras")["oblique"]
+    assert oblique["resolution"] == [1600, 1200]
+    assert oblique["fps"] == 30
+    assert oblique["fourcc"] == "MJPG"
+    for key in ("resolution", "fps", "fourcc"):
+        assert config.status_of("cameras", f"oblique.{key}") == config.MEASURED
+    # CLAUDE.md 5.3 fixes what the policy sees; a measured capture size must not move it.
+    assert oblique["policy_resolution"] == [640, 480]
 
 
 # --------------------------------------------------------------------------------------------

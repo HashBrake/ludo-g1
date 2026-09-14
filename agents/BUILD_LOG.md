@@ -4982,3 +4982,220 @@ Work commit **c8d4674** on `main`, through the full pre-commit gate (ruff + the 
 pre-existing absent-hardware and no-session ones plus T-044's documented `enable_session.py` skip;
 nothing this task added is skipped. This hash is recorded by the follow-up commit, which changes
 `agents/BUILD_LOG.md` and `agents/TASKS.md` only.
+
+## T-046  Orbbec Ego 10-minute read-only stream statistics; oblique placeholders measured  (opus, 2026-09-14T12:50+07:00)
+
+CLAUDE.md section 6's Phase 1 read-only line ("stream every device at target rate for 10 minutes and
+report drop rates and jitter") for the one device that is plugged in, plus D-024's config edit. No
+session, no motion path: a camera is a sensor, `drivers/cameras.py` has no write call and a test
+asserts it, so R1 is not engaged. `hardware/session.enable` was not created, read, edited or
+restored and still does not exist.
+
+### The 600 s runs: the rate is there, the timing is not (acceptance NOT met)
+
+Run 1, the deliverable's command verbatim, `oblique.device` still `UNMEASURED` so the node came from
+`usb_id` discovery:
+
+```
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json
+{
+  "backend": "real", "camera": "oblique", "stream": "oblique", "warmup": 0,
+  "device": "/dev/video4 'ORBBEC: Ego left' (via usb_id 2bc5:1201)",
+  "policy_resolution": [640, 480],
+  "probe": {"card": "ORBBEC: Ego left", "device": "/dev/video4", "fourcc": "MJPG", "fps": 30.0,
+            "height": 1200, "width": 1600, "policy_resolution": [640, 480]},
+  "stats": {"drops": 222, "expected_hz": 30.0, "fps": 30.0, "frames": 17948, "frames_missed": 222,
+            "interval_ms_p50": 33.3632, "interval_ms_p99": 51.2306, "interval_ms_max": 67.4397,
+            "jitter_ms_p50": 4.8938, "jitter_ms_p99": 18.3244, "jitter_ms_max": 34.1064,
+            "span_s": 598.2314}
+}
+```
+
+Run 2, same command after the config edit, so the node came from the new `/dev/v4l/by-path` selector
+(this is also the check that the selector opens the stream: same 1600x1200 MJPG, and the path
+resolves to `/dev/video4 'ORBBEC: Ego left'`). Run 1 ran while this agent was editing files; run 2
+ran with the agent issuing no commands at all. The two are the same to within a few frames, so the
+drops are not agent load:
+
+```
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json
+{
+  "backend": "real", "camera": "oblique", "stream": "oblique", "warmup": 0,
+  "device": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0 (via config/cameras.yaml)",
+  "policy_resolution": [640, 480],
+  "probe": {"card": "", "device": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0",
+            "fourcc": "MJPG", "fps": 30.0, "height": 1200, "width": 1600,
+            "policy_resolution": [640, 480]},
+  "stats": {"drops": 207, "expected_hz": 30.0, "fps": 30.0, "frames": 17955, "frames_missed": 207,
+            "interval_ms_p50": 33.3592, "interval_ms_p99": 51.1936, "interval_ms_max": 67.7593,
+            "jitter_ms_p50": 4.9635, "jitter_ms_p99": 18.3303, "span_s": 598.4704}
+}
+```
+
+Against the acceptance line: **achieved rate PASS** (30.000 Hz both runs, 0.0% off nominal, inside
+the 1% bound). **Drops FAIL** (222 and 207 frames missed, ~1.2%, bound 0). **Jitter p99 FAIL**
+(18.32 and 18.33 ms, bound < 10 ms). Reported as measured; per the task I did not re-run for a clean
+number, and both runs are logged.
+
+Proof it is imagery and not a black stream, the T-010 check, on the frame the driver delivers
+(`scratchpad/verify_oblique.py`, 10 frames discarded, 11th kept):
+
+```
+device       /dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0 -> /dev/video4 'ORBBEC: Ego left'
+device_right /dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.2-video-index0 -> /dev/video6 'ORBBEC: Ego right'
+selection    /dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0 (via config/cameras.yaml)
+probe        width=1600 height=1200 fps=30.0 fourcc='MJPG' policy_resolution=(640, 480)
+frame        shape=(480, 640, 3) dtype=uint8 mean=102.7 std=42.0
+```
+
+(T-010 measured mean 81.4 / std 46.7 on the same stream, so the scene is if anything brighter today.)
+
+### What the drops are not
+
+Two more read-only runs, because a 1.2% drop rate that T-010 did not see needs a cause or an
+elimination:
+
+```
+--seconds 30            855 frames, 29.982 Hz, 19 drops/19 missed, interval p50 33.35 p99 51.72 max 75.01,
+                        jitter p50 6.41 p99 18.69 max 41.68
+--seconds 10 --warmup 15  (T-010's exact command)  301 samples, 30.03 Hz, 4 drops/4 missed,
+                        interval p50 33.40 p99 51.15 max 52.29, jitter p50 1.87 p99 18.00 max 18.96
+```
+
+T-010 ran that second command on 2026-09-11 and got **0 drops, jitter p50 0.22 / p99 1.44-2.94 ms**.
+So: not the run length (a 10 s run shows it), not warmup (the 30 s run has none and still drops), not
+this agent's load (run 2 was alone on the machine; `uptime` load average 0.40, 14 cores, on AC). The
+interval histogram is the same shape in every run today -- p50 at one period (33.36 ms) and p99 at
+**1.5 periods (51.2 ms)** with a max at 2 periods -- i.e. the device periodically takes half a frame
+longer, which is what a sensor whose exposure has run past the frame time does, and also what a
+dropped isochronous frame looks like. Two facts that bound the diagnosis without settling it: the Ego
+enumerates on a **USB 2.0, 480 Mbps** link (`cat /sys/bus/usb/devices/3-1/speed`), and its UVC
+interface exposes **no exposure and no frame-rate control at all** (`v4l2-ctl -d /dev/video4
+--list-ctrls`: brightness, contrast, saturation, hue, auto white balance), so the exposure time
+cannot be pinned or even read from here. Raised as **H-005** (re-seat on USB 3, swap the cable, light
+the scene; post-check is the same 600 s command). This matters beyond this task: T-016's recorder
+budget is 10 ms p99 skew and the dataset is 30 Hz, so `oblique` as it behaves today would contribute
+~1.2% missing frames to every episode.
+
+### The by-id link on this Ego names two nodes, and it has already flipped
+
+The task asked for the `/dev/v4l/by-id/...` paths of 'ORBBEC: Ego left' and 'ORBBEC: Ego right'.
+**There is only one by-id link for the two of them**, and today it is the right camera:
+
+```
+$ ls -l /dev/v4l/by-id/
+usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0 -> ../../video6      # 'ORBBEC: Ego right'
+usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index1 -> ../../video7      # its metadata node
+$ udevadm info -q property -n /dev/video4 | grep DEVLINKS
+DEVLINKS=/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0 /dev/v4l/by-id/usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0
+$ udevadm info -q property -n /dev/video6 | grep DEVLINKS
+DEVLINKS=/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.2-video-index0 /dev/v4l/by-id/usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0
+```
+
+Both UVC functions claim the same by-id name (vendor + product + serial + interface *index*, and the
+Ego's two functions are both index 0 of their interface), so udev makes one link and the last writer
+wins. T-010's run on 2026-09-11 opened that link and got `/dev/video4 'ORBBEC: Ego left'`; today it
+resolves to `/dev/video6 'ORBBEC: Ego right'`. Writing it into `oblique.device`, as the deliverable
+says, would therefore have pointed the policy's oblique observation at the **right** camera, silently
+-- exactly the failure the file's own header warns about. See the disagreement section.
+
+### Files changed
+
+- `config/cameras.yaml`, `oblique` block only (plus the file header, see the disagreement section):
+  `device` and `device_right` now hold the two `/dev/v4l/by-path/...` paths; `resolution` is
+  `[1600, 1200]` with `resolution_status: MEASURED`; `fps_status` and `fourcc_status` are `MEASURED`;
+  `policy_resolution` is untouched at `[640, 480]`, so nothing in `policy/` or the dataset changes
+  (CLAUDE.md 5.3). The comments carry the by-id collision, the T-010 negotiation evidence and a
+  pointer to H-005. `top` and `palm` are byte-identical.
+- `docs/sdks.md` 8.2: the `Rate/units/resolution: UNMEASURED` line is replaced by the measured mode,
+  both 600 s results, the drop/jitter finding, the absent exposure control, and a `Nodes` bullet with
+  the by-path paths and why they are not by-id.
+- `docs/config.md` (`config/cameras.yaml` section) and `docs/drivers.md` (discovery step 2, and the
+  `stream_stats` example is now the 600 s one): the oblique placeholders are described as measured
+  and the by-id caveat is stated where a reader would otherwise paste a by-id path.
+- `docs/runbook_phase1.md`: 1.5 gains the "check the link resolves to the node you mean" warning,
+  1.6's oblique line is marked done.
+- `tests/test_config.py`: `test_camera_devices_are_all_unresolved` could not survive this task as
+  written -- it asserted `oblique.device` is a placeholder. It is now
+  `test_camera_devices_are_unresolved_except_the_one_that_was_streamed` (top and palm still
+  placeholders; oblique measured and under `/dev/v4l/`), and a new
+  `test_the_oblique_capture_mode_is_the_one_the_ego_negotiates` pins 1600x1200/30/MJPG, all three
+  statuses at `MEASURED`, and `policy_resolution` still `[640, 480]`.
+- `tests/test_cameras.py`: new hardware-free
+  `test_the_measured_oblique_capture_mode_downscales_to_the_policy_frame` -- the deliverable's
+  (480, 640, 3) check. `test_real_frames_arrive_at_the_policy_resolution[oblique]` already asserted
+  the same thing but is marked `readonly` and skips with no camera attached, so it could not be the
+  answer to that deliverable on its own; the new test runs the capture-to-policy conversion on a
+  synthetic 1200x1600x3 frame with the real config spec and needs no device.
+- `agents/HARDWARE_NEEDED.md`: H-005.
+- No change under `policy/`, `runtime/`, `drivers/`, `tools/`, `third_party/`, or to `config/safety.yaml`.
+
+### Commands and measured results
+
+- The four `stream_stats.py` runs above (600 s x2, 30 s, 10 s) and `verify_oblique.py`.
+- `grep -c UNMEASURED config/cameras.yaml` -> **16** (21 before; the five that went are
+  `oblique.device`, `oblique.device_right` and the three `_status` lines).
+  `.venv/bin/python -c "from runtime import config; print(config.unmeasured('cameras'))"` ->
+  `['top.device', 'top.usb_id', 'top.resolution', 'top.fps', 'top.fourcc', 'top.autofocus',
+  'top.crop', 'palm.device', 'palm.usb_id', 'palm.resolution', 'palm.fps', 'palm.fourcc']`.
+- `git diff config/cameras.yaml`: the `oblique` block and the file's own header comment. No `top` or
+  `palm` row changed.
+- `.venv/bin/ruff check .` -> All checks passed!
+- `.venv/bin/python -m pytest -q` with the Ego attached -> see the commit section.
+- `.venv/bin/python tools/hardware_checks/session_preflight.py --no-devices` before and after: see
+  the diff in the safety section (it has no oblique row; the file lists `config cameras.top.device`
+  only).
+
+### Disagreement
+
+**I did not write the by-id paths the deliverable asked for.** Evidence is in the section above: this
+Ego's two cameras share one by-id link, and that link pointed at the left node when T-010 ran and at
+the right node when T-046 ran. Putting it in `oblique.device` would be a config that names the wrong
+camera, and the failure is silent -- a policy trained on it would be trained on the right-hand view,
+which is the exact hazard `config/cameras.yaml`'s header and `docs/drivers.md` both warn about. I
+judged that unsafe rather than merely different, so I used the `/dev/v4l/by-path/...` links, which
+carry the USB interface number (1.0 left, 1.2 right) and so name one node each. The cost is that a
+by-path link is tied to the USB port: move the Ego and the path stops existing, which
+`drivers/cameras.py` turns into `CameraUnavailable` naming the path -- a loud failure, never a wrong
+stream -- and H-005 says to update the two keys after a re-plug. The permanent fix is a udev rule
+keyed on `ID_V4L_PRODUCT` giving each node its own name; that needs root, so it is Alois's call, not
+mine. To reverse my choice, replace the two `device` values with the by-id path; nothing else in this
+commit depends on the form of the path.
+
+**I edited the file header of `config/cameras.yaml`**, which the acceptance line ("`git diff` touches
+only the `oblique` block") does not allow, because the header said "Nothing here was measured ... no
+stream was ever opened" and this task made that false. D-024's own reasoning is that a config file
+must not carry a false statement. `top` and `palm` are untouched, which is what the second half of
+that acceptance line asks for. One line to revert if Fable disagrees.
+
+**The acceptance's timing bounds are not met and I did not chase them.** The task says to report
+drops as measured and not re-run for a clean number; I ran a second 600 s (allowed explicitly) only
+to separate device behaviour from this agent's own load, and both are logged. Fixing the drops needs
+a human at the hardware (H-005), and the numbers Fable has to decide on are here.
+
+### The pre-flight is unchanged
+
+`.venv/bin/python tools/hardware_checks/session_preflight.py --no-devices`, before the change and
+after it, differ in exactly one line, and it is the `git` row reporting this task's own uncommitted
+files. There is no oblique row in the pre-flight (it checks `config cameras.top.device` only) and
+none was added, so the 26 motion-relevant rows, their order and their verdicts are identical:
+
+```
+$ diff preflight_before.txt preflight_after.txt
+32c32
+<   git                                       PASS    -           HEAD 0b92a2d, tree clean
+---
+>   git                                       FAIL    -           HEAD 0b92a2d, 9 uncommitted path(s): M agents/BUILD_LOG.md ...
+```
+
+Both files still end `* 0/26 motion-relevant checks pass: ...` and `NO-GO for a motion session.`
+
+### Safety
+
+R1: no motion command; nothing in this task can produce one. The only code paths used are
+`drivers/cameras.py` (a sensor, no write call) and read-only sysfs/udev/v4l2 queries.
+`hardware/session.enable` still does not exist. R2: no scripted motion; nothing under `policy/` or
+`runtime/` was touched or imports `tools/`. R3: `config/safety.yaml` is byte-identical
+(`git diff --name-only` does not list it). R5: every number above is printed by the command written
+next to it. R6: only files this task names, plus the two test files the change made false and
+`agents/HARDWARE_NEEDED.md`. Nothing under `third_party/` touched.

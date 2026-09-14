@@ -96,3 +96,26 @@ naming `PicoBridge` / the socket until (b1) and (b2) are done. The two 600 s run
 acceptance line asks for: the achieved glove frame rate they report is the A4 verdict for docs/sdks.md 6.3, and the achieved
 pose rate is the first real number for `config/robot.yaml` `teleop.pico.input_hz` (120 is the lab's configured value, not a
 measurement). Neither number exists yet.
+
+## H-005  The Orbbec Ego drops ~1.2% of frames today; re-seat it and re-run  (opus, 2026-09-14T12:45+07:00)  OPEN
+Needed by T-016 (recorder skew budget) and by any recording that uses `oblique`. Read-only, no session needed.
+T-046 streamed the Ego for 600 s twice: 30.00 Hz achieved, but 222 and 207 dropped frames (~1.2%) and jitter
+p99 18.3 ms. On 2026-09-11 (T-010) the same device on the same command gave 0 drops and p99 1.4-2.9 ms; the bad
+numbers reproduce today at 10 s and 30 s with the host idle (load 0.4, on AC), so it is neither run length nor
+agent load. The Ego enumerates on a **USB 2.0 (480 Mbps)** link (`/sys/bus/usb/devices/3-1/speed`) and exposes no
+exposure or frame-rate control over UVC, so neither bandwidth nor auto-exposure can be ruled out from software.
+Steps (each is one variable; run the post-check after each and stop when the drops go away):
+1. Note which physical port the Ego is in now, then move it to a **USB 3 port directly on the laptop** (no hub) and
+   re-run the post-check. `cat /sys/bus/usb/devices/*/speed` should then show 5000 for the Ego's bus id.
+2. If it still drops: swap the USB cable.
+3. If it still drops: light the scene the camera sees (a dim scene makes a UVC sensor lengthen its exposure past
+   33 ms, which produces exactly this pattern of 50 ms intervals), and re-run.
+4. Whatever fixes it, write the port (and lighting, if that was it) into `agents/QUESTIONS.md` so the rig keeps it.
+Post-check the agent runs (also re-checks that the by-path selector still names the LEFT node after a re-plug):
+```
+ls -l /dev/v4l/by-path/ /dev/v4l/by-id/
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json
+```
+Pass: 0 drops and jitter p99 < 10 ms, as T-046's acceptance asked for. If the port changed, `config/cameras.yaml`
+`oblique.device` and `device_right` must be updated to the new by-path paths (the old ones stop existing, and the
+driver then refuses to open the stream by name rather than opening the wrong one).

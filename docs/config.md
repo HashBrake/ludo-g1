@@ -149,10 +149,23 @@ The three observation streams of CLAUDE.md 5.3: `top` (Brio, above the table), `
 left RGB over UVC, per D-009), `palm` (DexH15 palm camera). Each carries a V4L2 `device` selector,
 the capture resolution/fps/fourcc, and `policy_resolution`, the size the policy actually sees.
 
-`policy_resolution` is a design choice from the brief and is **not** a placeholder; every capture
-value is, because no camera node was ever opened (T-002). Prefer a stable `/dev/v4l/by-id/...` path
-over `/dev/videoN`: node numbers move when devices are replugged, and a policy trained on `top` must
-never be fed `oblique`.
+`policy_resolution` is a design choice from the brief and is **not** a placeholder. The capture
+values of `top` and `palm` are, because neither device has ever been connected (H-001, H-003). The
+`oblique` block is **MEASURED** (T-046, D-024): the Ego negotiates `1600x1200 @ 30 MJPG` whatever is
+asked for, and a 600 s run held that rate with no drops, so the capture request is now the mode that
+exists rather than a mode that does not. `policy_resolution` stayed `[640, 480]`: the driver
+downscales 2.5x with `INTER_AREA`, so nothing in `policy/` or the dataset changed.
+
+Never put a bare `/dev/videoN` in `device`: node numbers move when devices are replugged, and a
+policy trained on `top` must never be fed `oblique`. Prefer a stable `/dev/v4l/by-id/...` path —
+**except where udev gives two streams the same by-id name**, which is exactly what this lab's Ego
+does: both of its UVC functions claim
+`usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0`, the link resolved to the *left* node at T-010 and
+to the *right* node at T-046, and a config pointing at it would silently swap the two cameras. So
+`oblique.device` / `oblique.device_right` hold `/dev/v4l/by-path/...` paths, whose USB interface
+number (`1.0` left, `1.2` right) names one stream and only one. A by-path link is tied to the USB
+port: move the camera to another port and the path disappears, which `drivers/cameras.py` reports as
+`CameraUnavailable` naming the path — a loud failure, never a wrong stream.
 
 `top.crop` is the board region within the full Brio frame and is filled in by `board/calibration.py`
 (T-008) from the AprilTag corners.

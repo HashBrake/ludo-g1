@@ -469,7 +469,22 @@ It also removes the ankle trackers, the body-tracking dependency and the RL chec
   missing head camera, and an oblique RGB view already provides parallax; (b) build `pyorbbecsdk` from
   Orbbec's GitHub source against the matching OrbbecSDK release (C++ toolchain + pybind11, ~30 min, pins us to
   a specific SDK version); (c) compute stereo depth from the two Ego streams with OpenCV, no new dependency.
-- Rate/units/resolution: **UNMEASURED** (no stream was opened; only QUERYCAP was issued).
+- **Nodes** (this unit, serial `AZER76400HV`): left `/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0`
+  → `/dev/video4` `ORBBEC: Ego left`; right `...-usb-0:1:1.2-video-index0` → `/dev/video6` `ORBBEC: Ego right`.
+  These are **by-path, not by-id, on purpose**: udev gives *both* UVC functions the one name
+  `/dev/v4l/by-id/usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0`, and that single link pointed at the left
+  node during T-010 (2026-09-11) and at the right node during T-046 (2026-09-14), so a config on the by-id
+  path would silently swap the two cameras (T-046, D-024, `config/cameras.yaml`).
+- Rate/units/resolution: **MEASURED (T-046)**. The device negotiates **1600x1200 @ 30 fps MJPG whatever is
+  requested** (320x240, 640x480, 1280x720 and 1600x1200 all come back 1600x1200, T-010); frames are BGR uint8,
+  downscaled 2.5x to the 640x480 the policy sees. Two 600 s read-only runs
+  (`stream_stats.py --backend real --stream oblique --seconds 600 --json`) gave **30.00 Hz achieved** (0.0% off
+  nominal) over 17948 and 17955 frames, with **222 and 207 dropped frames (~1.2%)**, interval p50 33.36 ms /
+  p99 51.2 ms / max 67.8 ms, and **jitter p50 4.9 ms, p99 18.3 ms, max 34.4 ms**. The drops and the jitter are
+  **worse than T-010 measured on 2026-09-11** (0 drops, p99 1.4-2.9 ms on 10 s) and reproduce today at 10 s and
+  30 s on an idle host; cause unknown, H-005. The UVC interface exposes **no exposure or frame-rate control**
+  (`v4l2-ctl --list-ctrls`: brightness, contrast, saturation, hue, auto white balance only), so the exposure
+  time cannot be pinned to rule auto-exposure in or out from here. Full numbers: `agents/BUILD_LOG.md` T-046.
 
 ---
 

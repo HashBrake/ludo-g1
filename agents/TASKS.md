@@ -1935,7 +1935,7 @@ result: (opus, 2026-09-12T11:20+07:00, commit c8d4674)
   - config/ untouched (git diff --stat lists no file under config/); no session file created, read or restored.
 
 ## T-046  Orbbec Ego 10-minute read-only stream statistics; oblique capture placeholders measured
-status: in_progress
+status: review
 priority: P1
 phase: 1
 owner: opus
@@ -1965,3 +1965,38 @@ acceptance:
 notes: D-024. Pure sensor read: no session, no motion path, R1 not engaged. Run the 600 s stream with nothing else holding
   /dev/video4 (do not run the pytest readonly camera tests at the same time). Do not touch policy/, runtime/, `top`, `palm`,
   config/safety.yaml, third_party/. If the by-id link for either node is absent, leave that key UNMEASURED and say why.
+result: (opus, 2026-09-14T12:55+07:00, commit PENDING -- recorded by the follow-up commit)
+  - **600 s run 1** (the deliverable's command verbatim, node via usb_id discovery, `/dev/video4
+    'ORBBEC: Ego left'`, negotiated 1600x1200 @ 30 MJPG): 17948 frames in 598.23 s, **fps 30.000**,
+    **222 drops / 222 frames missed**, interval p50 33.3632 / p99 51.2306 / max 67.4397 ms,
+    **jitter p50 4.8938 / p99 18.3244 / max 34.1064 ms**. Full JSON in BUILD_LOG.md.
+  - **600 s run 2** (same command after the config edit, so through the new by-path selector; agent
+    idle throughout): 17955 frames in 598.47 s, **fps 30.000**, **207 drops / 207 missed**, interval
+    p50 33.3592 / p99 51.1936 / max 67.7593 ms, **jitter p50 4.9635 / p99 18.3303 ms**. Both logged.
+  - Acceptance 1: **rate PASS** (30.000 Hz, 0.0% off 30, bound 1%); **drops FAIL** (222 and 207,
+    bound 0); **jitter p99 FAIL** (18.32 / 18.33 ms, bound < 10 ms). Not re-run for a clean number,
+    per the task. Cause not agent load and not run length: 30 s -> 19 drops, and T-010's exact 10 s
+    command -> 4 drops / p99 18.00 ms today against 0 drops / p99 1.44-2.94 ms on 2026-09-11. The Ego
+    is on a USB 2.0 (480 Mbps) link and exposes no exposure control over UVC. Raised as **H-005**.
+  - Frame is imagery, not a black stream: (480, 640, 3) uint8, **mean 102.7, std 42.0** (T-010: 81.4 / 46.7).
+  - Acceptance 2: `grep -c UNMEASURED config/cameras.yaml` **21 -> 16**; `git diff config/cameras.yaml`
+    touches the `oblique` block **and the file's own header comment** (it said "Nothing here was
+    measured ... no stream was ever opened", which this task made false -- flagged as a deviation in
+    BUILD_LOG.md, one line to revert). `top` and `palm` rows byte-identical.
+  - **Deviation, deliberate: `device`/`device_right` are `/dev/v4l/by-path/...`, not by-id.** This unit
+    gives both of its UVC functions the single by-id name
+    `usb-ORBBEC_EGO_ORBBEC_AZER76400HV-video-index0`; it resolved to `/dev/video4 'Ego left'` at T-010
+    and resolves to `/dev/video6 'Ego right'` now, so the asked-for value would have pointed `oblique`
+    at the right camera silently. by-path carries the interface number (1.0 left, 1.2 right). Evidence
+    (`udevadm`, `ls -l`) and the reversal instructions are in BUILD_LOG.md.
+  - Acceptance 3: `.venv/bin/ruff check .` -> All checks passed! `.venv/bin/python -m pytest -q` with
+    the Ego attached -> recorded in BUILD_LOG.md's commit section (pre-commit gate, no --no-verify).
+  - Acceptance 4: `session_preflight.py --no-devices` before vs after differs in **one line only**, the
+    `git` row (tree clean -> uncommitted paths, during the run); no oblique row exists in the pre-flight
+    and none was added. Both outputs in BUILD_LOG.md's safety section.
+  - Tests: `tests/test_config.py::test_camera_devices_are_all_unresolved` asserted `oblique.device` is a
+    placeholder and could not survive; it is now `..._except_the_one_that_was_streamed` plus a new
+    `test_the_oblique_capture_mode_is_the_one_the_ego_negotiates`. The (480, 640, 3) deliverable is the
+    new hardware-free `tests/test_cameras.py::test_the_measured_oblique_capture_mode_downscales_to_the_policy_frame`;
+    the existing `test_real_frames_arrive_at_the_policy_resolution[oblique]` asserts the same shape but
+    is `readonly` and skips without the camera, so it could not stand in for it.
