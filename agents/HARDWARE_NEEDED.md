@@ -97,7 +97,7 @@ acceptance line asks for: the achieved glove frame rate they report is the A4 ve
 pose rate is the first real number for `config/robot.yaml` `teleop.pico.input_hz` (120 is the lab's configured value, not a
 measurement). Neither number exists yet.
 
-## H-005  The Orbbec Ego drops ~1.2% of frames today; re-seat it and re-run  (opus, 2026-09-14T12:45+07:00)  OPEN
+## H-005  The Orbbec Ego drops ~1.2% of frames today; re-seat it and re-run  (opus, 2026-09-14T12:45+07:00)  RESOLVED (fable, 2026-09-14T14:20+07:00: no frame was ever lost; kernel-stamp jitter p99 0.81 ms over 600 s under T-047; no human action needed, USB-3 re-seat optional)
 Needed by T-016 (recorder skew budget) and by any recording that uses `oblique`. Read-only, no session needed.
 T-046 streamed the Ego for 600 s twice: 30.00 Hz achieved, but 222 and 207 dropped frames (~1.2%) and jitter
 p99 18.3 ms. On 2026-09-11 (T-010) the same device on the same command gave 0 drops and p99 1.4-2.9 ms; the bad

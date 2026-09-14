@@ -231,3 +231,19 @@ check. H-005 stays open but is reframed: its post-check runs after T-047 and its
 the USB-3 re-seat is still worth one try and costs nothing. T-016's 10 ms p99 skew budget is judged on kernel stamps.
 Alternatives rejected: raising the drop threshold (hides the jitter the recorder cares about); a realtime priority for the
 grab thread (root, and does not fix a late USB completion); switching the governor from the agents (system state, human).
+
+## D-026  T-047 closes the Ego timing question; loop stops again under R4(b)  (2026-09-14T14:20+07:00)
+With kernel buffer stamps the oblique stream over 600 s shows frames_lost 0 and jitter p99 0.81 ms (T-047), well inside
+T-016's 10 ms p99 skew budget, on the same USB 2.0 port and powersave governor that produced the 18 ms arrival jitter of
+T-046. H-005 is RESOLVED without a human action; a USB-3 re-seat is optional and no longer gates anything. The palm camera
+takes the same V4L2Camera path and inherits the kernel stamp when it arrives (H-003). Rule going forward: every camera
+statistic quoted for a skew or latency decision is on the kernel stamp; arrival jitter is reported beside it as a host-load
+indicator only.
+Audit at this commit (section 8, delta since D-023): hardware/session.enable absent and ignored; config/safety.yaml
+untouched since T-043 (git log confirms); no import of tools/ from runtime/, drivers/, policy/, teleop/, board/, engine/,
+eval/; the one motion test still skipped without a session; config/cameras.yaml changed twice (T-046 measured values, one
+descriptive line here), never a safety value; no dataset or checkpoint exists, so the Data/Training/Evaluation rows are
+unchanged. Suite: 902 passed 16 skipped through the hook.
+Stop: every task left in todo (T-021..T-024) needs a human hardware action (H-002..H-004, Q-004, a session). The only
+device attached is the Ego and its Phase 1 read-only line is done twice over. No non-hardware task would change what the
+first hardware day needs. R4(b) applies; the loop resumes on a HUMAN: line or a completed H-item.

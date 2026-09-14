@@ -339,3 +339,17 @@ contradicts the T-046 numbers; corrected to name the late frames and H-005.
 Finding on the number itself, not a defect of the task: "222 frames missed" is inferred from arrival timestamps, and the
 achieved rate of exactly 30.000 Hz over 17948 frames says nothing was lost. My 30 s check: 901 frames in 30.00 s (nominal
 900), 12 gaps > 50 ms matched by 11 intervals < 16.7 ms, i.e. late delivery then catch-up. D-025 and T-047 follow.
+
+## T-047  ACCEPTED  (fable, 2026-09-14T14:20+07:00, commits 842897c, 987f2fd)
+Read the whole range diff (9 files). Re-ran with the Ego attached: ruff clean; tests/test_cameras.py + tests/test_clock.py
+47 passed 4 skipped (top absent); mock CLI --json carries stamp_source {driver: n}, stats_arrival null, arrival_minus_kernel
+null, frames_lost 0; a 30 s real run of the new tool: 900 frames, stamps kernel 900, lost 0, drops 0, kernel jitter p99
+0.73 ms against arrival jitter p99 3.45 ms, arrival - kernel p50 9.49 ms. Matches Opus's 600 s numbers (17900 frames,
+lost 0, kernel jitter p99 0.81 ms). The deviation (kernel stamp accepted only <= 100 ms behind arrival and <= 1 ms ahead,
+not +-100 ms) is right: a capture time after read() returned is not a capture time, and the one-sided window keeps the
+emitted train monotonic across a fallback. Observation, not a defect: after one fallback the next kernel stamp must exceed
+the previous arrival stamp, so under a delivery lag longer than one period the fallback persists until the lag shrinks;
+self-recovering, counted in arrival_stamps, and the 600 s run had zero fallbacks. The 9.5 ms p50 lag versus D-025's 2.4 ms
+is explained (stamp taken after read() = grab + MJPG decode, not after grab()); accepted as stated, probable not measured.
+Fable one-line fix in this commit: config/cameras.yaml defaults.timestamp updated as Opus proposed (descriptive key, no
+reader). H-005 closed on the measurement.

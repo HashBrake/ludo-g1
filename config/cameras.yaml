@@ -13,7 +13,7 @@
 defaults:
   driver: opencv_v4l2       # cv2.VideoCapture(..., cv2.CAP_V4L2), docs/sdks.md 8.1
   fourcc: MJPG              # raw YUYV will not hold 30 fps at these resolutions over USB
-  timestamp: runtime.clock.now_ns at the instant read() returns
+  timestamp: V4L2 kernel buffer timestamp (CAP_PROP_POS_MSEC) converted by runtime.clock.from_monotonic_ns; runtime.clock.now_ns on arrival as the fallback (T-047)
 
 # --- top: Logitech Brio 4K, fixed above the table (board state, goal grounding, AprilTags) --------
 top:
