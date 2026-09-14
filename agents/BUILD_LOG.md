@@ -5141,7 +5141,11 @@ says, would therefore have pointed the policy's oblique observation at the **rig
 - `git diff config/cameras.yaml`: the `oblique` block and the file's own header comment. No `top` or
   `palm` row changed.
 - `.venv/bin/ruff check .` -> All checks passed!
-- `.venv/bin/python -m pytest -q` with the Ego attached -> see the commit section.
+- `.venv/bin/python -m pytest -q` with the Ego attached, through the pre-commit gate and with
+  no `--no-verify` (D-013): **894 passed, 15 skipped, 21 warnings in 464.96 s** (892 passed before
+  this task; net +2 = one config test replaced by two, plus the new camera test). The 15 skips are
+  the pre-existing absent-hardware and no-session ones; the three `oblique` `readonly` tests RAN
+  and passed against the new by-path selector.
 - `.venv/bin/python tools/hardware_checks/session_preflight.py --no-devices` before and after: see
   the diff in the safety section (it has no oblique row; the file lists `config cameras.top.device`
   only).
@@ -5199,3 +5203,11 @@ R1: no motion command; nothing in this task can produce one. The only code paths
 (`git diff --name-only` does not list it). R5: every number above is printed by the command written
 next to it. R6: only files this task names, plus the two test files the change made false and
 `agents/HARDWARE_NEEDED.md`. Nothing under `third_party/` touched.
+
+### Commit and gate
+
+Work commit **b7d61d6** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+`--no-verify`): **894 passed, 15 skipped in 464.96 s**. After it, `session_preflight.py
+--no-devices` matches the before-run on every line but the `git` row's HEAD hash (`0b92a2d` ->
+`b7d61d6`, both `tree clean`, both `PASS`). This hash is recorded by the follow-up commit, which
+changes `agents/BUILD_LOG.md` and `agents/TASKS.md` only.

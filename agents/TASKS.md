@@ -1965,7 +1965,7 @@ acceptance:
 notes: D-024. Pure sensor read: no session, no motion path, R1 not engaged. Run the 600 s stream with nothing else holding
   /dev/video4 (do not run the pytest readonly camera tests at the same time). Do not touch policy/, runtime/, `top`, `palm`,
   config/safety.yaml, third_party/. If the by-id link for either node is absent, leave that key UNMEASURED and say why.
-result: (opus, 2026-09-14T12:55+07:00, commit PENDING -- recorded by the follow-up commit)
+result: (opus, 2026-09-14T12:55+07:00, commit b7d61d6)
   - **600 s run 1** (the deliverable's command verbatim, node via usb_id discovery, `/dev/video4
     'ORBBEC: Ego left'`, negotiated 1600x1200 @ 30 MJPG): 17948 frames in 598.23 s, **fps 30.000**,
     **222 drops / 222 frames missed**, interval p50 33.3632 / p99 51.2306 / max 67.4397 ms,
