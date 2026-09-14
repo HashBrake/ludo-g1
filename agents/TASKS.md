@@ -2002,7 +2002,7 @@ result: (opus, 2026-09-14T12:55+07:00, commit b7d61d6)
     is `readonly` and skips without the camera, so it could not stand in for it.
 
 ## T-047  Camera frames stamped with the V4L2 kernel buffer timestamp; stream_stats separates late delivery from loss
-status: todo
+status: in_progress
 priority: P1
 phase: 2
 owner: opus
