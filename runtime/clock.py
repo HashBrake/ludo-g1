@@ -26,9 +26,11 @@ __all__ = [
     "Stamped",
     "StreamBuffer",
     "align",
+    "from_monotonic_ns",
     "now_ns",
     "skew_stats",
     "shift",
+    "to_monotonic_ns",
 ]
 
 T = TypeVar("T")
@@ -45,6 +47,22 @@ def now_ns() -> int:
     in the process. It is not comparable across processes or machines.
     """
     return time.monotonic_ns() - _ORIGIN_NS
+
+
+def from_monotonic_ns(t_ns: int) -> int:
+    """Convert a raw ``CLOCK_MONOTONIC`` nanosecond reading into this clock's units.
+
+    The kernel stamps things we do not stamp ourselves -- a V4L2 capture buffer is the case that
+    matters here (``drivers/cameras.py``) -- on ``CLOCK_MONOTONIC``, the very clock
+    :func:`time.monotonic_ns` reads on Linux. The two differ only by the process-wide origin this
+    module subtracts, so the conversion is exact and involves no estimation or drift model.
+    """
+    return int(t_ns) - _ORIGIN_NS
+
+
+def to_monotonic_ns(ts_ns: int) -> int:
+    """The inverse of :func:`from_monotonic_ns`: this clock's units back to raw ``CLOCK_MONOTONIC``."""
+    return int(ts_ns) + _ORIGIN_NS
 
 
 @dataclass(frozen=True, slots=True)

@@ -144,6 +144,31 @@ with V4L2Camera("oblique") as cam:
 Reading a camera is not a motion command, so R1 does not apply and no session is needed. There is
 no write call on this protocol at all — a test asserts the class has none.
 
+**Timestamps: the kernel buffer stamp, not the arrival stamp** (T-047, D-025). V4L2 stamps every
+capture buffer on `CLOCK_MONOTONIC` when the frame completes; OpenCV's V4L2 backend reports it as
+`CAP_PROP_POS_MSEC` (milliseconds), read straight after `read()` returns, and
+`runtime.clock.from_monotonic_ns` converts it exactly into our clock — same clock, one origin apart
+(docs/clock.md). So `grab()` returns *when the frame was captured*. The arrival stamp,
+`runtime.clock.now_ns()` at the return of `read()`, says when this process got round to collecting
+the frame; on this laptop it is 2–10 ms later when the host is quiet and tens of milliseconds later
+when it is busy, which is the whole reason for the change: alignment and the recorder's skew
+statistic must not move because a test suite was running.
+
+```python
+cam.grab()                  # Stamped(kernel ts_ns, frame)
+cam.last_stamp              # FrameStamp(ts_ns, source="kernel"|"arrival", arrival_ns, kernel_ns)
+cam.kernel_stamps, cam.arrival_stamps    # counters over the life of the camera
+```
+
+The arrival stamp is the **fallback**, used (and counted in `arrival_stamps`) when the device
+reports no buffer timestamp (`CAP_PROP_POS_MSEC` is 0, as a backend without the property or a UVC
+driver on its first frames does), when the value would not be monotonic against the stamp already
+emitted, or when it is further than `MAX_KERNEL_LAG_NS` (100 ms) behind arrival or ahead of it at
+all — a stamp that claims the frame was captured after `read()` returned is not a capture time.
+`last_stamp` keeps the rejected value so a read-only check can show why it fell back. Nothing
+downstream changes: the recorder pushes `stamped.ts_ns` whatever its source, and `MockCamera` is
+unchanged (one stamp, its grid time).
+
 **Device discovery**, in order:
 
 1. an explicit `device=` (a `/dev/...` path or a numeric index);
@@ -169,8 +194,17 @@ config key that would supply one.
 (D-009, docs/sdks.md 8.2): the Ego is a UVC stereo pair here and `oblique` is its left RGB stream.
 
 **The read-only stream check.** `tools/hardware_checks/stream_stats.py` streams one device for N
-seconds and reports the achieved rate, drops (gaps longer than 1.5 nominal periods) and inter-sample
-jitter p50/p99 — the Phase 1 "stream every device and report drop rates and jitter" check. `--stream`
+seconds and reports the achieved rate, frames lost, drops (gaps longer than 1.5 nominal periods) and
+inter-sample jitter p50/p99 — the Phase 1 "stream every device and report drop rates and jitter"
+check. **Lost and dropped are different things** (T-047, D-025): `frames_lost` is
+`round(span * nominal) + 1 - received`, what the stream owed over the window and never produced,
+while `drops` counts gaps, i.e. late delivery that a burst afterwards can make good. The Ego on this
+host shows gaps and loses nothing. (`frames_lost` goes one negative when the achieved rate is a hair
+above nominal and the span rounds down; that is arithmetic, not a surplus frame.) For a camera the
+report carries both stamps: `stats` is the train the frames carry (the kernel stamp),
+`stats_arrival` the arrival train, `arrival_minus_kernel_ms` the distance between them (p50/p99/max/
+min, over every frame for which a kernel stamp was read, rejected ones included) and `stamp_source`
+how many frames used each stamp. `--stream`
 picks the device: a camera name, `arm` for the G1 state stream, or `hand` for the DexH15's joint
 angles (`--camera` still works for a camera):
 

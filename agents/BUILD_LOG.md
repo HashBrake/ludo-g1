@@ -5211,3 +5211,149 @@ Work commit **b7d61d6** on `main`, through the full pre-commit gate (ruff + the 
 --no-devices` matches the before-run on every line but the `git` row's HEAD hash (`0b92a2d` ->
 `b7d61d6`, both `tree clean`, both `PASS`). This hash is recorded by the follow-up commit, which
 changes `agents/BUILD_LOG.md` and `agents/TASKS.md` only.
+
+---
+
+## T-047  Camera frames stamped with the V4L2 kernel buffer timestamp; loss separated from late delivery  (opus, 2026-09-14T13:55+07:00)
+
+D-025's decision, implemented: `drivers/cameras.py` stamps a frame with the time the **kernel**
+captured it, not the time this process collected it, and `tools/hardware_checks/stream_stats.py`
+reports both stamps and tells loss apart from late delivery. Read-only throughout: a camera is a
+sensor, `V4L2Camera` still has no write call and the test asserting that still passes, so R1 is not
+engaged. `hardware/session.enable` was not created, read, edited or restored and does not exist.
+
+### What changed
+
+* `runtime/clock.py`: `from_monotonic_ns` / `to_monotonic_ns`. V4L2 stamps its capture buffers on
+  `CLOCK_MONOTONIC` and `time.monotonic_ns()` reads the same clock on Linux, so the conversion is one
+  integer subtraction of the module's origin -- exact, no estimation, nothing to calibrate. Nothing
+  else in `runtime/` changed; `runtime/safety.py` and `config/` were not touched.
+* `drivers/cameras.py`: after each successful `read()`, `cap.get(cv2.CAP_PROP_POS_MSEC)` is converted
+  and used as the frame's stamp. Arrival (`now_ns()` at the return of `read()`) is the fallback,
+  used when the property is 0 or not finite, when the value would not be monotonic against the stamp
+  already emitted, or when it is further than `MAX_KERNEL_LAG_NS` (100 ms) behind arrival or ahead of
+  it at all. New: `FrameStamp(ts_ns, source, arrival_ns, kernel_ns)` on `V4L2Camera.last_stamp`, and
+  the counters `kernel_stamps` / `arrival_stamps`. `Stamped` is unchanged, so no consumer changes.
+* `tools/hardware_checks/stream_stats.py`: `frames_lost = round(span * nominal) + 1 - received` in
+  every `stats()` dict beside the existing `drops` / `frames_missed`; `Sample`, `to_sample()` and
+  `stream_samples()` keep both stamps per sample (`stream()` is now a one-line wrapper, same
+  signature and same return); `stamp_report()` adds `stamp_source`, `stats_arrival` and
+  `arrival_minus_kernel_ms` (p50/p99/max/min/n) to the `--json` schema, and the text output prints
+  them. `arrival_minus_kernel_ms` includes frames whose kernel stamp was *rejected*: that distance is
+  the reason for the rejection, so hiding it would hide the fault.
+* `docs/clock.md` (new section "Kernel timestamps are on the same clock") and `docs/drivers.md`
+  (stamping, the fallback rules, lost vs dropped).
+
+### The rules, and the two deviations from the task text, both narrowing
+
+The task said fall back when the value is "0, non-monotonic, or more than 100 ms from arrival".
+Implemented as **behind arrival by at most 100 ms and ahead of it by at most 1 ms**: a frame is
+captured before `read()` returns it, so a stamp claiming otherwise is not a capture time, and the
+one-sided window is also what keeps the emitted stamps non-decreasing across a fallback (a later
+arrival can never precede an earlier kernel stamp), which `runtime.clock.StreamBuffer` requires. The
+1 ms of slack absorbs float-millisecond rounding, which is worth under a microsecond. Both changes
+only ever make the driver fall back *more* readily, never less. Monotonicity is checked against the
+stamp actually emitted (`last_stamp.ts_ns`), not against the last kernel value, for the same reason.
+
+### Measurements
+
+Full suite, this working tree, before the commit:
+
+```
+.venv/bin/python -m pytest -q          ->  901 passed, 17 skipped, 21 warnings in 464.22 s
+.venv/bin/ruff check .                 ->  All checks passed!
+.venv/bin/python -m pytest -q tests/test_cameras.py  ->  38 passed, 4 skipped in 31.61 s
+```
+
+The four skips in `tests/test_cameras.py` are the `top` (Brio) readonly tests; every `oblique`
+readonly test ran against the device, including the new one.
+
+**The 600 s read-only run on the Ego** (host quiet: no pytest running, 1-min load 0.49, governor
+still `powersave`, same by-path node as T-046):
+
+```
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json
+{
+  "backend": "real", "camera": "oblique", "stream": "oblique", "warmup": 0,
+  "device": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0 (via config/cameras.yaml)",
+  "policy_resolution": [640, 480],
+  "probe": {"card": "", "device": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0",
+            "fourcc": "MJPG", "fps": 30.0, "height": 1200, "width": 1600,
+            "policy_resolution": [640, 480]},
+  "stamp_source": {"kernel": 17900},
+  "stats":         {"frames": 17900, "span_s": 596.625,  "fps": 30.0, "frames_lost": 0, "drops": 0,
+                    "frames_missed": 0, "interval_ms_p50": 33.336, "interval_ms_p99": 34.005,
+                    "interval_ms_max": 36.996, "jitter_ms_p50": 0.1373, "jitter_ms_p99": 0.8114,
+                    "jitter_ms_max": 9.3713},
+  "stats_arrival": {"frames": 17900, "span_s": 596.6235, "fps": 30.0, "frames_lost": 0, "drops": 0,
+                    "frames_missed": 0, "interval_ms_p50": 33.3363, "interval_ms_p99": 35.841,
+                    "interval_ms_max": 49.1293, "jitter_ms_p50": 0.2339, "jitter_ms_p99": 3.2895,
+                    "jitter_ms_max": 16.1731},
+  "arrival_minus_kernel_ms": {"n": 17900, "p50": 9.5089, "p99": 12.0682, "max": 26.2418, "min": 5.4121}
+}
+```
+
+Read out against the acceptance criteria:
+
+| figure | value |
+|---|---|
+| frames_lost | **0** (kernel and arrival trains alike) |
+| drops | **0** on both trains (this run; the host was quiet) |
+| kernel-stamp jitter p99 | **0.81 ms** (max 9.37 ms) -- the criterion was < 2 ms, and < 10 ms for H-005 |
+| arrival jitter p99 | **3.29 ms** (max 16.17 ms) |
+| arrival_minus_kernel p99 | **12.07 ms** (p50 9.51, max 26.24, min 5.41) |
+| fallbacks | **0 of 17900**; every frame carried the kernel stamp |
+
+Three things worth stating plainly rather than rounding off:
+
+1. **Nothing was ever lost.** 17900 frames over a 596.625 s span is the nominal count, as it was in
+   T-046's two runs. D-025's reading of T-046 is confirmed on a third run: what T-046 called 222
+   "missed" frames was delivery jitter, and this tool now says so in its own column.
+2. **This run shows no drops on either train**, so it does not by itself demonstrate the separation
+   on real data -- a quiet host has little late delivery to separate out. What it does show is the
+   arrival train carrying 4x the jitter of the kernel train (p99 3.29 vs 0.81 ms) and a 49 ms
+   arrival interval against a 37 ms kernel interval at the maximum, i.e. the same phenomenon an order
+   of magnitude smaller. The separation itself is demonstrated deterministically in
+   `test_the_kernel_stamp_is_clean_while_arrival_shows_the_drop`, on a scripted capture where the
+   right answer is known: 1 drop and 2 late frames on arrival, 0 drops and jitter p99 < 1 ms on the
+   kernel stamp, `frames_lost` 0 on both.
+3. **The delivery lag on this host is 9.5 ms p50, not the 2.4 ms Fable measured in D-025.** The
+   kernel value is the same; what differs is where the arrival stamp is taken. This driver stamps
+   arrival after `cap.read()`, which grabs *and* retrieves, i.e. decodes the 1600x1200 MJPG frame, so
+   the decode sits inside `arrival - kernel`; D-025's probe stamped after `cap.grab()`, before any
+   decode. That is the probable whole of the 7 ms, though it was not measured separately and this
+   entry does not claim it as measured. Nothing about the frame's own stamp changes either way, and
+   arrival is only a fallback now.
+
+### Acceptance, item by item
+
+* mock tests green, full suite green, ruff clean -- yes, commands and counts above.
+* 600 s readonly run with all five figures in BUILD_LOG -- above. Expected frames_lost 0: **met**.
+  Expected kernel-stamp jitter p99 < 2 ms: **met** (0.81 ms). It is not >= 10 ms, so H-005 step 1
+  (the USB-3 port) is not forced by this measurement.
+* `MockCamera` unchanged in interface -- untouched; it has no `last_stamp` and `stream_stats` reports
+  it as a single train (`stamp_source: {"driver": n}`), which a test asserts.
+* every existing camera test passes without edits -- no existing test in `tests/test_cameras.py` was
+  modified; the file only gained tests. Across the repo the only non-test edits are the four files
+  listed above.
+
+### The recorder: no logic change, verified rather than assumed
+
+`teleop/recorder.py` never reads a clock of its own for a camera: `poll()` does
+`self._push(name, stamped.ts_ns, stamped.payload)` (line 215), and the skew statistic is computed
+from exactly those pushed timestamps (`_seen`, then `clock.skew_stats` at line 336). So a real
+camera now contributes its kernel stamp to alignment and to the card with no recorder change at all,
+and a mock contributes its grid stamp as before. The existing mock end-to-end test is unchanged and
+still passes inside the full-suite run above: `test_skew_p99_under_ten_milliseconds` (60 s episode,
+p99 < 10 ms), `test_no_dropped_frames_on_any_stream`, `test_dataset_card_reports_the_measurements`.
+T-016's 10 ms p99 budget will therefore be judged on capture time once a real camera is recorded,
+which is what D-025 asked for.
+
+### One thing for Fable, not done because the task forbade it
+
+`config/cameras.yaml` `defaults.timestamp` still reads `runtime.clock.now_ns at the instant read()
+returns`, which is now false for `top` and `oblique`. No code reads that key (it is descriptive), and
+the task said not to touch `config/*.yaml` except for an optional `stamp_source` switch, which was
+not needed -- so it was left alone rather than edited silently. Proposed one-line replacement:
+`timestamp: V4L2 kernel buffer timestamp (CAP_PROP_POS_MSEC), runtime.clock.now_ns on arrival as the
+fallback -- T-047`. No disagreement with the task otherwise.

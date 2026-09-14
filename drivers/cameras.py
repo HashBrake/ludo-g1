@@ -9,10 +9,21 @@ stream's ``policy_resolution``. The capture resolution never leaves this module.
 **Read-only.** Opening a camera is not a motion command, so R1 does not apply and no hardware
 session is needed (CLAUDE.md 4.6). There is no write call on this protocol: a camera is a sensor.
 
-**Timestamps.** ``grab()`` stamps with :func:`runtime.clock.now_ns` at the instant ``cap.read()``
-returns, i.e. as close to the arrival of the frame as this process can observe. The residual --
-exposure, USB transfer, and the driver's own buffering -- is the camera path latency measured in
-Phase 1 and compensated through ``runtime.clock.shift``; it is not corrected here.
+**Timestamps.** ``grab()`` stamps with the **kernel buffer timestamp** of the frame: V4L2 stamps
+each capture buffer on ``CLOCK_MONOTONIC`` when the frame completes, the V4L2 backend of OpenCV
+reports it as ``CAP_PROP_POS_MSEC`` in milliseconds, and :func:`runtime.clock.from_monotonic_ns`
+converts it into this project's clock exactly (same clock, one constant origin apart -- docs/clock.md).
+That stamp says when the frame was *captured*; :func:`runtime.clock.now_ns` at the instant
+``cap.read()`` returns -- the *arrival* stamp -- says when user space got round to collecting it, and
+the two differ by a few milliseconds on a quiet host and by tens of milliseconds when it is busy
+(D-025, T-047). The arrival stamp is kept as the fallback, used when the device reports no kernel
+stamp (0), when the value would not be monotonic, and when it is further than
+:data:`MAX_KERNEL_LAG_NS` behind arrival or ahead of it at all; every
+frame records which it used in :attr:`V4L2Camera.last_stamp` and the two cases are counted in
+:attr:`V4L2Camera.kernel_stamps` / :attr:`V4L2Camera.arrival_stamps`.
+
+What neither stamp removes -- exposure and the sensor's own pipeline -- is the camera path latency
+measured in Phase 1 and compensated through ``runtime.clock.shift``; it is not corrected here.
 
 **Depth is not available** (D-009): the Orbbec Ego enumerates as a plain UVC stereo pair and
 ``pyorbbecsdk`` is not installed, so ``oblique`` is the left RGB stream and asking this driver for
@@ -37,6 +48,7 @@ from __future__ import annotations
 
 import ctypes
 import fcntl
+import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,7 +61,9 @@ from runtime import clock, config
 from runtime.clock import Stamped
 
 __all__ = [
+    "MAX_KERNEL_LAG_NS",
     "CameraUnavailable",
+    "FrameStamp",
     "Probe",
     "Selection",
     "V4L2Camera",
@@ -65,6 +79,17 @@ _V4L2_CAP_VIDEO_CAPTURE = 0x00000001
 _V4L2_CAP_DEVICE_CAPS = 0x80000000
 
 _BY_ID_DIR = Path("/dev/v4l/by-id")
+
+#: How far the kernel buffer timestamp may sit from the arrival stamp before it is disbelieved.
+#: The two are the same clock, so the only honest distance between them is the delivery delay:
+#: 2-5 ms normally, tens of milliseconds under host load (D-025). Anything past 100 ms means the
+#: driver is reporting something else entirely (a stream position, a wall clock, an epoch of its
+#: own), and the arrival stamp is then the only stamp worth having.
+MAX_KERNEL_LAG_NS = 100_000_000
+
+#: How far *ahead* of arrival a kernel stamp may sit and still be believed: float milliseconds
+#: rounded to nanoseconds cannot produce more than a microsecond of this, so 1 ms is generous.
+_FUTURE_SLACK_NS = 1_000_000
 
 
 class CameraUnavailable(RuntimeError):
@@ -112,6 +137,27 @@ class Selection:
     def describe(self) -> str:
         card = f" {self.node.card!r}" if self.node is not None and self.node.card else ""
         return f"{self.device}{card} (via {self.source})"
+
+
+@dataclass(frozen=True, slots=True)
+class FrameStamp:
+    """Both timestamps of one grabbed frame, and which of them the frame carries.
+
+    ``ts_ns`` is the stamp on the :class:`runtime.clock.Stamped` the driver returned, so it always
+    equals ``kernel_ns`` when ``source == "kernel"`` and ``arrival_ns`` when ``source ==
+    "arrival"``. ``kernel_ns`` is kept even when it was rejected (and is None when the device
+    reported none at all), so that a read-only check can show *why* a frame fell back.
+    """
+
+    ts_ns: int
+    source: str
+    arrival_ns: int
+    kernel_ns: int | None = None
+
+    @property
+    def arrival_minus_kernel_ns(self) -> int | None:
+        """How long after capture user space collected this frame, when both stamps exist."""
+        return None if self.kernel_ns is None else self.arrival_ns - self.kernel_ns
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +354,13 @@ class V4L2Camera:
             (int(crop["x"]), int(crop["y"]), int(crop["w"]), int(crop["h"])) if isinstance(crop, dict) else None
         )
 
+        #: Frames stamped with the kernel buffer timestamp, and frames that fell back to arrival.
+        self.kernel_stamps = 0
+        self.arrival_stamps = 0
+        #: Both stamps of the most recent frame, for a read-only check to report. None before the
+        #: first :meth:`grab`.
+        self.last_stamp: FrameStamp | None = None
+
         self.selection = resolve_device(name, device, config_root)
         self._cap = self._open(self.selection.device)
 
@@ -357,7 +410,10 @@ class V4L2Camera:
     # ----------------------------------------------------------------------------------------
 
     def grab(self) -> Stamped[np.ndarray]:
-        """The next frame, ``(h, w, 3)`` uint8 at ``policy_resolution``, stamped on arrival.
+        """The next frame, ``(h, w, 3)`` uint8 at ``policy_resolution``, stamped when it was captured.
+
+        The stamp is the kernel's V4L2 buffer timestamp (module docstring), falling back to the
+        arrival stamp when there is none to trust; :attr:`last_stamp` says which, and holds both.
 
         Blocks until the device delivers a frame. Raises :class:`CameraUnavailable` when it does
         not (unplugged mid-stream, or the node went silent).
@@ -365,10 +421,47 @@ class V4L2Camera:
         if self._cap is None:
             raise CameraUnavailable(f"{self.name}: camera is closed")
         ok, frame = self._cap.read()
-        ts_ns = int(self.now_ns())
+        arrival_ns = int(self.now_ns())
         if not ok or frame is None:
             raise CameraUnavailable(f"{self.name}: {self.selection.device} gave no frame")
-        return Stamped(ts_ns, self._to_policy(frame))
+        stamp = self._stamp(arrival_ns)
+        self.last_stamp = stamp
+        if stamp.source == "kernel":
+            self.kernel_stamps += 1
+        else:
+            self.arrival_stamps += 1
+        return Stamped(stamp.ts_ns, self._to_policy(frame))
+
+    def _stamp(self, arrival_ns: int) -> FrameStamp:
+        """Decide this frame's timestamp from the kernel buffer stamp and the arrival stamp.
+
+        Called straight after ``cap.read()`` returned, which is when ``CAP_PROP_POS_MSEC`` describes
+        the frame just read. The kernel stamp wins unless it is absent (0 or not finite -- a backend
+        that does not carry it, and a few UVC drivers that report 0 for the first frames), would go
+        backwards against the stamp already emitted (which would break the
+        :class:`runtime.clock.StreamBuffer` ordering invariant), or sits further than
+        :data:`MAX_KERNEL_LAG_NS` from arrival (which means it is not on our clock at all).
+        """
+        try:
+            pos_msec = float(self._cap.get(cv2.CAP_PROP_POS_MSEC))  # type: ignore[union-attr]
+        except (cv2.error, TypeError, ValueError):  # pragma: no cover - backend without the property
+            pos_msec = 0.0
+        if pos_msec <= 0.0 or not math.isfinite(pos_msec):
+            return FrameStamp(ts_ns=arrival_ns, source="arrival", arrival_ns=arrival_ns)
+
+        kernel_ns = clock.from_monotonic_ns(round(pos_msec * 1e6))
+        last = self.last_stamp
+        monotonic = last is None or kernel_ns > last.ts_ns
+        # Within MAX_KERNEL_LAG_NS of arrival, and not in the future by more than a rounding
+        # allowance: a frame is captured before ``read()`` returns it, so a stamp that claims
+        # otherwise is not the capture instant. Keeping the window one-sided is also what makes the
+        # emitted stamps non-decreasing across a fallback (a later arrival cannot precede an earlier
+        # kernel stamp), which the StreamBuffer invariant requires.
+        lag_ns = arrival_ns - kernel_ns
+        near = -_FUTURE_SLACK_NS <= lag_ns <= MAX_KERNEL_LAG_NS
+        if monotonic and near:
+            return FrameStamp(ts_ns=kernel_ns, source="kernel", arrival_ns=arrival_ns, kernel_ns=kernel_ns)
+        return FrameStamp(ts_ns=arrival_ns, source="arrival", arrival_ns=arrival_ns, kernel_ns=kernel_ns)
 
     def probe(self) -> Probe:
         """What the device actually negotiated: resolution, rate and pixel format.

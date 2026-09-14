@@ -24,6 +24,32 @@ t = now_ns()   # int nanoseconds since a process-wide origin captured at import
 
 Wall-clock time for humans (episode names, session metadata) comes from `datetime`, never from here.
 
+### Kernel timestamps are on the same clock (T-047)
+
+Some samples are stamped by the kernel before user space ever sees them. The case that matters is a
+V4L2 capture buffer: the kernel stamps it on `CLOCK_MONOTONIC` when the frame completes, and OpenCV's
+V4L2 backend reports that stamp as `CAP_PROP_POS_MSEC` in milliseconds. `time.monotonic_ns()` reads
+the *same* `CLOCK_MONOTONIC` on Linux, so the only difference between a kernel stamp and `now_ns()`
+is the origin this module subtracts at import:
+
+```python
+from runtime.clock import from_monotonic_ns, to_monotonic_ns
+ts = from_monotonic_ns(round(cap.get(cv2.CAP_PROP_POS_MSEC) * 1e6))   # kernel ns -> our ns
+raw = to_monotonic_ns(ts)                                             # and back
+```
+
+The conversion is exact — one integer subtraction, no estimation, no drift model, nothing to
+calibrate — and the result is directly comparable with every other stamp in the process. It is not
+an interpolation between clocks; if it ever had to be, that would be a different function with an
+error bar.
+
+What the two stamps *mean* is not the same, which is the whole point (D-025): the kernel stamp is
+when the frame was **captured**, `now_ns()` at the return of `read()` is when user space
+**collected** it. On this host they sit 2–10 ms apart when it is quiet and tens of milliseconds
+apart when it is busy. `drivers/cameras.py` stamps frames with the kernel timestamp and keeps the
+arrival stamp as a fallback, so alignment and the skew statistic below are measured on capture time
+and a busy host shows up as a late frame rather than as a mis-timed one.
+
 ## Stamped and StreamBuffer
 
 ```python

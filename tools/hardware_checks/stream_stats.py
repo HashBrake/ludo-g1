@@ -11,11 +11,20 @@ the device delivers them and reports what the stream actually did:
 * **achieved rate** -- ``(samples - 1) / span``, the rate the timestamps imply, not what the device
   claims through ``CAP_PROP_FPS`` or what ``config/robot.yaml`` ``control.state_hz`` says;
 * **drops** -- gaps longer than 1.5 nominal periods, and the number of frames those gaps swallowed;
+* **frames lost** -- ``round(span * nominal) + 1 - received``, how many samples the stream owed over
+  the window and never produced. This is the *loss* figure; ``drops`` counts late *delivery*, and the
+  two are different things: a stream can show dozens of gaps and lose nothing at all, which is
+  exactly what the Orbbec Ego does on this host (D-025);
 * **jitter** -- ``|interval - nominal period|`` at p50 and p99, in milliseconds.
 
-Timestamps come from the driver, i.e. from ``runtime.clock.now_ns`` at the instant the frame, the
-``LowState_`` message, the Modbus reply or the glove's collection frame arrived, which is the same
-clock the recorder aligns streams on (docs/clock.md). A stream with a queue is **drained** with
+Timestamps come from the driver, on the clock the recorder aligns streams on (docs/clock.md). For a
+V4L2 camera that is the **kernel buffer timestamp** -- when the frame was captured -- and the
+**arrival** stamp, taken when ``read()`` returned, is reported beside it: ``stats`` is the stamp the
+frame carries, ``stats_arrival`` the arrival train, ``arrival_minus_kernel_ms`` the distance between
+them, and ``stamp_source`` how many frames used each stamp (``drivers/cameras.py``). For every other
+stream, and for a driver with one stamp only (the mocks, the palm camera), there is a single train:
+``runtime.clock.now_ns`` at the instant the ``LowState_`` message, the Modbus reply or the glove's
+collection frame arrived. A stream with a queue is **drained** with
 ``poll()`` -- the arm and the real glove, both of which stamp in a callback -- so a slow poll loop
 cannot invent a drop that the stream did not have. Everything else is **polled** (``grab()`` on a
 camera, ``read_state()`` on the hand, ``read()`` on the glove and pose mocks and on the real
@@ -53,6 +62,7 @@ import dataclasses
 import json
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +124,10 @@ def stats(ts_ns: list[int], expected_hz: float) -> dict[str, Any]:
     missed = int(np.sum(np.maximum(np.round(deltas[gaps] / period_ns) - 1.0, 1.0))) if gaps.any() else 0
     jitter_ms = np.abs(deltas - period_ns) / 1e6
     interval_ms = deltas / 1e6
+    # Loss, as opposed to late delivery: how many samples the window should have carried
+    # (intervals + 1) against how many arrived. `drops`/`frames_missed` above count gaps, which a
+    # burst afterwards can make up for; this cannot be made up for.
+    frames_lost = int(round(span_s * expected_hz) + 1 - n)
     return {
         "frames": n,
         "span_s": round(span_s, 4),
@@ -121,6 +135,7 @@ def stats(ts_ns: list[int], expected_hz: float) -> dict[str, Any]:
         "fps": round((n - 1) / span_s, 3) if span_s > 0 else float("inf"),
         "drops": int(gaps.sum()),
         "frames_missed": missed,
+        "frames_lost": frames_lost,
         "interval_ms_p50": round(float(np.percentile(interval_ms, 50)), 4),
         "interval_ms_p99": round(float(np.percentile(interval_ms, 99)), 4),
         "interval_ms_max": round(float(interval_ms.max()), 4),
@@ -128,6 +143,54 @@ def stats(ts_ns: list[int], expected_hz: float) -> dict[str, Any]:
         "jitter_ms_p99": round(float(np.percentile(jitter_ms, 99)), 4),
         "jitter_ms_max": round(float(jitter_ms.max()), 4),
     }
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Sample:
+    """One distinct sample: the stamp it carries, and the second stamp when the driver has one.
+
+    ``kernel_ns`` is set only by a driver that exposes a ``last_stamp`` with a kernel buffer
+    timestamp (``drivers.cameras.V4L2Camera``); ``source`` is then ``kernel`` or ``arrival``
+    according to which stamp that driver put on the frame. Everything else reports ``driver``: one
+    stamp, taken when the sample arrived, and ``arrival_ns == ts_ns``.
+    """
+
+    ts_ns: int
+    arrival_ns: int
+    kernel_ns: int | None = None
+    source: str = "driver"
+
+
+def to_sample(stamped: Any, source: Any) -> Sample:
+    """Pair a driver's :class:`runtime.clock.Stamped` with its ``last_stamp``, when it has one."""
+    ts_ns = int(stamped.ts_ns)
+    stamp = getattr(source, "last_stamp", None)
+    if stamp is None or getattr(stamp, "ts_ns", None) != ts_ns:
+        return Sample(ts_ns=ts_ns, arrival_ns=ts_ns)
+    return Sample(
+        ts_ns=ts_ns,
+        arrival_ns=int(stamp.arrival_ns),
+        kernel_ns=None if stamp.kernel_ns is None else int(stamp.kernel_ns),
+        source=str(stamp.source),
+    )
+
+
+def stream_samples(source: Any, seconds: float, poll_s: float = 0.0, warmup: int = 0) -> list[Sample]:
+    """:func:`stream`, keeping both stamps of every sample instead of only the one it carries."""
+    take = getattr(source, "grab", None) or getattr(source, "read_state", None) or source.read
+    for _ in range(warmup):
+        take()
+    out: list[Sample] = []
+    deadline = clock.now_ns() + int(seconds * 1e9)
+    last: int | None = None
+    while clock.now_ns() < deadline:
+        stamped = take()
+        if last is None or stamped.ts_ns > last:
+            out.append(to_sample(stamped, source))
+            last = int(stamped.ts_ns)
+        elif poll_s:
+            time.sleep(poll_s)
+    return out
 
 
 def stream(source: Any, seconds: float, poll_s: float = 0.0, warmup: int = 0) -> list[int]:
@@ -142,20 +205,7 @@ def stream(source: Any, seconds: float, poll_s: float = 0.0, warmup: int = 0) ->
     ``warmup`` samples are taken and discarded first, so that auto-exposure settling and the first
     allocation do not show up as jitter.
     """
-    take = getattr(source, "grab", None) or getattr(source, "read_state", None) or source.read
-    for _ in range(warmup):
-        take()
-    out: list[int] = []
-    deadline = clock.now_ns() + int(seconds * 1e9)
-    last: int | None = None
-    while clock.now_ns() < deadline:
-        ts = take().ts_ns
-        if last is None or ts > last:
-            out.append(ts)
-            last = ts
-        elif poll_s:
-            time.sleep(poll_s)
-    return out
+    return [s.ts_ns for s in stream_samples(source, seconds, poll_s=poll_s, warmup=warmup)]
 
 
 def drain(source: Any, seconds: float, poll_s: float, warmup: int = 0) -> list[int]:
@@ -178,6 +228,49 @@ def drain(source: Any, seconds: float, poll_s: float, warmup: int = 0) -> list[i
         if poll_s:
             time.sleep(poll_s)
     return out
+
+
+def stamp_report(samples: Sequence[Sample], expected_hz: float) -> dict[str, Any]:
+    """The second-stamp half of the report: which stamp each sample used, and what the other said.
+
+    ``stats_arrival`` and ``arrival_minus_kernel_ms`` are ``None`` for a driver that has one stamp
+    only -- there the train already reported *is* the arrival train. ``arrival_minus_kernel_ms``
+    covers every sample for which the driver read a kernel stamp, **including** the ones it then
+    rejected: the distance is exactly what a rejection is about, so hiding it would hide the reason.
+    """
+    counts: dict[str, int] = {}
+    for sample in samples:
+        counts[sample.source] = counts.get(sample.source, 0) + 1
+    report: dict[str, Any] = {
+        # None, not {}, when there were no samples to classify: a drained stream (the arm, the real
+        # glove) is collected from a queue, so there is no per-sample stamp choice to report.
+        "stamp_source": counts or None,
+        "stats_arrival": None,
+        "arrival_minus_kernel_ms": None,
+    }
+    if not counts or set(counts) == {"driver"}:
+        return report
+
+    arrival = [s.arrival_ns for s in samples]
+    # `stats` requires a strictly increasing train. Arrival stamps come from a monotonic clock read
+    # once per blocking grab, so this holds in practice; it is checked rather than assumed because a
+    # 600 s run must not die on its last line.
+    if len(arrival) >= 2 and bool(np.all(np.diff(np.asarray(arrival, dtype=np.int64)) > 0)):
+        report["stats_arrival"] = stats(arrival, expected_hz)
+
+    lags_ms = np.asarray(
+        [(s.arrival_ns - s.kernel_ns) / 1e6 for s in samples if s.kernel_ns is not None],
+        dtype=np.float64,
+    )
+    if lags_ms.size:
+        report["arrival_minus_kernel_ms"] = {
+            "n": int(lags_ms.size),
+            "p50": round(float(np.percentile(lags_ms, 50)), 4),
+            "p99": round(float(np.percentile(lags_ms, 99)), 4),
+            "max": round(float(lags_ms.max()), 4),
+            "min": round(float(lags_ms.min()), 4),
+        }
+    return report
 
 
 def _build(backend: str, name: str, device: str | None) -> tuple[Any, float, float]:
@@ -281,10 +374,25 @@ def _print_human(report: dict[str, Any]) -> None:
         print(f"policy size  {report['policy_resolution'][0]}x{report['policy_resolution'][1]}")
     print(f"samples      {s['frames']} in {s['span_s']:.2f} s (warmup {report['warmup']} discarded)")
     print(f"rate         {s['fps']:.2f} Hz  (expected {s['expected_hz']:g})")
-    print(f"drops        {s['drops']} gaps > {DROP_FACTOR:g} periods, {s['frames_missed']} frames missed")
+    sources = report.get("stamp_source")
+    if sources:
+        print("stamps       " + ", ".join(f"{k} {v}" for k, v in sorted(sources.items())))
+    print(f"lost         {s['frames_lost']} frames never delivered")
+    print(f"drops        {s['drops']} gaps > {DROP_FACTOR:g} periods, {s['frames_missed']} frames late")
     for what in ("interval", "jitter"):
         p50, p99, top = (s[f"{what}_ms_{k}"] for k in ("p50", "p99", "max"))
         print(f"{what + ' ms':<12} p50 {p50:.2f}  p99 {p99:.2f}  max {top:.2f}")
+
+    arrival = report.get("stats_arrival")
+    if arrival:
+        print(f"arrival      {arrival['fps']:.2f} Hz, {arrival['frames_lost']} lost, "
+              f"{arrival['drops']} gaps, {arrival['frames_missed']} frames late")
+        p50, p99, top = (arrival[f"jitter_ms_{k}"] for k in ("p50", "p99", "max"))
+        print(f"arr jitter   p50 {p50:.2f}  p99 {p99:.2f}  max {top:.2f}")
+    lag = report.get("arrival_minus_kernel_ms")
+    if lag:
+        print(f"arr - kern   p50 {lag['p50']:.2f}  p99 {lag['p99']:.2f}  max {lag['max']:.2f}  "
+              f"min {lag['min']:.2f}  (n {lag['n']})")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -334,14 +442,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         probe = source.probe() if hasattr(source, "probe") else None
         # A driver that queues its samples in a callback is drained; everything else is polled.
+        samples: list[Sample] = []
         if hasattr(source, "poll"):
             ts = drain(source, args.seconds, poll_s=poll_s, warmup=args.warmup)
         else:
-            ts = stream(source, args.seconds, poll_s=poll_s, warmup=args.warmup)
+            samples = stream_samples(source, args.seconds, poll_s=poll_s, warmup=args.warmup)
+            ts = [s.ts_ns for s in samples]
         if len(ts) < 2:
             print(f"no statistics: {name} delivered {len(ts)} sample(s) in {args.seconds:g} s", file=sys.stderr)
             return NO_STREAM
         measured = stats(ts, expected_hz)
+        stamps = stamp_report(samples, expected_hz)
     except unavailable as exc:
         print(f"no statistics: {exc}", file=sys.stderr)
         return NO_STREAM
@@ -371,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
         "warmup": args.warmup,
         "probe": None if probe is None else dataclasses.asdict(probe),
         "stats": measured,
+        **stamps,
     }
     if name in CAMERAS:
         report["camera"] = name  # the key this report carried before --stream existed (T-010)

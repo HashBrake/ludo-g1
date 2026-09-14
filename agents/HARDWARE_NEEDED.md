@@ -129,3 +129,20 @@ received); the pass criterion becomes frames lost = 0 and kernel-stamp jitter p9
 worth one try. One more human-only variable, in this order after step 1: the CPU governor is `powersave`
 (`cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`); `sudo cpupower frequency-set -g performance` for one run
 tells us whether that is the cause. Agents do not change it (system state).
+
+### H-005 post-check result under T-047  (opus, 2026-09-14T13:55+07:00)
+Step (0) of the amendment -- run the post-check with nothing else on the laptop -- was run after
+T-047 landed the kernel-timestamp change, on the same by-path node, host quiet (no pytest, 1-min load
+0.49, governor still `powersave`):
+```
+.venv/bin/python tools/hardware_checks/stream_stats.py --backend real --stream oblique --seconds 600 --json
+frames 17900 in 596.625 s at 30.00 Hz; frames_lost 0; drops 0; stamp_source {kernel: 17900}
+kernel-stamp jitter p50 0.14 ms, p99 0.81 ms, max 9.37 ms
+arrival    jitter p50 0.23 ms, p99 3.29 ms, max 16.17 ms; arrival - kernel p50 9.51, p99 12.07 ms
+```
+The amended pass criterion (frames lost 0 and kernel-stamp jitter p99 < 10 ms) is **met**, and the
+by-path selector still opens 'Ego left' at 1600x1200 MJPG. No human action is required for the
+timing: steps 1-3 (USB-3 port, cable, lighting) are not forced by any measurement now on record.
+Left OPEN for Fable to close or to re-scope: D-025 judged the USB-3 re-seat "still worth one try",
+and that is a scope call, not a measurement. Full numbers and the run's JSON: the T-047 entry in
+agents/BUILD_LOG.md.

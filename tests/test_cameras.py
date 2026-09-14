@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 import yaml
@@ -34,7 +35,7 @@ from drivers.cameras import (
 )
 from drivers.interfaces import CameraDriver
 from drivers.mock import MockCamera
-from runtime import config
+from runtime import clock, config
 from tools.hardware_checks import stream_stats
 
 REPO = Path(__file__).resolve().parents[1]
@@ -267,6 +268,28 @@ def test_stats_ignores_jitter_below_the_drop_threshold() -> None:
     assert stream_stats.stats(ts, 30.0)["drops"] == 0
 
 
+def test_frames_lost_counts_loss_and_drops_counts_late_delivery() -> None:
+    """The T-047 distinction: a stream can be full of gaps and have lost nothing (D-025).
+
+    Late-and-burst: three frames are delivered in one clump after a three-period stall, so the
+    window holds every frame it should (``frames_lost`` 0) while the gap is still a drop.
+    """
+    late = [k * PERIOD_NS for k in range(97)]
+    late += [99 * PERIOD_NS + k * 200_000 for k in range(3)]  # the stall's backlog, in a burst
+    late += [k * PERIOD_NS for k in range(100, 300)]
+    s = stream_stats.stats(late, 30.0)
+    assert s["frames"] == 300
+    assert s["drops"] == 1 and s["frames_missed"] == 2
+    assert s["frames_lost"] == 0
+
+    # One frame that never came: the same drop count, but a frame short of the window's span.
+    lost = [k * PERIOD_NS for k in range(50)] + [k * PERIOD_NS for k in range(51, 300)]
+    s = stream_stats.stats(lost, 30.0)
+    assert s["drops"] == 1 and s["frames_missed"] == 1
+    assert s["frames_lost"] == 1
+    assert stream_stats.stats([k * PERIOD_NS for k in range(300)], 30.0)["frames_lost"] == 0
+
+
 def test_stats_rejects_nonsense() -> None:
     with pytest.raises(ValueError):
         stream_stats.stats([0], 30.0)
@@ -310,6 +333,170 @@ def test_stream_stats_rejects_bad_usage() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+# the kernel buffer timestamp (T-047, D-025): a scripted capture, no hardware
+# --------------------------------------------------------------------------------------------------
+
+
+class FakeCapture:
+    """A ``cv2.VideoCapture`` stand-in with a scripted ``CAP_PROP_POS_MSEC`` per frame.
+
+    ``read()`` hands out a frame already at the policy resolution (so no resize runs) and moves to
+    the next scripted kernel timestamp, which ``get(CAP_PROP_POS_MSEC)`` then reports -- the order
+    the driver relies on: the property describes the frame just read.
+    """
+
+    def __init__(self, pos_msec: list[float], size: tuple[int, int] = (640, 480)) -> None:
+        self.pos_msec = pos_msec
+        self.index = -1
+        self.released = False
+        self._frame = np.zeros((size[1], size[0], 3), dtype=np.uint8)
+
+    def isOpened(self) -> bool:  # noqa: N802 - the OpenCV spelling
+        return True
+
+    def set(self, prop: int, value: float) -> bool:
+        return True
+
+    def get(self, prop: int) -> float:
+        if prop == cv2.CAP_PROP_POS_MSEC and 0 <= self.index < len(self.pos_msec):
+            return self.pos_msec[self.index]
+        return 0.0
+
+    def read(self) -> tuple[bool, np.ndarray]:
+        self.index += 1
+        assert self.index < len(self.pos_msec), "the test asked for more frames than it scripted"
+        return True, self._frame.copy()
+
+    def release(self) -> None:
+        self.released = True
+
+
+def scripted_camera(monkeypatch, tmp_path: Path, pos_msec: list[float], arrivals: list[int]) -> V4L2Camera:
+    """An ``oblique`` camera whose capture and whose arrival clock are both scripted by the test."""
+    device = tmp_path / "video-scripted"
+    device.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cv2, "VideoCapture", lambda *a, **k: FakeCapture(pos_msec))
+    times = iter(arrivals)
+    return V4L2Camera(
+        "oblique",
+        device=str(device),
+        now_ns=lambda: next(times),
+        config_root=cameras_root(tmp_path),
+    )
+
+
+def late_and_burst(n: int = 300) -> tuple[list[int], list[float], list[int]]:
+    """A clean 30 Hz capture grid delivered with one three-period stall and a catch-up burst.
+
+    This is the Ego's measured behaviour in miniature (D-025): the kernel stamps the frames on time,
+    user space collects three of them in a clump after a stall, and nothing is actually lost.
+    Returns ``(kernel_ns, pos_msec, arrival_ns)``.
+    """
+    kernel = [k * PERIOD_NS for k in range(n)]
+    arrivals = [t + 3_000_000 for t in kernel]  # the 2-3 ms delivery lag of a quiet host
+    stall = [k for k in (97, 98, 99) if k < n]  # a short train has no room for the stall
+    for k in stall:  # stalled until frame 99 landed, then delivered back to back
+        arrivals[k] = 99 * PERIOD_NS + 3_000_000 + (k - 97) * 200_000
+    pos_msec = [clock.to_monotonic_ns(t) / 1e6 for t in kernel]
+    return kernel, pos_msec, arrivals
+
+
+def grab_all(camera: V4L2Camera, n: int) -> list[stream_stats.Sample]:
+    return [stream_stats.to_sample(camera.grab(), camera) for _ in range(n)]
+
+
+def test_frames_are_stamped_with_the_kernel_buffer_timestamp(monkeypatch, tmp_path: Path) -> None:
+    """The point of T-047: the frame carries when it was captured, not when it was collected."""
+    kernel, pos_msec, arrivals = late_and_burst()
+    camera = scripted_camera(monkeypatch, tmp_path, pos_msec, arrivals)
+    samples = grab_all(camera, len(kernel))
+
+    assert [s.ts_ns for s in samples] == kernel
+    assert [s.arrival_ns for s in samples] == arrivals
+    assert camera.kernel_stamps == len(kernel) and camera.arrival_stamps == 0
+    assert {s.source for s in samples} == {"kernel"}
+
+
+def test_the_kernel_stamp_is_clean_while_arrival_shows_the_drop(monkeypatch, tmp_path: Path) -> None:
+    """Jitter < 1 ms on the kernel stamp, the gap still counted on arrival, nothing lost on either."""
+    kernel, pos_msec, arrivals = late_and_burst()
+    camera = scripted_camera(monkeypatch, tmp_path, pos_msec, arrivals)
+    samples = grab_all(camera, len(kernel))
+
+    on_kernel = stream_stats.stats([s.ts_ns for s in samples], 30.0)
+    assert on_kernel["jitter_ms_p99"] < 1.0
+    assert on_kernel["drops"] == 0 and on_kernel["frames_lost"] == 0
+
+    report = stream_stats.stamp_report(samples, 30.0)
+    assert report["stamp_source"] == {"kernel": len(kernel)}
+    assert report["stats_arrival"]["drops"] == 1
+    assert report["stats_arrival"]["frames_missed"] == 2
+    assert report["stats_arrival"]["frames_lost"] == 0
+    # The delivery jitter the kernel stamp sees through: two whole periods of it, on arrival only.
+    assert report["stats_arrival"]["jitter_ms_max"] == pytest.approx(2 * PERIOD_NS / 1e6, abs=0.01)
+    assert on_kernel["jitter_ms_max"] < 1.0
+
+    lag = report["arrival_minus_kernel_ms"]
+    assert lag["n"] == len(kernel)
+    assert lag["p50"] == pytest.approx(3.0, abs=0.01)
+    # The stalled frame was collected two periods and 3 ms after it was captured -- still believed,
+    # because that is well inside MAX_KERNEL_LAG_NS.
+    assert lag["max"] == pytest.approx(2 * PERIOD_NS / 1e6 + 3.0, abs=0.01)
+
+
+def test_a_device_that_reports_no_kernel_stamp_falls_back_to_arrival(monkeypatch, tmp_path: Path) -> None:
+    kernel, _, arrivals = late_and_burst(n=20)
+    camera = scripted_camera(monkeypatch, tmp_path, [0.0] * len(kernel), arrivals)
+    samples = grab_all(camera, len(kernel))
+
+    assert [s.ts_ns for s in samples] == arrivals
+    assert {s.source for s in samples} == {"arrival"}
+    assert all(s.kernel_ns is None for s in samples)
+    assert camera.arrival_stamps == len(kernel) and camera.kernel_stamps == 0
+    report = stream_stats.stamp_report(samples, 30.0)
+    assert report["stamp_source"] == {"arrival": len(kernel)}
+    assert report["arrival_minus_kernel_ms"] is None
+
+
+def test_a_kernel_stamp_on_another_clock_is_rejected_and_kept(monkeypatch, tmp_path: Path) -> None:
+    """A backend reporting a stream position or a wall clock is more than 100 ms from arrival."""
+    kernel, _, arrivals = late_and_burst(n=20)
+    elsewhere = [(clock.to_monotonic_ns(t) + 5 * 60 * 10**9) / 1e6 for t in kernel]
+    camera = scripted_camera(monkeypatch, tmp_path, elsewhere, arrivals)
+    samples = grab_all(camera, len(kernel))
+
+    assert [s.ts_ns for s in samples] == arrivals
+    assert {s.source for s in samples} == {"arrival"}
+    # The rejected value is still reported, so a read-only check can show why it was rejected.
+    assert all(s.kernel_ns is not None for s in samples)
+    lag = stream_stats.stamp_report(samples, 30.0)["arrival_minus_kernel_ms"]
+    assert lag["max"] < -1000.0  # five minutes in the future, in milliseconds
+
+
+def test_a_kernel_stamp_that_stands_still_falls_back_after_the_first_frame(monkeypatch, tmp_path: Path) -> None:
+    """Non-monotonic is a fallback: the emitted stamps must never go backwards (StreamBuffer)."""
+    kernel, _, arrivals = late_and_burst(n=20)
+    stuck = [clock.to_monotonic_ns(kernel[0]) / 1e6] * len(kernel)
+    camera = scripted_camera(monkeypatch, tmp_path, stuck, arrivals)
+    samples = grab_all(camera, len(kernel))
+
+    assert samples[0].source == "kernel" and samples[0].ts_ns == kernel[0]
+    assert {s.source for s in samples[1:]} == {"arrival"}
+    assert camera.kernel_stamps == 1 and camera.arrival_stamps == len(kernel) - 1
+    stamps = [s.ts_ns for s in samples]
+    assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
+
+
+def test_a_stream_without_a_last_stamp_reports_one_train(monkeypatch, tmp_path: Path) -> None:
+    """MockCamera is untouched by T-047: one stamp, and the report says so rather than inventing."""
+    samples = [stream_stats.to_sample(MockCamera("oblique").grab(), MockCamera("oblique")) for _ in range(5)]
+    assert {s.source for s in samples} == {"driver"}
+    report = stream_stats.stamp_report(samples, 30.0)
+    assert report["stamp_source"] == {"driver": 5}
+    assert report["stats_arrival"] is None and report["arrival_minus_kernel_ms"] is None
+
+
+# --------------------------------------------------------------------------------------------------
 # readonly: these need a camera and skip, naming it, when there is none
 # --------------------------------------------------------------------------------------------------
 
@@ -348,6 +535,33 @@ def test_a_real_frame_is_shaped_exactly_like_a_mock_frame(name: str) -> None:
     mock = MockCamera(name).grab()
     assert real.payload.shape == mock.payload.shape
     assert real.payload.dtype == mock.payload.dtype
+
+
+@pytest.mark.readonly
+@pytest.mark.parametrize("name", STREAMS)
+def test_real_frames_carry_a_monotonic_kernel_stamp_close_to_arrival(name: str) -> None:
+    """T-047 on the device: the V4L2 buffer timestamp is on our clock, and it is the one we use."""
+    with open_camera(name) as camera:
+        stamps = []
+        for _ in range(60):
+            camera.grab()
+            assert camera.last_stamp is not None
+            stamps.append(camera.last_stamp)
+
+    assert camera.kernel_stamps + camera.arrival_stamps == len(stamps)
+    lags_ms = sorted((s.arrival_ns - s.kernel_ns) / 1e6 for s in stamps if s.kernel_ns is not None)
+    assert lags_ms, "the V4L2 backend reported no buffer timestamp at all"
+    # Same clock, one origin apart: the frame is captured before read() returns it, and the typical
+    # distance is the few milliseconds of delivery lag. The median, not the max: a single stalled
+    # delivery on a loaded host is exactly what this stamp exists to survive, and it must not turn
+    # into a failing test (D-025).
+    assert min(lags_ms) >= -1.0, f"kernel stamp ahead of arrival by {-min(lags_ms):.1f} ms"
+    assert lags_ms[len(lags_ms) // 2] <= 100.0, f"kernel stamp p50 {lags_ms[len(lags_ms) // 2]:.1f} ms from arrival"
+    assert camera.kernel_stamps >= 0.9 * len(stamps), (
+        f"only {camera.kernel_stamps}/{len(stamps)} frames used the kernel stamp"
+    )
+    emitted = [s.ts_ns for s in stamps]
+    assert emitted == sorted(emitted) and len(set(emitted)) == len(emitted)
 
 
 @pytest.mark.readonly

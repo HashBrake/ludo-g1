@@ -2002,7 +2002,7 @@ result: (opus, 2026-09-14T12:55+07:00, commit b7d61d6)
     is `readonly` and skips without the camera, so it could not stand in for it.
 
 ## T-047  Camera frames stamped with the V4L2 kernel buffer timestamp; stream_stats separates late delivery from loss
-status: in_progress
+status: review
 priority: P1
 phase: 2
 owner: opus
@@ -2032,3 +2032,23 @@ acceptance:
 notes: D-025. Run the 600 s check with the host quiet (no pytest in parallel; the pre-commit hook's suite counts). Do not
   touch policy/, runtime/safety.py, config/*.yaml except adding a `stamp_source` key to config/cameras.yaml `defaults` if a
   switch is genuinely needed (default kernel). Nothing under third_party/. No session, no motion path.
+result: (opus, 2026-09-14T13:55+07:00, commit COMMIT_HASH)
+  - **600 s readonly run on the Ego**, host quiet, same by-path node: 17900 frames in 596.625 s,
+    **fps 30.000**, **frames_lost 0**, **drops 0**, `stamp_source {kernel: 17900}` (zero fallbacks).
+    **Kernel-stamp jitter p50 0.1373 / p99 0.8114 / max 9.3713 ms**; arrival jitter p50 0.2339 /
+    **p99 3.2895** / max 16.1731 ms; **arrival_minus_kernel p50 9.5089 / p99 12.0682 / max 26.2418 /
+    min 5.4121 ms**. Acceptance: frames_lost 0 **PASS**, kernel jitter p99 < 2 ms **PASS** (0.81);
+    not >= 10 ms, so H-005 step 1 is not forced. Full JSON in BUILD_LOG.md.
+  - This run had 0 drops on both trains (quiet host), so the loss/late separation is demonstrated
+    there only as arrival jitter p99 4x the kernel's; it is demonstrated exactly in
+    `test_the_kernel_stamp_is_clean_while_arrival_shows_the_drop` (scripted capture: arrival 1 drop /
+    2 late, kernel 0 drops and jitter p99 < 1 ms, frames_lost 0 on both).
+  - `.venv/bin/python -m pytest -q` -> **901 passed, 17 skipped in 464.22 s**; `.venv/bin/ruff check .`
+    -> clean; `tests/test_cameras.py` -> 38 passed, 4 skipped (the 4 are `top`, which is not attached).
+  - Recorder unchanged and verified by reading the path (`poll()` pushes `stamped.ts_ns`, line 215;
+    skew is computed from those) plus the existing 60 s mock end-to-end tests, still green.
+  - Deviation, narrowing only: the kernel stamp is believed when it is <= 100 ms behind arrival and
+    <= 1 ms ahead of it, not +/-100 ms, because a frame is captured before `read()` returns and the
+    one-sided window keeps emitted stamps non-decreasing across a fallback. Logged in BUILD_LOG.md.
+  - `config/cameras.yaml` `defaults.timestamp` now reads falsely but was **not** edited (the task
+    forbade config edits); a one-line replacement is proposed at the end of the BUILD_LOG entry.
