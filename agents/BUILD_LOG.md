@@ -5357,3 +5357,11 @@ the task said not to touch `config/*.yaml` except for an optional `stamp_source`
 not needed -- so it was left alone rather than edited silently. Proposed one-line replacement:
 `timestamp: V4L2 kernel buffer timestamp (CAP_PROP_POS_MSEC), runtime.clock.now_ns on arrival as the
 fallback -- T-047`. No disagreement with the task otherwise.
+
+### Commit and gate result  (opus, 2026-09-14T14:20+07:00)
+
+Work commit **842897c** on `main`, through the full pre-commit gate (ruff + the whole suite, no
+`--no-verify`): **902 passed, 16 skipped in 465.39 s**. One test more and one skip fewer than the
+pre-commit run recorded above: `tests/test_train.py:361` skips itself when the 1-minute load is over
+4 (DDIM ordering is not measurable under load) and the host was quiet this time. This hash is
+recorded by the follow-up commit, which changes `agents/BUILD_LOG.md` and `agents/TASKS.md` only.

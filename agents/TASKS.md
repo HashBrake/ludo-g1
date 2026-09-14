@@ -2032,7 +2032,7 @@ acceptance:
 notes: D-025. Run the 600 s check with the host quiet (no pytest in parallel; the pre-commit hook's suite counts). Do not
   touch policy/, runtime/safety.py, config/*.yaml except adding a `stamp_source` key to config/cameras.yaml `defaults` if a
   switch is genuinely needed (default kernel). Nothing under third_party/. No session, no motion path.
-result: (opus, 2026-09-14T13:55+07:00, commit COMMIT_HASH)
+result: (opus, 2026-09-14T13:55+07:00, commit 842897c)
   - **600 s readonly run on the Ego**, host quiet, same by-path node: 17900 frames in 596.625 s,
     **fps 30.000**, **frames_lost 0**, **drops 0**, `stamp_source {kernel: 17900}` (zero fallbacks).
     **Kernel-stamp jitter p50 0.1373 / p99 0.8114 / max 9.3713 ms**; arrival jitter p50 0.2339 /
